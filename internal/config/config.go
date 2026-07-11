@@ -22,6 +22,15 @@ type Config struct {
 	Log       LogConfig       `mapstructure:"log"`
 	State     StateConfig     `mapstructure:"state"`
 	Agent     AgentConfig     `mapstructure:"agent"`
+	WhatsApp  WhatsAppConfig  `mapstructure:"whatsapp"`
+}
+
+// WhatsAppConfig configures the whatsapp transport.
+type WhatsAppConfig struct {
+	// ReplyHeader is prepended to every outbound message. Empty uses
+	// the built-in default ("💎 *Rousseau Agent*\n\n"). Set to a single
+	// space " " to disable the prefix entirely.
+	ReplyHeader string `mapstructure:"reply_header"`
 }
 
 // AnthropicConfig configures the direct Anthropic API provider.
