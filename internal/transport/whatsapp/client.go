@@ -154,7 +154,18 @@ func (c *Client) onEvent(raw any) {
 }
 
 func (c *Client) handleMessage(evt *events.Message) {
-	if evt.Info.IsFromMe || evt.Info.IsGroup {
+	if evt.Info.IsGroup {
+		return
+	}
+	// Loop-prevention: skip messages this exact linked device sent (our
+	// own replies echoing back). Messages from the account's *other*
+	// linked devices — the primary phone testing via "message yourself"
+	// — carry IsFromMe=true too, and must still be processed.
+	c.mu.Lock()
+	wm := c.wm
+	c.mu.Unlock()
+	if evt.Info.IsFromMe && wm != nil && wm.Store.ID != nil &&
+		evt.Info.Sender.Device == wm.Store.ID.Device {
 		return
 	}
 	body := strings.TrimSpace(extractText(evt.Message))
@@ -162,8 +173,11 @@ func (c *Client) handleMessage(evt *events.Message) {
 		return
 	}
 
+	// Strip the multi-device address suffix so the router's allowlist
+	// (typically the plain user JID, e.g. "15551234567@s.whatsapp.net")
+	// matches regardless of which linked device sent the message.
 	msg := transport.IncomingMessage{
-		From: evt.Info.Sender.String(),
+		From: evt.Info.Sender.ToNonAD().String(),
 		Body: body,
 		At:   evt.Info.Timestamp,
 	}
@@ -179,7 +193,7 @@ func (c *Client) handleMessage(evt *events.Message) {
 	if reply == "" {
 		return
 	}
-	if err := c.send(ctx, evt.Info.Sender, reply); err != nil {
+	if err := c.send(ctx, evt.Info.Chat, reply); err != nil {
 		c.logger.Error("whatsapp.send_failed", slog.String("err", err.Error()))
 	}
 }
