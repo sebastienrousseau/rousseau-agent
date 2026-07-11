@@ -52,10 +52,12 @@ func newChatCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			compressor := buildCompressor(cfg.Agent.Compression, provider)
 			ag := agent.New(provider, registry, opts.Logger, agent.Options{
 				MaxIterations: cfg.Agent.MaxIterations,
 				SystemPrompt:  systemPrompt(cfg.Agent.SystemPrompt),
 				Approver:      approver,
+				Compressor:    compressor,
 			})
 
 			session, err := loadOrCreateSession(ctx, store, sessionID, title)

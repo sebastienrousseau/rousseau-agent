@@ -20,6 +20,11 @@ type Options struct {
 	// the model as a tool_result error so the model can pick a
 	// different action.
 	Approver Approver
+	// Compressor is consulted at the start of each Turn. Nil uses
+	// NoopCompressor. Implementations that decide to rewrite the
+	// session do so in place; the loop then proceeds against the
+	// smaller message list.
+	Compressor Compressor
 }
 
 // Agent orchestrates the model / tool-use loop against a Session.
@@ -41,6 +46,9 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 	if opts.Approver == nil {
 		opts.Approver = AllowAllApprover{}
 	}
+	if opts.Compressor == nil {
+		opts.Compressor = NoopCompressor{}
+	}
 	return &Agent{
 		provider: provider,
 		registry: registry,
@@ -53,9 +61,19 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 // message history to the model, executes any requested tools, and loops
 // until the model emits an end-of-turn response. The final assistant
 // Message is returned; the Session is mutated in place.
+//
+// Turn consults the configured Compressor before running the loop.
+// Compression happens in place; long sessions keep fitting the model's
+// context without the caller having to intervene.
 func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	if len(s.Messages) == 0 {
 		return Message{}, ErrEmptySession
+	}
+
+	if changed, err := a.opts.Compressor.Compress(ctx, s); err != nil {
+		a.logger.Warn("agent.compress_failed", slog.String("err", err.Error()))
+	} else if changed {
+		a.logger.Info("agent.compressed", slog.Int("messages", len(s.Messages)))
 	}
 
 	toolDefs := a.registry.Definitions()

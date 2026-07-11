@@ -84,10 +84,12 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			compressor := buildCompressor(cfg.Agent.Compression, provider)
 			ag := agent.New(provider, registry, opts.Logger, agent.Options{
 				MaxIterations: cfg.Agent.MaxIterations,
 				SystemPrompt:  systemPrompt(cfg.Agent.SystemPrompt),
 				Approver:      approver,
+				Compressor:    compressor,
 			})
 
 			router := transport.NewRouter(ag, sessionsStore, jidMap, opts.Logger, transport.RouterOptions{
