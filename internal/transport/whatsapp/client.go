@@ -173,11 +173,25 @@ func (c *Client) handleMessage(evt *events.Message) {
 		return
 	}
 
-	// Strip the multi-device address suffix so the router's allowlist
-	// (typically the plain user JID, e.g. "15551234567@s.whatsapp.net")
-	// matches regardless of which linked device sent the message.
+	// Determine the "From" the router sees. Two normalisations:
+	//
+	//  1. Strip the multi-device address suffix (":<n>") so allowlists
+	//     written as the plain user JID match regardless of which
+	//     linked device sent the message.
+	//
+	//  2. For the account holder's own outbound (IsFromMe=true from a
+	//     linked device that isn't us), WhatsApp reports the sender as
+	//     the account's LID (e.g. "276540210315282@lid") rather than
+	//     the phone JID. That's a privacy feature of the multi-device
+	//     protocol. Substitute our own account JID so operators can
+	//     allowlist "15551234567@s.whatsapp.net" and have
+	//     "message yourself" testing route correctly.
+	from := evt.Info.Sender.ToNonAD()
+	if evt.Info.IsFromMe && wm.Store.ID != nil {
+		from = wm.Store.ID.ToNonAD()
+	}
 	msg := transport.IncomingMessage{
-		From: evt.Info.Sender.ToNonAD().String(),
+		From: from.String(),
 		Body: body,
 		At:   evt.Info.Timestamp,
 	}
