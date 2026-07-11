@@ -211,6 +211,12 @@ func (c *Client) handleMessage(evt *events.Message) {
 	ctx := context.Background()
 	c.logger.Info("whatsapp.incoming", slog.String("from", msg.From))
 
+	// Show "typing…" on the sender's phone while claude works; clear on
+	// return. Errors here are logged but not fatal — presence is a UX
+	// nicety, not a correctness constraint.
+	c.setPresence(evt.Info.Chat, types.ChatPresenceComposing)
+	defer c.setPresence(evt.Info.Chat, types.ChatPresencePaused)
+
 	start := time.Now()
 	reply, err := c.handler.Handle(ctx, msg)
 	elapsed := time.Since(start)
@@ -229,6 +235,22 @@ func (c *Client) handleMessage(evt *events.Message) {
 		slog.Int("reply_len", len(reply)))
 	if err := c.send(ctx, evt.Info.Chat, c.cfg.ReplyHeader+reply); err != nil {
 		c.logger.Error("whatsapp.send_failed", slog.String("err", err.Error()))
+	}
+}
+
+func (c *Client) setPresence(to types.JID, state types.ChatPresence) {
+	c.mu.Lock()
+	wm := c.wm
+	c.mu.Unlock()
+	if wm == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := wm.SendChatPresence(ctx, to, state, types.ChatPresenceMediaText); err != nil {
+		c.logger.Debug("whatsapp.presence_failed",
+			slog.String("state", string(state)),
+			slog.String("err", err.Error()))
 	}
 }
 

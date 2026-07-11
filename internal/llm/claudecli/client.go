@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 )
@@ -43,8 +44,10 @@ type runFunc func(cmd *exec.Cmd) ([]byte, error)
 
 // Provider is an agent.Provider backed by the `claude` CLI.
 type Provider struct {
-	cfg Config
-	run runFunc
+	cfg  Config
+	run  runFunc
+	mu   sync.Mutex
+	seen map[string]bool // sessionIDs known to already exist in claude's store
 }
 
 // New constructs a Provider. It does not verify the binary exists;
@@ -53,27 +56,71 @@ func New(cfg Config) *Provider {
 	if cfg.Binary == "" {
 		cfg.Binary = "claude"
 	}
-	return &Provider{cfg: cfg, run: defaultRun}
+	return &Provider{cfg: cfg, run: defaultRun, seen: map[string]bool{}}
+}
+
+func (p *Provider) knowsSession(id string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.seen[id]
+}
+
+func (p *Provider) rememberSession(id string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.seen[id] = true
 }
 
 // Name returns the provider identifier.
 func (*Provider) Name() string { return "claudecli" }
 
 // Complete runs a one-shot claude invocation. The full message history
-// is NOT sent — claude maintains conversation state via --session-id.
-// The last user message is used as the prompt; system prompt is passed
-// via --system-prompt on the first turn only (claude ignores it on
-// resumes, which is what we want).
+// is NOT sent — claude maintains conversation state itself.
+//
+// Session semantics:
+//
+//   - `claude -p --session-id <uuid>` creates a new session; if the uuid
+//     already exists in claude's store the CLI errors "already in use".
+//   - `claude -p --resume <uuid>` resumes an existing session; errors if
+//     the uuid is unknown.
+//
+// We pick one based on an in-memory cache (`p.seen`) primed as calls
+// succeed. On a cold-start cache miss where claude has state from a
+// previous rousseau run we optimistically try --session-id first, catch
+// the "already in use" error, and retry with --resume.
 func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
 	prompt, err := lastUserText(req.Messages)
 	if err != nil {
 		return agent.Response{}, err
 	}
 
+	sessionFlag := "--session-id"
+	if req.SessionID != "" && p.knowsSession(req.SessionID) {
+		sessionFlag = "--resume"
+	}
+
+	resp, err := p.invoke(ctx, sessionFlag, req, prompt)
+	if err != nil && sessionFlag == "--session-id" && strings.Contains(err.Error(), "already in use") {
+		// Cold-start miss: claude has state from a previous rousseau run.
+		p.rememberSession(req.SessionID)
+		resp, err = p.invoke(ctx, "--resume", req, prompt)
+	}
+	if err != nil {
+		return agent.Response{}, err
+	}
+	if req.SessionID != "" {
+		p.rememberSession(req.SessionID)
+	}
+	return resp, nil
+}
+
+func (p *Provider) invoke(ctx context.Context, sessionFlag string, req agent.Request, prompt string) (agent.Response, error) {
 	args := []string{"--print", "--output-format", "json"}
 	if req.SessionID != "" {
-		args = append(args, "--session-id", req.SessionID)
+		args = append(args, sessionFlag, req.SessionID)
 	}
+	// --system-prompt is honoured on session creation and ignored on
+	// resume, which is exactly the semantics we want.
 	if req.System != "" {
 		args = append(args, "--system-prompt", req.System)
 	}
@@ -91,7 +138,6 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 	if err != nil {
 		return agent.Response{}, fmt.Errorf("claudecli: run: %w: %s", err, truncate(string(out), 400))
 	}
-
 	return parseResult(out)
 }
 
