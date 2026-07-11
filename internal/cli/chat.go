@@ -48,9 +48,14 @@ func newChatCmd(opts *Options) *cobra.Command {
 			registry.MustRegister(builtin.NewGrepTool(0, 0))
 			registry.MustRegister(builtin.NewBashTool(60 * time.Second))
 
+			approver, err := buildApprover(cfg.Agent.Approver)
+			if err != nil {
+				return err
+			}
 			ag := agent.New(provider, registry, opts.Logger, agent.Options{
 				MaxIterations: cfg.Agent.MaxIterations,
 				SystemPrompt:  systemPrompt(cfg.Agent.SystemPrompt),
+				Approver:      approver,
 			})
 
 			session, err := loadOrCreateSession(ctx, store, sessionID, title)

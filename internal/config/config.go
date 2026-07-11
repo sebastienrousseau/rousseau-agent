@@ -87,8 +87,33 @@ type StateConfig struct {
 
 // AgentConfig configures the agent loop.
 type AgentConfig struct {
-	SystemPrompt  string `mapstructure:"system_prompt"`
-	MaxIterations int    `mapstructure:"max_iterations"`
+	SystemPrompt  string         `mapstructure:"system_prompt"`
+	MaxIterations int            `mapstructure:"max_iterations"`
+	Approver      ApproverConfig `mapstructure:"approver"`
+}
+
+// ApproverConfig picks and configures the tool-call approval policy.
+//
+// mode:
+//   - "allow_all" (default): every tool call runs. Suitable when the
+//     provider is claudecli, which handles its own approvals.
+//   - "deny_all": block every tool call. Useful as a smoke test or
+//     when running a read-only inspection session.
+//   - "pattern":  applies Allow / Deny regex rules; deny wins over
+//     allow; unmatched requests fall back to `default`.
+type ApproverConfig struct {
+	Mode    string         `mapstructure:"mode"`
+	Reason  string         `mapstructure:"reason"`
+	Default string         `mapstructure:"default"` // "allow" or "deny" for pattern mode
+	Allow   []PatternEntry `mapstructure:"allow"`
+	Deny    []PatternEntry `mapstructure:"deny"`
+}
+
+// PatternEntry mirrors agent.PatternRule but decouples config from the
+// agent package so importers don't need both.
+type PatternEntry struct {
+	Tool  string `mapstructure:"tool"`
+	Match string `mapstructure:"match"`
 }
 
 // Load resolves configuration from CLI flags (via viper.BindPFlag in

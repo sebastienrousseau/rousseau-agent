@@ -43,18 +43,31 @@ Sections:
 ### 1.5 UI surfaces
 
 - `rousseau chat` — Bubble Tea TUI with viewport + textarea + spinner.
-- `rousseau whatsapp` — foreground daemon; the main runtime.
+- `rousseau whatsapp` — foreground daemon; the main runtime. Runs the WhatsApp bridge **and** the cron scheduler in the same process.
 - `rousseau doctor` — diagnostics table (build, provider, state, whatsapp, config).
 - `rousseau session {list,search,show,delete}` — FTS5-backed history browser.
-- `rousseau cron {add,list,remove,enable,disable}` — scheduled prompts (storage + CLI; scheduler wiring pending, see §2).
+- `rousseau cron {add,list,remove,enable,disable}` — scheduled prompts. Storage + CLI + scheduler goroutine all live. Enabled jobs fire on schedule, run the prompt through the configured provider, deliver via WhatsApp to `deliver_to`, and stamp `last_run_at`.
 - `rousseau version` — build stamp.
 
-### 1.6 Deployment
+### 1.6 Approval gate
+
+- `agent.Approver` interface consulted before every tool execution. `AllowAllApprover` (default), `DenyAllApprover`, and `PatternApprover` (regex Allow/Deny rules; deny beats allow; unmatched requests fall back to `Default`).
+- Configurable via `agent.approver.{mode, reason, default, allow, deny}` — no code change required to lock down `bash` or blanket-deny a tool.
+- Denials surface to the model as `tool_result{is_error: true}` so the model can pick a different action rather than crashing.
+
+### 1.7 Streaming providers
+
+- `agent.StreamingProvider` optional interface returning `<-chan StreamEvent + <-chan StreamReport`.
+- `claudecli` implements it via `--output-format stream-json`.
+- `anthropic` implements it via the SDK's `NewStreaming` iterator; text deltas + tool-use starts are emitted as they arrive.
+- Consumers (currently: none in the daemon; TUI streaming is planned) detect support with a type assertion.
+
+### 1.8 Deployment
 
 - `docker/Dockerfile` — multi-stage; ~530 MB image with claude CLI baked in.
 - `docker/rousseau-agent.container` — Podman Quadlet unit: read-only rootfs, `DropCapability=all`, `NoNewPrivileges=true`, seccomp filter, `UserNS=keep-id`, three bind mounts (workspace RW, rousseau state RW, `~/.claude` RW).
 
-### 1.7 Quality gates
+### 1.9 Quality gates
 
 - `go vet`, `golangci-lint v2` (strict), race-enabled tests on Linux + macOS, `govulncheck`, CodeQL, Dependabot for `gomod` + `github-actions`.
 - Coverage: **71.3%** overall — `agent` 86%, `tools` 100%, `config` 95%, `claudecli` 82%, `tui` 87%, `whatsapp` 55% (whatsmeow connection init untestable in-process), `state/sqlite` 76%.
@@ -67,21 +80,13 @@ Sections:
 
 Priority order. Each item lists **scope**, **exit criteria**, and **estimate** (senior-solo weeks).
 
-### 2.1 Cron scheduler goroutine (P0)
+### 2.1 ~~Cron scheduler goroutine~~ ✅ shipped
 
-**Scope.** Storage + CLI landed in §1.5, but the daemon does not fire jobs yet. Add a scheduler goroutine started from `rousseau whatsapp`: reads `cron_jobs WHERE enabled=1`, uses `robfig/cron/v3` to schedule each, on each fire runs the prompt through the configured provider, then delivers the result via WhatsApp to `deliver_to`.
+Landed in commit that added this ROADMAP note. `internal/cron/scheduler.go` runs jobs on their schedule, delivers via WhatsApp, records `last_run_at`. Poll interval reconciles the running entries with the store so `cron add` / `cron enable` become live within one poll.
 
-**Exit criteria.** `rousseau cron add --name daily --schedule "0 8 * * *" --prompt "morning briefing" --deliver-to <jid>` produces a WhatsApp message at 08:00 UTC. `last_run_at` updates. Failures logged with `cron.failed`. Scheduler cancellable on daemon shutdown.
+### 2.2 ~~Anthropic provider streaming~~ ✅ shipped
 
-**Estimate.** 3–4 days.
-
-### 2.2 Anthropic provider streaming (P1)
-
-**Scope.** `claudecli` already streams. Bring the direct `anthropic` provider up to parity: consume the SDK's streaming API, emit the same `StreamEvent` shape so callers can swap providers without changing consumption code.
-
-**Exit criteria.** `Provider.Stream` implemented for `internal/llm/anthropic`. Integration test (build-tag gated) exchanges tokens. Same session-cache semantics.
-
-**Estimate.** 2 days.
+Landed. `internal/llm/anthropic/stream.go` implements `agent.StreamingProvider` via the SDK's `NewStreaming` iterator. Same `StreamEvent` / `StreamReport` shape as claudecli.
 
 ### 2.3 TUI streaming (P1)
 
@@ -91,13 +96,11 @@ Priority order. Each item lists **scope**, **exit criteria**, and **estimate** (
 
 **Estimate.** 3 days.
 
-### 2.4 Approval + policy gate for tool use (P1)
+### 2.4 ~~Approval + policy gate for tool use~~ ✅ shipped
 
-**Scope.** Model-callable tools (bash today, others we add) can execute arbitrary code. Add an interposable `Approver` interface consulted before every tool invocation. Default policies: `always-allow` (current behaviour), `always-deny`, `interactive` (TUI-only), `pattern-allowlist` (whitelist regex per tool).
+Landed. `agent.Approver` interface + three built-ins (`AllowAll`, `DenyAll`, `Pattern`). Consulted in `agent.runTools` before every execution; denials surface as `tool_result{is_error: true}`. Config surface: `agent.approver.{mode, reason, default, allow, deny}`. Coverage on the new types: ~92%.
 
-**Exit criteria.** `claudecli` provider is unaffected (claude handles its own approvals). `anthropic` provider consults the approver before `agent.runTools`. Config surface: `agent.approver` + `agent.approver_config`. Tests cover deny, allow, and mid-flight cancellation.
-
-**Estimate.** 1 week.
+Deferred to a follow-up: interactive approver (TUI-only) — needs a UX pass on how to display + accept/deny in the model loop without breaking streaming.
 
 ### 2.5 Multi-provider registry (P2)
 

@@ -14,38 +14,22 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 )
 
-// StreamEvent is a single progress event emitted while a Stream call
-// runs. Callers receive a channel of these before the final Response.
-type StreamEvent struct {
-	// Kind identifies the event variant.
-	Kind StreamEventKind
-	// Delta is populated for TextDelta events with the freshly-emitted
-	// text fragment. Empty for other kinds.
-	Delta string
-	// Raw is the original NDJSON line the CLI emitted, for callers that
-	// want to react to fields we do not map yet.
-	Raw json.RawMessage
-}
+// The stream event shape lives in package agent so both providers can
+// speak the same language. Re-exported here for backwards-compat.
+type (
+	// StreamEvent aliases agent.StreamEvent.
+	StreamEvent = agent.StreamEvent
+	// StreamEventKind aliases agent.StreamEventKind.
+	StreamEventKind = agent.StreamEventKind
+)
 
-// StreamEventKind categorises stream events.
-type StreamEventKind string
-
+// Re-exports of the event-kind constants.
 const (
-	// StreamStart fires once when the CLI acknowledges the request.
-	StreamStart StreamEventKind = "start"
-	// StreamTextDelta fires for each new fragment of assistant text.
-	StreamTextDelta StreamEventKind = "text_delta"
-	// StreamToolUse fires when the CLI's internal tool loop invokes a
-	// tool. rousseau does not interpose on those calls; the event is
-	// informational.
-	StreamToolUse StreamEventKind = "tool_use"
-	// StreamResult fires immediately before the CLI exits with the
-	// final answer. Callers that only want the final text can skip
-	// intermediate events and take the Response returned from Stream.
-	StreamResult StreamEventKind = "result"
-	// StreamOther is a catch-all for CLI event types this parser does
-	// not yet map explicitly.
-	StreamOther StreamEventKind = "other"
+	StreamStart     = agent.StreamStart
+	StreamTextDelta = agent.StreamTextDelta
+	StreamToolUse   = agent.StreamToolUse
+	StreamResult    = agent.StreamResult
+	StreamOther     = agent.StreamOther
 )
 
 // Stream runs claude in streaming mode and delivers a StreamEvent for
@@ -59,7 +43,7 @@ const (
 // model is identical to Complete, but a caller (e.g. the WhatsApp
 // daemon) can observe progress without waiting for --output-format json
 // to buffer the whole response.
-func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan StreamEvent, <-chan StreamResultReport, error) {
+func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.StreamEvent, <-chan agent.StreamReport, error) {
 	prompt, err := lastUserText(req.Messages)
 	if err != nil {
 		return nil, nil, err
@@ -101,8 +85,8 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan Stream
 		return nil, nil, fmt.Errorf("claudecli: start: %w", err)
 	}
 
-	events := make(chan StreamEvent, 16)
-	report := make(chan StreamResultReport, 1)
+	events := make(chan agent.StreamEvent, 16)
+	report := make(chan agent.StreamReport, 1)
 
 	go func() {
 		defer close(events)
@@ -117,23 +101,24 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan Stream
 		if perr == nil && req.SessionID != "" {
 			p.rememberSession(req.SessionID)
 		}
-		report <- StreamResultReport{Response: resp, Err: perr}
+		report <- agent.StreamReport{Response: resp, Err: perr}
 	}()
 
 	return events, report, nil
 }
 
-// StreamResultReport carries the final outcome of a Stream call.
-type StreamResultReport struct {
-	Response agent.Response
-	Err      error
-}
+// StreamResultReport is retained as an alias for agent.StreamResult
+// so pre-refactor callers keep compiling.
+type StreamResultReport = agent.StreamReport
+
+// Compile-time check that Provider satisfies agent.StreamingProvider.
+var _ agent.StreamingProvider = (*Provider)(nil)
 
 // parseStream reads NDJSON from r, translates each line into a
 // StreamEvent (delivered on events), and returns the final Response
 // once the terminal "result" line arrives. The events channel is NOT
 // closed by parseStream; the caller owns its lifetime.
-func parseStream(r io.Reader, events chan<- StreamEvent) (agent.Response, error) {
+func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var final agent.Response
@@ -146,7 +131,7 @@ func parseStream(r io.Reader, events chan<- StreamEvent) (agent.Response, error)
 		}
 		raw := append(json.RawMessage(nil), line...)
 		kind, delta, res, isResult := classifyLine(raw)
-		events <- StreamEvent{Kind: kind, Delta: delta, Raw: raw}
+		events <- agent.StreamEvent{Kind: kind, Delta: delta, Raw: raw}
 		if isResult {
 			final = res
 			haveResult = true
@@ -164,7 +149,7 @@ func parseStream(r io.Reader, events chan<- StreamEvent) (agent.Response, error)
 // classifyLine maps a single NDJSON envelope to a StreamEvent. It is
 // deliberately liberal: unknown types return StreamOther so callers can
 // still forward the raw payload.
-func classifyLine(raw json.RawMessage) (kind StreamEventKind, delta string, final agent.Response, isResult bool) {
+func classifyLine(raw json.RawMessage) (kind agent.StreamEventKind, delta string, final agent.Response, isResult bool) {
 	var head struct {
 		Type    string          `json:"type"`
 		Message json.RawMessage `json:"message"`
