@@ -51,7 +51,12 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: apply schema: %w", err)
 	}
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+	if err := s.EnsureSearch(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // Save writes a Session, creating or replacing it.
