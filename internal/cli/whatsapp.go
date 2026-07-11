@@ -83,8 +83,9 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			client, err := whatsapp.New(whatsapp.Config{
-				StoreDSN: dsn,
-				LogLevel: whatsappLogLevel(cfg.Log.Level),
+				StoreDSN:    dsn,
+				LogLevel:    whatsappLogLevel(cfg.Log.Level),
+				ReplyHeader: cfg.WhatsApp.ReplyHeader,
 			}, opts.Logger)
 			if err != nil {
 				return err

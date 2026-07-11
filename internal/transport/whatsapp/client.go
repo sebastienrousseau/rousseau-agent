@@ -31,6 +31,10 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
+// DefaultReplyHeader is prepended to every outbound reply so the sender
+// is obvious on the phone side. WhatsApp renders `*text*` in bold.
+const DefaultReplyHeader = "💎 *Rousseau Agent*\n\n"
+
 // Config configures the WhatsApp transport.
 type Config struct {
 	// StoreDSN is the SQLite DSN whatsmeow will use for device
@@ -40,6 +44,10 @@ type Config struct {
 	// LogLevel is passed to whatsmeow's logger ("DEBUG", "INFO", "WARN").
 	// Empty defaults to "WARN".
 	LogLevel string
+	// ReplyHeader is prepended to every outbound reply. Empty uses
+	// DefaultReplyHeader; explicitly setting a single space " " disables
+	// the prefix.
+	ReplyHeader string
 }
 
 // Client is a transport.Transport backed by whatsmeow.
@@ -59,6 +67,9 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "WARN"
+	}
+	if cfg.ReplyHeader == "" {
+		cfg.ReplyHeader = DefaultReplyHeader
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -216,7 +227,7 @@ func (c *Client) handleMessage(evt *events.Message) {
 	c.logger.Info("whatsapp.handler_ok",
 		slog.Duration("elapsed", elapsed),
 		slog.Int("reply_len", len(reply)))
-	if err := c.send(ctx, evt.Info.Chat, reply); err != nil {
+	if err := c.send(ctx, evt.Info.Chat, c.cfg.ReplyHeader+reply); err != nil {
 		c.logger.Error("whatsapp.send_failed", slog.String("err", err.Error()))
 	}
 }
