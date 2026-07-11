@@ -1,0 +1,76 @@
+# Podman Quadlet unit for the rousseau-agent WhatsApp daemon.
+#
+# Enable with:
+#     systemctl --user daemon-reload
+#     systemctl --user enable --now rousseau-agent
+#
+# Inspect logs with:
+#     journalctl --user -u rousseau-agent -f
+#
+# The image is built locally from
+# ~/team-rousseau-workspace/repos/private/python/rousseau-agent/docker/Dockerfile
+# and tagged rousseau-agent:local. Rebuild after code changes with:
+#     cd ~/team-rousseau-workspace/repos/private/python/rousseau-agent
+#     podman build -t rousseau-agent:local -f docker/Dockerfile .
+
+[Unit]
+Description=rousseau-agent WhatsApp bridge
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/rousseau-agent:local
+ContainerName=rousseau-agent
+
+# Least-privilege bind mounts. The container may write to state and
+# claude auth (claude refreshes cached tokens); the workspace is
+# read-write because the agent's coding tools operate on files there.
+# Nothing else on the host is visible.
+Volume=%h/.local/share/rousseau:/home/rousseau/.local/share/rousseau:rw,Z
+Volume=%h/.claude:/home/rousseau/.claude:rw,Z
+Volume=%h/team-rousseau-workspace:/workspace:rw,Z
+
+# No published ports — rousseau exposes no HTTP surface. Egress-only
+# via pasta (rootless network stack; slirp4netns was removed in newer
+# podman). Pasta blocks inbound from the host by default and is faster
+# than slirp on modern kernels.
+Network=pasta
+
+# Map container UID/GID 1000 (rousseau) to the host user (seb, UID
+# 1000) via a user namespace so bind-mounted files are owned as
+# expected on both sides. Without this, rootless podman remaps
+# container UID 1000 into the subuid range and the process can't
+# write to files owned by the host user.
+UserNS=keep-id
+
+# Container will restart on crash but not attempt to loop forever on
+# a broken image.
+AutoUpdate=disabled
+
+Environment=HOME=/home/rousseau
+Environment=XDG_DATA_HOME=/home/rousseau/.local/share
+
+# Read-only root filesystem plus a tmpfs for /tmp: the daemon should
+# never need to mutate the image at runtime.
+ReadOnly=true
+Tmpfs=/tmp:rw,size=64m,mode=1777
+
+# Drop every capability, then keep only what the Go binary needs.
+# Whatsmeow opens outbound TCP — no elevated caps required.
+DropCapability=all
+NoNewPrivileges=true
+SecurityLabelDisable=false
+
+# Kernel isolation for the daemon.
+SeccompProfile=/usr/share/containers/seccomp.json
+
+# CLI args: the WhatsApp subcommand pinned to your JID.
+Exec=whatsapp --allow 15551234567@s.whatsapp.net
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+TimeoutStartSec=90s
+
+[Install]
+WantedBy=default.target
