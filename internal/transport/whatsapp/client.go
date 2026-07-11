@@ -13,20 +13,15 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/mdp/qrterminal/v3"
 	_ "modernc.org/sqlite" // register the modernc SQLite driver used by whatsmeow
 
 	"go.mau.fi/whatsmeow"
-	waProto "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
-	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
@@ -48,6 +43,9 @@ type Config struct {
 	// DefaultReplyHeader; explicitly setting a single space " " disables
 	// the prefix.
 	ReplyHeader string
+	// Transcriber optionally handles voice-note messages. When nil,
+	// audio messages are logged and skipped.
+	Transcriber Transcriber
 }
 
 // Client is a transport.Transport backed by whatsmeow.
@@ -166,118 +164,22 @@ func (c *Client) onEvent(raw any) {
 }
 
 func (c *Client) handleMessage(evt *events.Message) {
-	if evt.Info.IsGroup {
-		return
-	}
-	// Loop-prevention: skip messages this exact linked device sent (our
-	// own replies echoing back). Messages from the account's *other*
-	// linked devices — the primary phone testing via "message yourself"
-	// — carry IsFromMe=true too, and must still be processed.
-	c.mu.Lock()
-	wm := c.wm
-	c.mu.Unlock()
-	if evt.Info.IsFromMe && wm != nil && wm.Store.ID != nil &&
-		evt.Info.Sender.Device == wm.Store.ID.Device {
-		return
-	}
-	body := strings.TrimSpace(extractText(evt.Message))
-	if body == "" {
-		return
-	}
-
-	// Determine the "From" the router sees. Two normalisations:
-	//
-	//  1. Strip the multi-device address suffix (":<n>") so allowlists
-	//     written as the plain user JID match regardless of which
-	//     linked device sent the message.
-	//
-	//  2. For the account holder's own outbound (IsFromMe=true from a
-	//     linked device that isn't us), WhatsApp reports the sender as
-	//     the account's LID (e.g. "276540210315282@lid") rather than
-	//     the phone JID. That's a privacy feature of the multi-device
-	//     protocol. Substitute our own account JID so operators can
-	//     allowlist "15551234567@s.whatsapp.net" and have
-	//     "message yourself" testing route correctly.
-	from := evt.Info.Sender.ToNonAD()
-	if evt.Info.IsFromMe && wm.Store.ID != nil {
-		from = wm.Store.ID.ToNonAD()
-	}
-	msg := transport.IncomingMessage{
-		From: from.String(),
-		Body: body,
-		At:   evt.Info.Timestamp,
-	}
-
-	ctx := context.Background()
-	c.logger.Info("whatsapp.incoming", slog.String("from", msg.From))
-
-	// Show "typing…" on the sender's phone while claude works; clear on
-	// return. Errors here are logged but not fatal — presence is a UX
-	// nicety, not a correctness constraint.
-	c.setPresence(evt.Info.Chat, types.ChatPresenceComposing)
-	defer c.setPresence(evt.Info.Chat, types.ChatPresencePaused)
-
-	start := time.Now()
-	reply, err := c.handler.Handle(ctx, msg)
-	elapsed := time.Since(start)
-	if err != nil {
-		c.logger.Error("whatsapp.handler_failed",
-			slog.String("err", err.Error()),
-			slog.Duration("elapsed", elapsed))
-		return
-	}
-	if reply == "" {
-		c.logger.Info("whatsapp.empty_reply", slog.Duration("elapsed", elapsed))
-		return
-	}
-	c.logger.Info("whatsapp.handler_ok",
-		slog.Duration("elapsed", elapsed),
-		slog.Int("reply_len", len(reply)))
-	if err := c.send(ctx, evt.Info.Chat, c.cfg.ReplyHeader+reply); err != nil {
-		c.logger.Error("whatsapp.send_failed", slog.String("err", err.Error()))
-	}
-}
-
-func (c *Client) setPresence(to types.JID, state types.ChatPresence) {
 	c.mu.Lock()
 	wm := c.wm
 	c.mu.Unlock()
 	if wm == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := wm.SendChatPresence(ctx, to, state, types.ChatPresenceMediaText); err != nil {
-		c.logger.Debug("whatsapp.presence_failed",
-			slog.String("state", string(state)),
-			slog.String("err", err.Error()))
-	}
-}
-
-func (c *Client) send(ctx context.Context, to types.JID, text string) error {
-	c.mu.Lock()
-	wm := c.wm
-	c.mu.Unlock()
-	if wm == nil {
-		return errors.New("whatsapp: not connected")
-	}
-	_, err := wm.SendMessage(ctx, to, &waProto.Message{
-		Conversation: proto.String(text),
+	Dispatch(context.Background(), DispatchInput{
+		Event:       evt,
+		OwnID:       wm.Store.ID,
+		Sender:      newWMSender(wm),
+		Downloader:  newWMDownloader(wm),
+		Handler:     c.handler,
+		Transcriber: c.cfg.Transcriber,
+		Header:      c.cfg.ReplyHeader,
+		Logger:      c.logger,
 	})
-	return err
-}
-
-func extractText(m *waProto.Message) string {
-	if m == nil {
-		return ""
-	}
-	if v := m.GetConversation(); v != "" {
-		return v
-	}
-	if ext := m.GetExtendedTextMessage(); ext != nil {
-		return ext.GetText()
-	}
-	return ""
 }
 
 // Compile-time interface satisfaction check.
