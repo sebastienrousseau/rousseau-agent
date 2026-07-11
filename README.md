@@ -9,7 +9,24 @@ A private, enterprise-grade coding assistant for the terminal. Written in Go, po
 ## Requirements
 
 - Go 1.26+
-- `ANTHROPIC_API_KEY` in the environment (or in `~/.config/rousseau/config.yaml`)
+- One of:
+  - **`claude` CLI on `$PATH`** (default) — inherits whatever Claude Code auth you've already set up. Nothing to configure.
+  - **`ANTHROPIC_API_KEY`** — required only if you set `provider: anthropic` in the config.
+
+## Providers
+
+`rousseau` ships two LLM backends. The default is `claudecli`, which shells out to the local `claude` CLI. This uses your existing Claude Code subscription / auth — you never handle an API key.
+
+To switch to the direct Anthropic API, drop this in `~/.config/rousseau/config.yaml`:
+
+```yaml
+provider: anthropic
+anthropic:
+  api_key: sk-ant-...    # or set ANTHROPIC_API_KEY
+  model: claude-sonnet-4-6
+```
+
+Because `claudecli` runs its own tool-use loop internally, the built-in tools (`read`, `write`, `edit`, `grep`, `bash`) are only exercised when `provider: anthropic`. Under `claudecli`, tools are handled inside the claude subprocess.
 
 ## Build
 
@@ -38,6 +55,13 @@ rousseau version     Print version, commit, and build date.
 
 ```
 rousseau whatsapp --allow 15551234567@s.whatsapp.net
+```
+
+For unattended use (the daemon has no way to prompt you for tool approval), configure the CLI provider to auto-approve inside the config file:
+
+```yaml
+claudecli:
+  permission_mode: bypassPermissions   # or acceptEdits for less blast radius
 ```
 
 **Caveats.** This uses the UNOFFICIAL WhatsApp Web protocol. Meta occasionally bans numbers that use unofficial clients. Do not run this on a number you rely on. Always pass `--allow` in production — omitting it lets anyone who messages your number talk to the agent.

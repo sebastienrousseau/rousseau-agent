@@ -54,9 +54,10 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 
 	for i := 0; i < a.opts.MaxIterations; i++ {
 		req := Request{
-			System:   a.opts.SystemPrompt,
-			Messages: s.Messages,
-			Tools:    toolDefs,
+			SessionID: s.ID,
+			System:    a.opts.SystemPrompt,
+			Messages:  s.Messages,
+			Tools:     toolDefs,
 		}
 
 		resp, err := a.provider.Complete(ctx, req)

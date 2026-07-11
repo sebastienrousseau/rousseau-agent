@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
-	"github.com/sebastienrousseau/rousseau-agent/internal/llm/anthropic"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
@@ -35,8 +33,9 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg := opts.Config
-			if cfg.Anthropic.APIKey == "" {
-				return errors.New("missing ANTHROPIC_API_KEY (set env var or anthropic.api_key in config)")
+			provider, err := buildProvider(cfg)
+			if err != nil {
+				return err
 			}
 			ctx := cmd.Context()
 
@@ -47,15 +46,6 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			defer func() { _ = sessionsStore.Close() }()
 
 			jidMap, err := sqlitestore.NewJIDMap(ctx, sessionsStore.(*sqlitestore.Store))
-			if err != nil {
-				return err
-			}
-
-			provider, err := anthropic.New(anthropic.Config{
-				APIKey:    cfg.Anthropic.APIKey,
-				Model:     cfg.Anthropic.Model,
-				MaxTokens: cfg.Anthropic.MaxTokens,
-			})
 			if err != nil {
 				return err
 			}

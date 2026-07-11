@@ -13,17 +13,36 @@ import (
 
 // Config is the resolved application configuration.
 type Config struct {
+	// Provider selects the LLM backend: "claudecli" (default — shells
+	// out to the local `claude` CLI, inheriting its auth) or
+	// "anthropic" (direct API, requires ANTHROPIC_API_KEY).
+	Provider  string          `mapstructure:"provider"`
 	Anthropic AnthropicConfig `mapstructure:"anthropic"`
+	ClaudeCLI ClaudeCLIConfig `mapstructure:"claudecli"`
 	Log       LogConfig       `mapstructure:"log"`
 	State     StateConfig     `mapstructure:"state"`
 	Agent     AgentConfig     `mapstructure:"agent"`
 }
 
-// AnthropicConfig configures the Claude provider.
+// AnthropicConfig configures the direct Anthropic API provider.
 type AnthropicConfig struct {
 	APIKey    string `mapstructure:"api_key"`
 	Model     string `mapstructure:"model"`
 	MaxTokens int64  `mapstructure:"max_tokens"`
+}
+
+// ClaudeCLIConfig configures the claudecli (subprocess) provider.
+type ClaudeCLIConfig struct {
+	// Binary is the claude executable. Empty defaults to "claude".
+	Binary string `mapstructure:"binary"`
+	// Model overrides claude's default.
+	Model string `mapstructure:"model"`
+	// PermissionMode is claude's --permission-mode
+	// (acceptEdits, auto, bypassPermissions, default, dontAsk, plan).
+	// Unattended daemons (whatsapp) generally need "bypassPermissions".
+	PermissionMode string `mapstructure:"permission_mode"`
+	// ExtraArgs are appended to every invocation.
+	ExtraArgs []string `mapstructure:"extra_args"`
 }
 
 // LogConfig configures structured logging.
@@ -81,8 +100,10 @@ func Load(path string) (*Config, error) {
 }
 
 func setDefaults(v *viper.Viper) {
+	v.SetDefault("provider", "claudecli")
 	v.SetDefault("anthropic.model", "claude-sonnet-4-6")
 	v.SetDefault("anthropic.max_tokens", 4096)
+	v.SetDefault("claudecli.binary", "claude")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
 	v.SetDefault("agent.max_iterations", 32)

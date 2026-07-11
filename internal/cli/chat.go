@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
-	"github.com/sebastienrousseau/rousseau-agent/internal/llm/anthropic"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
@@ -31,8 +29,9 @@ func newChatCmd(opts *Options) *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg := opts.Config
-			if cfg.Anthropic.APIKey == "" {
-				return errors.New("missing ANTHROPIC_API_KEY (set the env var or anthropic.api_key in the config file)")
+			provider, err := buildProvider(cfg)
+			if err != nil {
+				return err
 			}
 
 			ctx := cmd.Context()
@@ -41,15 +40,6 @@ func newChatCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer func() { _ = store.Close() }()
-
-			provider, err := anthropic.New(anthropic.Config{
-				APIKey:    cfg.Anthropic.APIKey,
-				Model:     cfg.Anthropic.Model,
-				MaxTokens: cfg.Anthropic.MaxTokens,
-			})
-			if err != nil {
-				return err
-			}
 
 			registry := tools.NewRegistry()
 			registry.MustRegister(builtin.NewReadTool())
