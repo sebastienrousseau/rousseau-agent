@@ -91,10 +91,25 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			var transcriber whatsapp.Transcriber
+			if cfg.WhatsApp.Voice.Enabled {
+				transcriber = whatsapp.NewWhisperTranscriber(whatsapp.WhisperConfig{
+					Binary:    cfg.WhatsApp.Voice.Binary,
+					Model:     cfg.WhatsApp.Voice.Model,
+					ModelPath: cfg.WhatsApp.Voice.ModelPath,
+					Language:  cfg.WhatsApp.Voice.Language,
+					ExtraArgs: cfg.WhatsApp.Voice.ExtraArgs,
+				})
+				opts.Logger.Info("whatsapp.voice_enabled",
+					"binary", firstNonEmpty(cfg.WhatsApp.Voice.Binary, "whisper"),
+					"model", firstNonEmpty(cfg.WhatsApp.Voice.Model, cfg.WhatsApp.Voice.ModelPath))
+			}
+
 			client, err := whatsapp.New(whatsapp.Config{
 				StoreDSN:    dsn,
 				LogLevel:    whatsappLogLevel(cfg.Log.Level),
 				ReplyHeader: cfg.WhatsApp.ReplyHeader,
+				Transcriber: transcriber,
 			}, opts.Logger)
 			if err != nil {
 				return err
@@ -134,6 +149,15 @@ func resolveWhatsAppDSN(path string) (string, error) {
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=busy_timeout(15000)" +
 		"&_pragma=synchronous(NORMAL)", nil
+}
+
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func whatsappLogLevel(level string) string {

@@ -31,6 +31,26 @@ type WhatsAppConfig struct {
 	// the built-in default ("💎 *Rousseau Agent*\n\n"). Set to a single
 	// space " " to disable the prefix entirely.
 	ReplyHeader string `mapstructure:"reply_header"`
+	// Voice enables whisper-based transcription for inbound voice
+	// notes. When disabled, audio messages are logged and skipped.
+	Voice VoiceConfig `mapstructure:"voice"`
+}
+
+// VoiceConfig configures voice-note transcription.
+type VoiceConfig struct {
+	// Enabled toggles the whisper transcriber. Off by default because
+	// it requires the whisper.cpp CLI to be installed.
+	Enabled bool `mapstructure:"enabled"`
+	// Binary is the whisper CLI to invoke. Empty defaults to "whisper".
+	Binary string `mapstructure:"binary"`
+	// Model is passed to --model (e.g. "base.en", "small").
+	Model string `mapstructure:"model"`
+	// ModelPath is an explicit .bin path; takes precedence over Model.
+	ModelPath string `mapstructure:"model_path"`
+	// Language is passed to --language. Empty auto-detects.
+	Language string `mapstructure:"language"`
+	// ExtraArgs are appended to every whisper invocation.
+	ExtraArgs []string `mapstructure:"extra_args"`
 }
 
 // AnthropicConfig configures the direct Anthropic API provider.
