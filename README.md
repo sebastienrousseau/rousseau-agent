@@ -280,6 +280,11 @@ Local development mirrors CI via `make check`. Dependabot opens weekly PRs for b
 - **No secrets in the image.** Authentication is bind-mounted from the host at runtime.
 - **Vulnerability disclosure** — see [SECURITY.md](./SECURITY.md). Private channel: `sebastian.rousseau@gmail.com`.
 
+## Roadmap
+
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — living implementation plan (P0/P1/P2 priorities, exit criteria, non-negotiable engineering standards).
+- [`docs/COMPETITORS.md`](./docs/COMPETITORS.md) — 2026 landscape, competitor deep-dive, honest rating against Hermes/Claude Code/Aider/Cursor/Devin/OpenHands.
+
 ## Contributing
 
 Private project; contributions are accepted from invited collaborators only. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a PR.
