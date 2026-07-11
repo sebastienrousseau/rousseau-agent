@@ -1,0 +1,36 @@
+# Binaries
+/rousseau
+/bin/
+/dist/
+
+# Test / coverage
+*.test
+*.out
+coverage.*
+/coverage/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Local runtime state
+/state/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Release notes drafts
+RELEASE_v*.md
