@@ -8,6 +8,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/anthropic"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
+	openaillm "github.com/sebastienrousseau/rousseau-agent/internal/llm/openai"
 )
 
 // buildProvider selects and constructs the LLM provider from Config.
@@ -31,7 +32,29 @@ func buildProvider(cfg *config.Config) (agent.Provider, error) {
 			Model:     cfg.Anthropic.Model,
 			MaxTokens: cfg.Anthropic.MaxTokens,
 		})
+	case "openai":
+		return buildOpenAILike("openai", cfg.OpenAI)
+	case "openrouter":
+		return buildOpenAILike("openrouter", cfg.OpenRouter)
+	case "ollama":
+		return buildOpenAILike("ollama", cfg.Ollama)
 	default:
-		return nil, fmt.Errorf("unknown provider %q (want claudecli or anthropic)", cfg.Provider)
+		return nil, fmt.Errorf("unknown provider %q (want claudecli/anthropic/openai/openrouter/ollama)", cfg.Provider)
 	}
+}
+
+func buildOpenAILike(name string, c config.OpenAIConfig) (agent.Provider, error) {
+	if c.APIKey == "" {
+		return nil, fmt.Errorf("provider=%s but api_key is empty", name)
+	}
+	if c.Model == "" {
+		return nil, fmt.Errorf("provider=%s but model is empty (there is no universal default)", name)
+	}
+	return openaillm.New(openaillm.Config{
+		APIKey:    c.APIKey,
+		BaseURL:   c.BaseURL,
+		Model:     c.Model,
+		MaxTokens: c.MaxTokens,
+		Name:      name,
+	})
 }
