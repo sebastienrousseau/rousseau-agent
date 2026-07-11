@@ -39,6 +39,20 @@ func (s *wmSender) SendPresence(ctx context.Context, chat types.JID, state types
 	return s.wm.SendChatPresence(ctx, chat, state, types.ChatPresenceMediaText)
 }
 
+// parseJID parses a JID string like "447906009073@s.whatsapp.net" into
+// the whatsmeow types. It rejects empty inputs and surfaces the
+// parser's error verbatim.
+func parseJID(s string) (types.JID, error) {
+	if s == "" {
+		return types.JID{}, fmt.Errorf("whatsapp: empty JID")
+	}
+	jid, err := types.ParseJID(s)
+	if err != nil {
+		return types.JID{}, fmt.Errorf("whatsapp: parse JID %q: %w", s, err)
+	}
+	return jid, nil
+}
+
 // wmDownloader adapts a *whatsmeow.Client to the Downloader interface.
 type wmDownloader struct{ wm *whatsmeow.Client }
 

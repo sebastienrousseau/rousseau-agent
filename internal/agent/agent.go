@@ -15,6 +15,11 @@ type Options struct {
 	MaxIterations int
 	// SystemPrompt is prepended to every request.
 	SystemPrompt string
+	// Approver is consulted before each tool execution. Nil uses
+	// AllowAllApprover — every call runs. Denials are surfaced back to
+	// the model as a tool_result error so the model can pick a
+	// different action.
+	Approver Approver
 }
 
 // Agent orchestrates the model / tool-use loop against a Session.
@@ -32,6 +37,9 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if opts.Approver == nil {
+		opts.Approver = AllowAllApprover{}
 	}
 	return &Agent{
 		provider: provider,
@@ -75,7 +83,7 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 			return resp.Message, nil
 		}
 
-		results, err := a.runTools(ctx, resp.Message)
+		results, err := a.runTools(ctx, resp.Message, s.ID)
 		if err != nil {
 			return Message{}, err
 		}
@@ -87,7 +95,7 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	return Message{}, ErrMaxIterations
 }
 
-func (a *Agent) runTools(ctx context.Context, m Message) ([]Content, error) {
+func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Content, error) {
 	var results []Content
 	for _, c := range m.Content {
 		if c.Kind != ContentToolUse || c.ToolUse == nil {
@@ -97,6 +105,23 @@ func (a *Agent) runTools(ctx context.Context, m Message) ([]Content, error) {
 		tool, ok := a.registry.Get(use.Name)
 		if !ok {
 			return nil, fmt.Errorf("%w: %s", ErrToolNotFound, use.Name)
+		}
+
+		if decision, reason := a.opts.Approver.Approve(ctx, ApprovalRequest{
+			ToolName:  use.Name,
+			Input:     use.Input,
+			SessionID: sessionID,
+		}); decision == DecisionDeny {
+			if reason == "" {
+				reason = "denied by policy"
+			}
+			a.logger.Warn("tool.denied", slog.String("name", use.Name), slog.String("reason", reason))
+			results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
+				ToolUseID: use.ID,
+				Output:    "tool call blocked: " + reason,
+				IsError:   true,
+			}})
+			continue
 		}
 
 		a.logger.Info("tool.execute", slog.String("name", use.Name), slog.String("id", use.ID))

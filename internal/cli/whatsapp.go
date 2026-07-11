@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
@@ -78,9 +80,14 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			registry.MustRegister(builtin.NewGrepTool(0, 0))
 			registry.MustRegister(builtin.NewBashTool(60 * time.Second))
 
+			approver, err := buildApprover(cfg.Agent.Approver)
+			if err != nil {
+				return err
+			}
 			ag := agent.New(provider, registry, opts.Logger, agent.Options{
 				MaxIterations: cfg.Agent.MaxIterations,
 				SystemPrompt:  systemPrompt(cfg.Agent.SystemPrompt),
+				Approver:      approver,
 			})
 
 			router := transport.NewRouter(ag, sessionsStore, jidMap, opts.Logger, transport.RouterOptions{
@@ -114,6 +121,31 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// Start the cron scheduler alongside the WhatsApp bridge.
+			// The scheduler needs Provider (for prompt execution) and a
+			// Delivery function (for shipping results); the WhatsApp
+			// client provides the latter via its Deliver method.
+			cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
+			if err != nil {
+				return err
+			}
+			scheduler := rcron.New(rcron.Config{
+				Store:  cronStore,
+				Runner: &rcron.ProviderRunner{Provider: provider, SystemPrompt: systemPrompt(cfg.Agent.SystemPrompt)},
+				Delivery: func(dctx context.Context, target, body string) error {
+					return client.Deliver(dctx, target, body)
+				},
+				Logger: opts.Logger,
+			})
+			if err := scheduler.Start(ctx); err != nil {
+				return fmt.Errorf("cron: %w", err)
+			}
+			defer func() {
+				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = scheduler.Shutdown(sctx)
+			}()
 
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
 			return client.Start(ctx, router)

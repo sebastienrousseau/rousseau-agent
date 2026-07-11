@@ -136,6 +136,24 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 	return c.Stop()
 }
 
+// Deliver sends a plain-text message to the given JID string. Suitable
+// as a cron.Delivery target — the scheduler uses this to ship
+// scheduled prompt results to a WhatsApp contact without importing
+// this package's types directly.
+func (c *Client) Deliver(ctx context.Context, target, body string) error {
+	c.mu.Lock()
+	wm := c.wm
+	c.mu.Unlock()
+	if wm == nil {
+		return errors.New("whatsapp: not connected")
+	}
+	jid, err := parseJID(target)
+	if err != nil {
+		return err
+	}
+	return newWMSender(wm).SendText(ctx, jid, PrependHeader(body, c.cfg.ReplyHeader))
+}
+
 // Stop disconnects the whatsmeow client. Safe to call multiple times.
 func (c *Client) Stop() error {
 	c.mu.Lock()
