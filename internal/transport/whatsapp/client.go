@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mdp/qrterminal/v3"
 	_ "modernc.org/sqlite" // register the modernc SQLite driver used by whatsmeow
@@ -199,14 +200,22 @@ func (c *Client) handleMessage(evt *events.Message) {
 	ctx := context.Background()
 	c.logger.Info("whatsapp.incoming", slog.String("from", msg.From))
 
+	start := time.Now()
 	reply, err := c.handler.Handle(ctx, msg)
+	elapsed := time.Since(start)
 	if err != nil {
-		c.logger.Error("whatsapp.handler_failed", slog.String("err", err.Error()))
+		c.logger.Error("whatsapp.handler_failed",
+			slog.String("err", err.Error()),
+			slog.Duration("elapsed", elapsed))
 		return
 	}
 	if reply == "" {
+		c.logger.Info("whatsapp.empty_reply", slog.Duration("elapsed", elapsed))
 		return
 	}
+	c.logger.Info("whatsapp.handler_ok",
+		slog.Duration("elapsed", elapsed),
+		slog.Int("reply_len", len(reply)))
 	if err := c.send(ctx, evt.Info.Chat, reply); err != nil {
 		c.logger.Error("whatsapp.send_failed", slog.String("err", err.Error()))
 	}
