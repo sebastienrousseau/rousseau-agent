@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
@@ -57,9 +58,17 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = sessionsStore.Close() }()
 
-			jidMap, err := sqlitestore.NewJIDMap(ctx, sessionsStore.(*sqlitestore.Store))
+			concrete := sessionsStore.(*sqlitestore.Store)
+			jidMap, err := sqlitestore.NewJIDMap(ctx, concrete)
 			if err != nil {
 				return err
+			}
+			claudeCache, err := sqlitestore.NewClaudeSessionCache(ctx, concrete)
+			if err != nil {
+				return err
+			}
+			if cc, ok := provider.(*claudecli.Provider); ok {
+				cc.WithCache(claudeCache)
 			}
 
 			registry := tools.NewRegistry()

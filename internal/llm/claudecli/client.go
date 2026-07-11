@@ -42,12 +42,45 @@ type Config struct {
 // runFunc executes an exec.Cmd; extracted so tests can stub it.
 type runFunc func(cmd *exec.Cmd) ([]byte, error)
 
+// SessionCache remembers which session IDs claude already has state for.
+// Persistent implementations survive daemon restarts and avoid the
+// "already in use" cold-start roundtrip on the first turn after
+// startup. The zero-cost in-memory implementation is used by default.
+type SessionCache interface {
+	IsKnown(id string) bool
+	Remember(id string)
+}
+
+// InMemorySessionCache is the default (non-persistent) SessionCache.
+type InMemorySessionCache struct {
+	mu   sync.Mutex
+	seen map[string]bool
+}
+
+// NewInMemorySessionCache constructs an empty in-memory cache.
+func NewInMemorySessionCache() *InMemorySessionCache {
+	return &InMemorySessionCache{seen: map[string]bool{}}
+}
+
+// IsKnown satisfies SessionCache.
+func (c *InMemorySessionCache) IsKnown(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seen[id]
+}
+
+// Remember satisfies SessionCache.
+func (c *InMemorySessionCache) Remember(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seen[id] = true
+}
+
 // Provider is an agent.Provider backed by the `claude` CLI.
 type Provider struct {
-	cfg  Config
-	run  runFunc
-	mu   sync.Mutex
-	seen map[string]bool // sessionIDs known to already exist in claude's store
+	cfg   Config
+	run   runFunc
+	cache SessionCache
 }
 
 // New constructs a Provider. It does not verify the binary exists;
@@ -56,20 +89,20 @@ func New(cfg Config) *Provider {
 	if cfg.Binary == "" {
 		cfg.Binary = "claude"
 	}
-	return &Provider{cfg: cfg, run: defaultRun, seen: map[string]bool{}}
+	return &Provider{cfg: cfg, run: defaultRun, cache: NewInMemorySessionCache()}
 }
 
-func (p *Provider) knowsSession(id string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.seen[id]
+// WithCache swaps the SessionCache implementation. Returns the Provider
+// for chaining.
+func (p *Provider) WithCache(c SessionCache) *Provider {
+	if c != nil {
+		p.cache = c
+	}
+	return p
 }
 
-func (p *Provider) rememberSession(id string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.seen[id] = true
-}
+func (p *Provider) knowsSession(id string) bool { return p.cache.IsKnown(id) }
+func (p *Provider) rememberSession(id string)   { p.cache.Remember(id) }
 
 // Name returns the provider identifier.
 func (*Provider) Name() string { return "claudecli" }
