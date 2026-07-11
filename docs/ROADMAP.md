@@ -110,15 +110,16 @@ Landed. `internal/llm/openai/` implements the OpenAI Chat Completions API and, v
 
 Google Vertex and AWS Bedrock deferred — they use SigV4 / OAuth flows the OpenAI shape does not cover; add when there is a concrete user for them.
 
-### 2.6 Session compression & cross-session recall (P2)
+### 2.6 ~~Session compression~~ ✅ shipped (cross-session recall deferred)
 
-**Scope.** Long conversations blow past the context window and cost more per turn. Add opt-in compression: when a session exceeds N tokens (measured by an approximate counter), summarise the oldest half via a compressor tool (`compression` provider or a dedicated LLM call), collapse into a synthetic user message, and prune raw messages. Persist both the compressed and raw forms for future recall.
+Session compression landed. `internal/agent/compressor.go`:
 
-Cross-session recall: on a new session's first turn, run FTS5 against recent sessions for keywords in the user message, prepend relevant snippets as context.
+- `Compressor` interface + `NoopCompressor` + `LLMCompressor` (asks a Provider to summarise the oldest slice of the session, prepends the summary as a synthetic user message with a stable `[rousseau-compressed]` marker, preserves `KeepRecent` most-recent messages verbatim).
+- Wired into `agent.Options.Compressor`; consulted at the start of every Turn. `agent.compressed` structured log fires on rewrite; `agent.compress_failed` on error (non-fatal).
+- Config: `agent.compression.{enabled, trigger_messages, keep_recent, prompt}`. Defaults (60 messages / keep 8) apply when only `enabled: true` is set.
+- 10 compressor tests + 4 config-wiring tests.
 
-**Exit criteria.** `agent.compression.threshold_tokens` config; recall triggered by `agent.recall.enabled`. Tests demonstrate 10K-turn sessions still fit in the model's context. Recall test verifies snippets are prepended verbatim from the source session.
-
-**Estimate.** 2 weeks.
+Cross-session recall (FTS5 → context prefixing) deferred to a follow-up. The FTS5 index is already there; recall is ~100 lines of wiring in the agent's request-building path. Not a P0 while the mainline flow is claudecli (Anthropic's prompt cache covers most of the same cost profile).
 
 ---
 

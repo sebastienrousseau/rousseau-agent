@@ -102,9 +102,28 @@ type StateConfig struct {
 
 // AgentConfig configures the agent loop.
 type AgentConfig struct {
-	SystemPrompt  string         `mapstructure:"system_prompt"`
-	MaxIterations int            `mapstructure:"max_iterations"`
-	Approver      ApproverConfig `mapstructure:"approver"`
+	SystemPrompt  string             `mapstructure:"system_prompt"`
+	MaxIterations int                `mapstructure:"max_iterations"`
+	Approver      ApproverConfig     `mapstructure:"approver"`
+	Compression   CompressionConfig  `mapstructure:"compression"`
+}
+
+// CompressionConfig configures session compression. Disabled by
+// default because a long-running daemon on a subscription-tier claude
+// account rarely needs it — turn it on when running against
+// pay-per-token providers.
+type CompressionConfig struct {
+	// Enabled toggles the LLM-backed compressor. When false, the
+	// Agent uses NoopCompressor.
+	Enabled bool `mapstructure:"enabled"`
+	// TriggerMessages is the message count above which compression
+	// engages. Zero uses the default (60).
+	TriggerMessages int `mapstructure:"trigger_messages"`
+	// KeepRecent is how many recent messages to preserve verbatim.
+	// Zero uses the default (8).
+	KeepRecent int `mapstructure:"keep_recent"`
+	// Prompt overrides the default summarisation instruction.
+	Prompt string `mapstructure:"prompt"`
 }
 
 // ApproverConfig picks and configures the tool-call approval policy.
