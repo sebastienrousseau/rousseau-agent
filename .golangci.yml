@@ -1,0 +1,66 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errcheck
+    - errorlint
+    - forbidigo
+    - gocritic
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - nolintlint
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - whitespace
+
+  settings:
+    errcheck:
+      check-blank: true
+      exclude-functions:
+        - (io.Closer).Close
+    forbidigo:
+      forbid:
+        - pattern: '^fmt\.Print(f|ln)?$'
+          msg: "use slog for structured logging, or write to the TUI model"
+        - pattern: '^panic$'
+          msg: "no panics outside main and test helpers"
+    revive:
+      rules:
+        - name: exported
+          disabled: false
+        - name: package-comments
+        - name: var-naming
+        - name: unused-parameter
+          disabled: true
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - forbidigo
+          - unparam
+      - path: cmd/rousseau/main\.go
+        linters:
+          - forbidigo
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/sebastienrousseau/rousseau-agent
