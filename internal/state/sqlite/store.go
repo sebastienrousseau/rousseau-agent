@@ -40,6 +40,13 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: enable foreign keys: %w", err)
 	}
+	// busy_timeout: wait on lock contention instead of failing with
+	// SQLITE_BUSY. Critical once concurrent transports (whatsapp today,
+	// telegram/slack tomorrow) write into the same session store.
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout=15000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlite: set busy_timeout: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, schema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlite: apply schema: %w", err)

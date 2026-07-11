@@ -98,8 +98,20 @@ func resolveWhatsAppDSN(path string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create whatsapp store dir: %w", err)
 	}
-	// modernc.org/sqlite DSN — file mode with foreign keys and WAL.
-	return "file:" + path + "?_pragma=foreign_keys(1)&_pragma=journal_mode(WAL)", nil
+	// modernc.org/sqlite DSN. Notes on each pragma:
+	//   foreign_keys=ON      — whatsmeow's schema uses FK constraints.
+	//   journal_mode=WAL     — readers and writers coexist without blocking.
+	//   busy_timeout=15000   — wait up to 15s on lock contention. Without
+	//                          this, whatsmeow's concurrent writes during
+	//                          initial history-sync race and one loses with
+	//                          SQLITE_BUSY, which cascades into failed
+	//                          session-identity saves and dropped inbound
+	//                          message decryption.
+	//   synchronous=NORMAL   — safe with WAL, reduces fsync churn under load.
+	return "file:" + path + "?_pragma=foreign_keys(1)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(15000)" +
+		"&_pragma=synchronous(NORMAL)", nil
 }
 
 func whatsappLogLevel(level string) string {
