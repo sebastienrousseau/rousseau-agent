@@ -8,9 +8,15 @@ import (
 
 // Request is a single completion request handed to a Provider.
 type Request struct {
-	System   string
-	Messages []Message
-	Tools    []tools.Definition
+	// SessionID identifies the persistent conversation this request
+	// belongs to. Providers that maintain server-side state (e.g. the
+	// claudecli provider using --session-id) use this to correlate
+	// turns. Providers that are stateless (e.g. the Anthropic API
+	// direct client) ignore it.
+	SessionID string
+	System    string
+	Messages  []Message
+	Tools     []tools.Definition
 }
 
 // StopReason categorises why the model stopped generating.

@@ -87,29 +87,35 @@ func TestLoadOrCreateSession_ResumeMissing(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestChatCmd_MissingAPIKeyErrors(t *testing.T) {
-	opts := &Options{
-		Config: &config.Config{}, // empty — no api key
-		Logger: silentLogger(),
-	}
-	cmd := newChatCmd(opts)
-	cmd.SetContext(context.Background())
-	err := cmd.RunE(cmd, nil)
+func TestBuildProvider_DefaultsToClaudeCLI(t *testing.T) {
+	p, err := buildProvider(&config.Config{})
+	require.NoError(t, err)
+	assert.Equal(t, "claudecli", p.Name())
+}
+
+func TestBuildProvider_ClaudeCLIExplicit(t *testing.T) {
+	p, err := buildProvider(&config.Config{Provider: "claudecli"})
+	require.NoError(t, err)
+	assert.Equal(t, "claudecli", p.Name())
+}
+
+func TestBuildProvider_AnthropicRequiresKey(t *testing.T) {
+	_, err := buildProvider(&config.Config{Provider: "anthropic"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ANTHROPIC_API_KEY")
 }
 
-func TestChatCmd_BadAnthropicKey_StillErrors(t *testing.T) {
-	dir := t.TempDir()
-	opts := &Options{
-		Config: &config.Config{
-			Anthropic: config.AnthropicConfig{APIKey: ""}, // still empty triggers early return
-			State:     config.StateConfig{Path: filepath.Join(dir, "s.db")},
-		},
-		Logger: silentLogger(),
-	}
-	cmd := newChatCmd(opts)
-	cmd.SetContext(context.Background())
-	err := cmd.RunE(cmd, nil)
-	assert.Error(t, err)
+func TestBuildProvider_AnthropicWithKey(t *testing.T) {
+	p, err := buildProvider(&config.Config{
+		Provider:  "anthropic",
+		Anthropic: config.AnthropicConfig{APIKey: "sk-test"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "anthropic", p.Name())
+}
+
+func TestBuildProvider_Unknown(t *testing.T) {
+	_, err := buildProvider(&config.Config{Provider: "gemini"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown provider")
 }
