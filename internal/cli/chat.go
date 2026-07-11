@@ -53,6 +53,9 @@ func newChatCmd(opts *Options) *cobra.Command {
 
 			registry := tools.NewRegistry()
 			registry.MustRegister(builtin.NewReadTool())
+			registry.MustRegister(builtin.NewWriteTool())
+			registry.MustRegister(builtin.NewEditTool())
+			registry.MustRegister(builtin.NewGrepTool(0, 0))
 			registry.MustRegister(builtin.NewBashTool(60 * time.Second))
 
 			ag := agent.New(provider, registry, opts.Logger, agent.Options{
