@@ -33,6 +33,18 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg := opts.Config
+			// A daemon has no interactive terminal for claude to prompt
+			// against. If the operator hasn't picked a permission mode,
+			// pick one that lets tool calls actually complete and log a
+			// prominent warning about the tradeoff.
+			if (cfg.Provider == "" || cfg.Provider == "claudecli") && cfg.ClaudeCLI.PermissionMode == "" {
+				cfg.ClaudeCLI.PermissionMode = "bypassPermissions"
+				opts.Logger.Warn("whatsapp.permission_mode_default",
+					"mode", "bypassPermissions",
+					"why", "no claudecli.permission_mode set; unattended daemon cannot approve prompts",
+					"how_to_override", "set claudecli.permission_mode in ~/.config/rousseau/config.yaml (acceptEdits is a narrower alternative)",
+				)
+			}
 			provider, err := buildProvider(cfg)
 			if err != nil {
 				return err
