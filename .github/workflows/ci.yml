@@ -58,10 +58,12 @@ jobs:
           pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
           echo "coverage: $pct%"
           # Coverage floor tracks the current baseline. Pure business logic sits
-          # around 85–100%; overall drops because whatsmeow client + Bubble Tea
-          # event loop + main.go are network / process-integration paths that
-          # aren't cost-effective to mock.
-          awk -v p="$pct" 'BEGIN { exit (p+0 >= 65) ? 0 : 1 }' || { echo "coverage below 65%"; exit 1; }
+          # around 85–100%; overall floor is 78% because ~15% of statements
+          # are whatsmeow-adapter code and cobra RunE closures that launch
+          # daemons — testable only via a full whatsmeow fake plus process
+          # harness. Raising this floor is a real goal; padding it with
+          # meaningless tests is not.
+          awk -v p="$pct" 'BEGIN { exit (p+0 >= 78) ? 0 : 1 }' || { echo "coverage below 78%"; exit 1; }
 
   vuln:
     name: govulncheck
