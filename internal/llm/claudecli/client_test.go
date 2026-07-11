@@ -167,3 +167,60 @@ func TestComplete_NoUserMessage(t *testing.T) {
 	})
 	assert.Error(t, err)
 }
+
+func TestComplete_SecondTurnUsesResume(t *testing.T) {
+	p := New(Config{})
+	var calls []string
+	p.run = func(cmd *exec.Cmd) ([]byte, error) {
+		calls = append(calls, strings.Join(cmd.Args, " "))
+		return []byte(`{"type":"result","result":"ok","stop_reason":"end_turn"}`), nil
+	}
+	req := agent.Request{
+		SessionID: "sess-A",
+		Messages:  []agent.Message{agent.NewUserText("hi")},
+	}
+	_, err := p.Complete(context.Background(), req)
+	require.NoError(t, err)
+	_, err = p.Complete(context.Background(), req)
+	require.NoError(t, err)
+	require.Len(t, calls, 2)
+	assert.Contains(t, calls[0], "--session-id sess-A")
+	assert.NotContains(t, calls[0], "--resume")
+	assert.Contains(t, calls[1], "--resume sess-A")
+	assert.NotContains(t, calls[1], "--session-id")
+}
+
+func TestComplete_ColdStartAlreadyInUseFallsBackToResume(t *testing.T) {
+	p := New(Config{})
+	var calls []string
+	p.run = func(cmd *exec.Cmd) ([]byte, error) {
+		calls = append(calls, strings.Join(cmd.Args, " "))
+		if strings.Contains(calls[len(calls)-1], "--session-id") {
+			return []byte("Error: Session ID sess-B is already in use.\n"), errors.New("exit status 1")
+		}
+		return []byte(`{"type":"result","result":"ok","stop_reason":"end_turn"}`), nil
+	}
+	_, err := p.Complete(context.Background(), agent.Request{
+		SessionID: "sess-B",
+		Messages:  []agent.Message{agent.NewUserText("hi")},
+	})
+	require.NoError(t, err)
+	require.Len(t, calls, 2, "should have retried with --resume")
+	assert.Contains(t, calls[0], "--session-id sess-B")
+	assert.Contains(t, calls[1], "--resume sess-B")
+}
+
+func TestComplete_UnrelatedErrorNotRetried(t *testing.T) {
+	p := New(Config{})
+	var calls int
+	p.run = func(_ *exec.Cmd) ([]byte, error) {
+		calls++
+		return []byte("some other error"), errors.New("exit status 1")
+	}
+	_, err := p.Complete(context.Background(), agent.Request{
+		SessionID: "sess-C",
+		Messages:  []agent.Message{agent.NewUserText("hi")},
+	})
+	require.Error(t, err)
+	assert.Equal(t, 1, calls, "should not retry on unrelated errors")
+}
