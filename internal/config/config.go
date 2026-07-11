@@ -13,16 +13,31 @@ import (
 
 // Config is the resolved application configuration.
 type Config struct {
-	// Provider selects the LLM backend: "claudecli" (default — shells
-	// out to the local `claude` CLI, inheriting its auth) or
-	// "anthropic" (direct API, requires ANTHROPIC_API_KEY).
-	Provider  string          `mapstructure:"provider"`
-	Anthropic AnthropicConfig `mapstructure:"anthropic"`
-	ClaudeCLI ClaudeCLIConfig `mapstructure:"claudecli"`
-	Log       LogConfig       `mapstructure:"log"`
-	State     StateConfig     `mapstructure:"state"`
-	Agent     AgentConfig     `mapstructure:"agent"`
-	WhatsApp  WhatsAppConfig  `mapstructure:"whatsapp"`
+	// Provider selects the LLM backend:
+	//   "claudecli"  (default) — shells out to the local `claude` CLI
+	//   "anthropic"            — direct Anthropic API (ANTHROPIC_API_KEY)
+	//   "openai"               — OpenAI Chat Completions
+	//   "openrouter"           — OpenRouter (openai config, BaseURL preset)
+	//   "ollama"               — local ollama (openai config, BaseURL preset)
+	Provider   string           `mapstructure:"provider"`
+	Anthropic  AnthropicConfig  `mapstructure:"anthropic"`
+	ClaudeCLI  ClaudeCLIConfig  `mapstructure:"claudecli"`
+	OpenAI     OpenAIConfig     `mapstructure:"openai"`
+	OpenRouter OpenAIConfig     `mapstructure:"openrouter"`
+	Ollama     OpenAIConfig     `mapstructure:"ollama"`
+	Log        LogConfig        `mapstructure:"log"`
+	State      StateConfig      `mapstructure:"state"`
+	Agent      AgentConfig      `mapstructure:"agent"`
+	WhatsApp   WhatsAppConfig   `mapstructure:"whatsapp"`
+}
+
+// OpenAIConfig configures the OpenAI-compatible provider. Shared by
+// openai / openrouter / ollama / other OpenAI-shim endpoints.
+type OpenAIConfig struct {
+	APIKey    string `mapstructure:"api_key"`
+	Model     string `mapstructure:"model"`
+	BaseURL   string `mapstructure:"base_url"`
+	MaxTokens int64  `mapstructure:"max_tokens"`
 }
 
 // WhatsAppConfig configures the whatsapp transport.
@@ -158,6 +173,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("anthropic.model", "claude-sonnet-4-6")
 	v.SetDefault("anthropic.max_tokens", 4096)
 	v.SetDefault("claudecli.binary", "claude")
+	v.SetDefault("openrouter.base_url", "https://openrouter.ai/api/v1")
+	v.SetDefault("ollama.base_url", "http://localhost:11434/v1")
+	v.SetDefault("ollama.api_key", "not-required")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
 	v.SetDefault("agent.max_iterations", 32)

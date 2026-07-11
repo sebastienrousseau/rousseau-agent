@@ -102,13 +102,13 @@ Landed. `agent.Approver` interface + three built-ins (`AllowAll`, `DenyAll`, `Pa
 
 Deferred to a follow-up: interactive approver (TUI-only) — needs a UX pass on how to display + accept/deny in the model loop without breaking streaming.
 
-### 2.5 Multi-provider registry (P2)
+### 2.5 ~~Multi-provider registry~~ ✅ shipped
 
-**Scope.** Today the CLI hard-codes two providers. Introduce a `provider.Registry` that maps name → factory, so third-party providers can register in an init file. Add reference implementations for **OpenAI** (via `openai-go`), **Google Vertex** (GenerativeAI SDK), and **OpenRouter** (OpenAI-compatible).
+Landed. `internal/llm/openai/` implements the OpenAI Chat Completions API and, via `BaseURL`, serves OpenRouter, ollama, LM Studio, together.ai — any OpenAI-compatible endpoint.
 
-**Exit criteria.** `provider: openrouter\nopenrouter: {api_key, model}` in config swaps the backend. Existing anthropic/claudecli code paths untouched. `rousseau doctor` shows the selected provider's credential status.
+`provider: openrouter`, `provider: openai`, or `provider: ollama` in config swaps the backend. Defaults (`openrouter.base_url`, `ollama.base_url`, `ollama.api_key`) mean the ollama and OpenRouter cases need only a `model:` line to work.
 
-**Estimate.** 1 week.
+Google Vertex and AWS Bedrock deferred — they use SigV4 / OAuth flows the OpenAI shape does not cover; add when there is a concrete user for them.
 
 ### 2.6 Session compression & cross-session recall (P2)
 
@@ -132,13 +132,18 @@ Cross-session recall: on a new session's first turn, run FTS5 against recent ses
 
 **Estimate.** 1.5 weeks.
 
-### 3.2 MCP server surface (P1)
+### 3.2 ~~MCP server surface~~ ✅ shipped (pulled forward from Q4)
 
-**Scope.** Expose rousseau's persistent state as an MCP server so external agent hosts (Claude Code, Cursor, Codex, Aider) can query sessions, send messages, and subscribe to events.
+Landed. `internal/mcp/` implements a stdio JSON-RPC 2.0 server against MCP revision `2024-11-05`. Four read-only tools published:
 
-**Exit criteria.** `rousseau mcp` starts a stdio MCP server. Tools published: `session.list`, `session.search`, `session.read`, `message.send`, `cron.list`. Auth: no-op for stdio; HTTP mode gets bearer-token auth.
+- `rousseau_search_sessions` (FTS5 syntax)
+- `rousseau_list_sessions`
+- `rousseau_read_session`
+- `rousseau_cron_list`
 
-**Estimate.** 1 week.
+`rousseau mcp` starts the server. Verified end-to-end by piping raw JSON-RPC — real session data flows through.
+
+Message-send tool intentionally omitted: the daemon owns the whatsmeow socket, and running a second process that opens the same store risks lock contention. If we need write access from MCP, we'll add a Unix-socket API on the daemon rather than expose it directly.
 
 ### 3.3 Skills / self-improving prompts (P2)
 
