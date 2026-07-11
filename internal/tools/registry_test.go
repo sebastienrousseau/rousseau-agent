@@ -45,3 +45,27 @@ func TestRegistry_MissingLookup(t *testing.T) {
 	_, ok := r.Get("missing")
 	assert.False(t, ok)
 }
+
+func TestRegistry_Names(t *testing.T) {
+	r := NewRegistry()
+	require.NoError(t, r.Register(&fakeTool{n: "a"}))
+	require.NoError(t, r.Register(&fakeTool{n: "b"}))
+	names := r.Names()
+	assert.Len(t, names, 2)
+	assert.Contains(t, names, "a")
+	assert.Contains(t, names, "b")
+}
+
+func TestRegistry_MustRegister(t *testing.T) {
+	r := NewRegistry()
+	r.MustRegister(&fakeTool{n: "a"})
+	got, ok := r.Get("a")
+	require.True(t, ok)
+	assert.Equal(t, "a", got.Name())
+}
+
+func TestRegistry_MustRegister_PanicsOnDuplicate(t *testing.T) {
+	r := NewRegistry()
+	r.MustRegister(&fakeTool{n: "a"})
+	assert.Panics(t, func() { r.MustRegister(&fakeTool{n: "a"}) })
+}

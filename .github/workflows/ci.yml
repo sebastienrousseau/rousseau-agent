@@ -57,9 +57,11 @@ jobs:
         run: |
           pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
           echo "coverage: $pct%"
-          # v0 floor: 28% (agent/tools/state well-covered; tui/cli/config to follow).
-          # Ratchet up as tests land.
-          awk -v p="$pct" 'BEGIN { exit (p+0 >= 28) ? 0 : 1 }' || { echo "coverage below 28%"; exit 1; }
+          # Coverage floor tracks the current baseline. Pure business logic sits
+          # around 85–100%; overall drops because whatsmeow client + Bubble Tea
+          # event loop + main.go are network / process-integration paths that
+          # aren't cost-effective to mock.
+          awk -v p="$pct" 'BEGIN { exit (p+0 >= 65) ? 0 : 1 }' || { echo "coverage below 65%"; exit 1; }
 
   vuln:
     name: govulncheck
