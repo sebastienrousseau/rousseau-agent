@@ -23,6 +23,17 @@ type Runner interface {
 	Turn(ctx context.Context, s *agent.Session) (agent.Message, error)
 }
 
+// StreamingRunner extends Runner with an incremental variant that
+// emits agent.StreamEvents into the caller's channel while the turn
+// runs. When the concrete Runner satisfies this interface, the TUI
+// renders assistant text token-by-token instead of waiting for the
+// final Message. Callers own the channel's lifetime up to invocation;
+// TurnStream owns closing it before it returns.
+type StreamingRunner interface {
+	Runner
+	TurnStream(ctx context.Context, s *agent.Session, events chan<- agent.StreamEvent) (agent.Message, error)
+}
+
 // Model is the top-level Bubble Tea model.
 type Model struct {
 	runner  Runner
@@ -38,6 +49,11 @@ type Model struct {
 	width  int
 	height int
 	err    error
+
+	// streamBuf accumulates text deltas from the current in-flight
+	// turn. Rendered under the persisted history and cleared when the
+	// turn completes.
+	streamBuf strings.Builder
 }
 
 // New constructs a Model bound to a Session.
@@ -108,8 +124,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.doTurn())
 		}
 
+	case streamPumpMsg:
+		if msg.delta != "" {
+			m.streamBuf.WriteString(msg.delta)
+			m.viewport.SetContent(renderHistory(m.session, m.width) + streamPreview(m.streamBuf.String()))
+			m.viewport.GotoBottom()
+		}
+		if msg.next != nil {
+			return m, deltaPump(msg.next)
+		}
+		return m, nil
+
 	case turnResult:
 		m.busy = false
+		m.streamBuf.Reset()
 		if msg.err != nil {
 			m.err = msg.err
 			m.logger.Error("turn.failed", slog.String("err", msg.err.Error()))
@@ -153,13 +181,76 @@ func (m Model) View() string {
 	)
 }
 
+// streamDelta is sent from the streaming goroutine each time a text
+// fragment arrives from the provider.
+type streamDelta struct{ text string }
+
+// doTurn returns the tea.Cmd(s) that advance a user turn. When the
+// bound Runner also implements StreamingRunner, doTurn kicks off a
+// streaming goroutine and returns two commands: one that receives
+// streamDelta messages and another that waits for the final result.
+// Otherwise it falls back to the single-shot Turn.
 func (m Model) doTurn() tea.Cmd {
 	sess := m.session
+	if sr, ok := m.runner.(StreamingRunner); ok {
+		events := make(chan agent.StreamEvent, 64)
+		result := make(chan turnResult, 1)
+
+		go func() {
+			msg, err := sr.TurnStream(context.Background(), sess, events)
+			result <- turnResult{msg: msg, err: err}
+		}()
+
+		// tea.Batch schedules concurrent Cmds. deltaPump repeatedly
+		// consumes one event from the channel and re-schedules itself;
+		// finalWait blocks on the result channel.
+		return tea.Batch(deltaPump(events), finalWait(result))
+	}
 	runner := m.runner
 	return func() tea.Msg {
 		msg, err := runner.Turn(context.Background(), sess)
 		return turnResult{msg: msg, err: err}
 	}
+}
+
+// deltaPump receives a single event from events and returns an
+// appropriate tea.Msg. Bubble Tea will re-schedule the Cmd if we
+// return a follow-up Cmd via a batch — we implement that by making
+// the Msg carry a Cmd back to Update.
+func deltaPump(events <-chan agent.StreamEvent) tea.Cmd {
+	return func() tea.Msg {
+		evt, ok := <-events
+		if !ok {
+			return nil
+		}
+		if evt.Kind == agent.StreamTextDelta && evt.Delta != "" {
+			return streamPumpMsg{delta: evt.Delta, next: events}
+		}
+		// Non-text event — keep pumping.
+		return streamPumpMsg{next: events}
+	}
+}
+
+// streamPumpMsg carries an optional delta plus the channel we should
+// keep pumping. Update consumes the delta and re-schedules deltaPump.
+type streamPumpMsg struct {
+	delta string
+	next  <-chan agent.StreamEvent
+}
+
+func finalWait(result <-chan turnResult) tea.Cmd {
+	return func() tea.Msg {
+		return <-result
+	}
+}
+
+// streamPreview renders the in-flight assistant text under the
+// persisted history so the user sees tokens as they arrive.
+func streamPreview(text string) string {
+	if text == "" {
+		return ""
+	}
+	return "\n" + styleAgent.Render("rousseau") + "\n" + text + "\n"
 }
 
 var (

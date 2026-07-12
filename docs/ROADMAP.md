@@ -88,13 +88,9 @@ Landed in commit that added this ROADMAP note. `internal/cron/scheduler.go` runs
 
 Landed. `internal/llm/anthropic/stream.go` implements `agent.StreamingProvider` via the SDK's `NewStreaming` iterator. Same `StreamEvent` / `StreamReport` shape as claudecli.
 
-### 2.3 TUI streaming (P1)
+### 2.3 ~~TUI streaming~~ ✅ shipped
 
-**Scope.** Wire `Provider.Stream` into the Bubble Tea model so tokens render as they arrive. Replace the current `busy` bool + spinner with an incremental viewport update. Retain `Ctrl+C` interrupt semantics.
-
-**Exit criteria.** `rousseau chat` shows text rendering left-to-right during long generations. Interrupt drops the partial and returns to prompt.
-
-**Estimate.** 3 days.
+Landed. `agent.Agent.TurnStream` runs the same tool loop as `Turn` but drives each provider round-trip through `StreamingProvider.Stream`, forwarding `StreamEvent`s into a caller-owned channel. `tui.Model` consumes them via a small `deltaPump` Cmd chain and renders text token-by-token under the persisted history; falls back to `Turn` for non-streaming providers.
 
 ### 2.4 ~~Approval + policy gate for tool use~~ ✅ shipped
 
@@ -119,19 +115,17 @@ Session compression landed. `internal/agent/compressor.go`:
 - Config: `agent.compression.{enabled, trigger_messages, keep_recent, prompt}`. Defaults (60 messages / keep 8) apply when only `enabled: true` is set.
 - 10 compressor tests + 4 config-wiring tests.
 
-Cross-session recall (FTS5 → context prefixing) deferred to a follow-up. The FTS5 index is already there; recall is ~100 lines of wiring in the agent's request-building path. Not a P0 while the mainline flow is claudecli (Anthropic's prompt cache covers most of the same cost profile).
+Cross-session recall shipped alongside skills (below). `internal/agent/recall.go` extracts keywords from the latest user message, runs them through a `RecallSearcher` (SQLite FTS5 today), composes the hits as a `# Related prior sessions` appendix, and skips the current session's own snippets. Wired into `agent.Options.RecallProvider`; the `whatsapp` command instantiates the FTS-backed searcher automatically.
 
 ---
 
 ## 3. What is next — Q4 2026
 
-### 3.1 Second transport: Signal (P1)
+### 3.1 ~~Second transport: Signal~~ ✅ shipped
 
-**Scope.** Signal has an official protocol via `signal-cli` (a JVM daemon) or `libsignal-net` (Rust, HTTP surface). Prefer the latter to keep the Go binary self-contained. Implement `internal/transport/signal/` following the shape of `whatsapp/`.
+Landed. `internal/transport/signal/` shells out to `signal-cli --output=json -a <account> jsonRpc` and pumps JSON-RPC frames both ways. `rousseau signal --account +447906009073` runs the bridge with the same Router / allowlist / handler contract as WhatsApp. Reply header + Deliver method match WhatsApp's shape.
 
-**Exit criteria.** `rousseau signal` runs. Same allowlist / router / handler contract. Own JID equivalent, presence indicator equivalent (Signal lacks typing? — verify).
-
-**Estimate.** 1.5 weeks.
+Prerequisites (documented): the operator must install signal-cli and register/link the account out-of-band. libsignal-net Go bindings deferred until Signal ships a stable release; the shell-out approach works today.
 
 ### 3.2 ~~MCP server surface~~ ✅ shipped (pulled forward from Q4)
 
@@ -146,19 +140,17 @@ Landed. `internal/mcp/` implements a stdio JSON-RPC 2.0 server against MCP revis
 
 Message-send tool intentionally omitted: the daemon owns the whatsmeow socket, and running a second process that opens the same store risks lock contention. If we need write access from MCP, we'll add a Unix-socket API on the daemon rather than expose it directly.
 
-### 3.3 Skills / self-improving prompts (P2)
+### 3.3 ~~Skills / self-improving prompts~~ ✅ shipped (read-only, as scoped)
 
-**Scope.** Read-only for now. Register the agentskills.io directory format so users can drop skills into `~/.local/share/rousseau/skills/` and the system prompt splices them in based on user-message topic classification.
+Landed. `internal/skills/` loads Markdown files with YAML front-matter from `~/.local/share/rousseau/skills/` (or `agent.skills_dir`). Skills declare `triggers:`; when a keyword appears in the latest user message the skill's body is spliced into the system prompt inside an `# Active skills` appendix.
 
-**Exit criteria.** A skill file at `skills/git-workflow.md` gets injected into the system prompt when the user says "I need help with a rebase." Classification via cheap prompt to a fast model (claudecli's default is fine).
+`rousseau skills list` / `rousseau skills show <name>` inspect the loaded set. Wired into `agent.Options.SkillsProvider`; the `whatsapp` command instantiates the loader automatically.
 
-**Estimate.** 1.5 weeks.
+Classification via cheap LLM (originally proposed) skipped — substring matching is 100 lines instead of a whole subsystem and covers the common case; upgrade later if noise from false-positives shows up.
 
-### 3.4 Web dashboard (P2 — nice-to-have)
+### 3.4 Web dashboard — moved to §4 (deferred)
 
-**Scope.** Small Vue/React dashboard for session browsing, cron editing, doctor reports. Skip until users ask.
-
-**Estimate.** 3 weeks (only if prioritised).
+The web dashboard was always P2/nice-to-have. `rousseau session list/search/show`, `rousseau cron list`, and MCP hosts (Claude Code / Cursor) covering the same use cases mean there is no immediate user pain to solve here. Explicitly deferred (§4).
 
 ---
 
