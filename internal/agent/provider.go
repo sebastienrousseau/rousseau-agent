@@ -17,6 +17,18 @@ type Request struct {
 	System    string
 	Messages  []Message
 	Tools     []tools.Definition
+	// CacheableMessages hints how many *leading* messages of this
+	// Request are stable enough for the provider to mark for a
+	// server-side prompt cache. Zero disables the hint (caller has no
+	// opinion — provider default applies). Providers that do not
+	// implement caching ignore this value; providers that do
+	// (Anthropic's ephemeral cache) mark the last CacheableMessages
+	// blocks with cache_control.
+	//
+	// Compressor implementations set this to len(recentMessages) - 1
+	// after a rewrite so the summary block hits the cache on the very
+	// next turn.
+	CacheableMessages int
 }
 
 // StopReason categorises why the model stopped generating.

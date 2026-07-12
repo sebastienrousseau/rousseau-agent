@@ -1,0 +1,74 @@
+name: reproducible-build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Verifies that two clean container builds from the same commit
+# produce identical binary digests. Any drift means non-determinism has
+# crept into the toolchain (unpinned base image, time-dependent build
+# args, filesystem-order-dependent bytecode, etc.).
+
+jobs:
+  twice:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+
+      - name: Build A
+        env:
+          # Stable inputs so goreleaser's -X ldflags do not diverge run-
+          # to-run. We commit-pin the version and use a fixed date.
+          VERSION: 'repro'
+          COMMIT:  ${{ github.sha }}
+          BUILD_DATE: '2000-01-01T00:00:00Z'
+          SOURCE_DATE_EPOCH: '946684800'
+        run: |
+          mkdir -p out-a
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+              -ldflags="-s -w -buildid= \
+                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.version=${VERSION}' \
+                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.commit=${COMMIT}' \
+                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.buildDate=${BUILD_DATE}'" \
+              -o out-a/rousseau ./cmd/rousseau
+          sha256sum out-a/rousseau
+
+      - name: Build B (fresh cache)
+        env:
+          VERSION: 'repro'
+          COMMIT:  ${{ github.sha }}
+          BUILD_DATE: '2000-01-01T00:00:00Z'
+          SOURCE_DATE_EPOCH: '946684800'
+        run: |
+          go clean -cache
+          mkdir -p out-b
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath \
+              -ldflags="-s -w -buildid= \
+                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.version=${VERSION}' \
+                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.commit=${COMMIT}' \
+                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.buildDate=${BUILD_DATE}'" \
+              -o out-b/rousseau ./cmd/rousseau
+          sha256sum out-b/rousseau
+
+      - name: Diff digests
+        run: |
+          A=$(sha256sum out-a/rousseau | awk '{print $1}')
+          B=$(sha256sum out-b/rousseau | awk '{print $1}')
+          echo "A: $A"
+          echo "B: $B"
+          if [ "$A" != "$B" ]; then
+            echo "::error::Reproducibility broken — build A and B differ."
+            exit 1
+          fi
+          echo "Reproducible ✓"

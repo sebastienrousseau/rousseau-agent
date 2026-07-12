@@ -1,12 +1,14 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/anthropic"
+	bedrockllm "github.com/sebastienrousseau/rousseau-agent/internal/llm/bedrock"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	openaillm "github.com/sebastienrousseau/rousseau-agent/internal/llm/openai"
 )
@@ -38,6 +40,19 @@ func buildProvider(cfg *config.Config) (agent.Provider, error) {
 		return buildOpenAILike("openrouter", cfg.OpenRouter)
 	case "ollama":
 		return buildOpenAILike("ollama", cfg.Ollama)
+	case "bedrock":
+		if cfg.Bedrock.Region == "" {
+			return nil, errors.New("provider=bedrock but bedrock.region is empty")
+		}
+		if cfg.Bedrock.Model == "" {
+			return nil, errors.New("provider=bedrock but bedrock.model is empty")
+		}
+		return bedrockllm.New(context.Background(), bedrockllm.Config{
+			Region:    cfg.Bedrock.Region,
+			Model:     cfg.Bedrock.Model,
+			Profile:   cfg.Bedrock.Profile,
+			MaxTokens: cfg.Bedrock.MaxTokens,
+		})
 	default:
 		return nil, fmt.Errorf("unknown provider %q (want claudecli/anthropic/openai/openrouter/ollama)", cfg.Provider)
 	}

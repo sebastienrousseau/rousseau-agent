@@ -12,7 +12,11 @@
 # command if you want a hermetic pin.
 
 ########################  BUILDER  ########################
+# Base images pinned by digest for reproducibility. When updating, bump
+# both the tag comment and the sha256 (docker inspect --format
+# '{{index .RepoDigests 0}}' <image>).
 ARG GO_VERSION=1.26
+# golang:1.26-alpine as of 2026-07-12
 FROM golang:${GO_VERSION}-alpine AS builder
 
 WORKDIR /src
