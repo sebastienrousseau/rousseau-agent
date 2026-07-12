@@ -63,6 +63,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.AddCommand(newSkillsCmd(opts))
 	root.AddCommand(newSignalCmd(opts))
 	root.AddCommand(newTelegramCmd(opts))
+	root.AddCommand(newMatrixCmd(opts))
 	root.AddCommand(newStatusCmd(opts))
 	root.AddCommand(newInitCmd(opts))
 	root.AddCommand(newVersionCmd())

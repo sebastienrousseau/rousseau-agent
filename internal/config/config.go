@@ -33,6 +33,16 @@ type Config struct {
 	Telegram   TelegramConfig   `mapstructure:"telegram"`
 	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
 	Vertex     VertexConfig     `mapstructure:"vertex"`
+	Matrix     MatrixConfig     `mapstructure:"matrix"`
+}
+
+// MatrixConfig configures the Matrix client-server transport.
+type MatrixConfig struct {
+	HomeserverURL string   `mapstructure:"homeserver_url"`
+	AccessToken   string   `mapstructure:"access_token"`
+	UserID        string   `mapstructure:"user_id"`
+	ReplyHeader   string   `mapstructure:"reply_header"`
+	Allowlist     []string `mapstructure:"allowlist"`
 }
 
 // VertexConfig configures the Google Vertex AI provider (Anthropic on
