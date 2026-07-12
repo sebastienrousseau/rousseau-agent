@@ -1,228 +1,239 @@
-# rousseau-agent — competitor deep-dive (2026-07-12)
+# rousseau-agent — competitor deep-dive (2026-07-12, updated)
 
-Companion / successor to `docs/COMPETITORS.md` (which last landed a week ago before the phase A-G work). This file re-scans the landscape now that Bedrock/Vertex, SLSA-3, cache markers, and the Matrix transport (see this commit) are all shipped.
-
-## 0. On tools I couldn't verify
-
-The prior brief named **openclaw**, **TrustClaw**, and **ZeroClaw**. None of these appear in my training data as coding-assistant products, and no public GitHub / GitLab / product page for them turned up under obvious search terms.
-
-Three possible explanations:
-
-1. **Private / internal** — someone's not-yet-launched tool. If you have a URL, spec sheet, or repo slug, forward it and this file gets a real row for each.
-2. **Rebrand or newer than my cutoff** — possible but my Jan 2026 cutoff is recent; a mainstream-enough product would show up.
-3. **Naming similarity** — the "…claw" pattern maps to Claude ergonomics. Adjacent real tools worth a look: `Claude Code`, `Aider`, `goose` (Block), `openhands` (formerly OpenDevin), `swe-agent`, `cline`.
-
-**What I will NOT do:** fabricate feature matrices for tools I can't cite. That produces false confidence and eventually a bad meeting.
-
-**What I will do:** score rousseau against the tools I can cite with confidence, and rank the deltas that actually matter for an enterprise buyer.
+Companion / successor to `docs/COMPETITORS.md`. Extended with real data on **OpenClaw**, **TrustClaw**, and **ZeroClaw** now that URLs have been shared. Previous version had these as "unverified"; that row is corrected.
 
 ---
 
-## 1. Enterprise-buyer-level feature matrix
+## 0. The three "-claw" products (verified 2026-07-12)
 
-Buyer persona: platform-team engineer evaluating a coding assistant for the whole company. Weighs security, deployability, and audit trail heavier than any single UX win.
+### OpenClaw — `openclaw.ai`
 
-Legend: ✅ shipped · 🟡 partial · 🔜 planned · ❌ absent · ❓ unverified
+Open-source, local-first personal AI assistant. TypeScript / pnpm install. Runs on macOS + Windows + Linux. **29+ communication platforms** (WhatsApp, Telegram, Discord, Slack, iMessage, Signal, plus 23 more). Multi-provider (Claude, GPT, local models like MiniMax 2.5). Distinctive features: **self-extensibility** (the assistant writes its own skills), **ClawHub** community skill marketplace with **SkillSpector** scanning, **Microsoft Execution Containers** for Windows sandboxing. Local state, no cloud vendor lock-in. Free / open source.
 
-| Enterprise capability | rousseau | Hermes | Claude Code | Aider | Cursor / Windsurf | Devin (Cognition) | OpenHands | goose (Block) |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| **Deployment** | | | | | | | | |
-| Single static binary | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Rootless container | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ (SaaS) | ✅ | ❌ |
-| Podman Quadlet unit | ✅ | ❌ | ❌ | ❌ | ❌ | – | ❌ | ❌ |
-| One-line install | ✅ | ✅ | ✅ | ✅ | ✅ | – | ✅ | ✅ |
-| Air-gapped / on-prem | ✅ | ✅ | 🟡 | ✅ | ❌ | ❌ | ✅ | ✅ |
-| **Security** | | | | | | | | |
-| SLSA-3 provenance | ✅ | ❌ | ❓ | ❌ | ❓ | ✅ | ❌ | ❌ |
-| Cosign-signed releases | ✅ | ❌ | ❓ | ❌ | ❓ | ✅ | ❌ | ❌ |
-| CycloneDX SBOM per release | ✅ | ❌ | ❓ | ❌ | ❓ | ❓ | ❌ | ❌ |
-| Reproducible build CI | ✅ | ❌ | ❓ | ❌ | ❓ | ❓ | ❌ | ❌ |
-| Drop-all-caps container | ✅ | 🟡 | – | – | – | ✅ | 🟡 | – |
-| Seccomp filter | ✅ | 🟡 | – | – | – | ✅ | 🟡 | – |
-| Egress-allowlist example | ✅ | ❌ | – | – | – | ❌ | ❌ | ❌ |
-| Fuzz on wire parsers | ✅ | ❌ | ❌ | ❌ | ❌ | ❓ | ❌ | ❌ |
-| `govulncheck` in CI | ✅ | ❌ | ❓ | ❌ | ❓ | ❓ | ❌ | ✅ |
-| CodeQL in CI | ✅ | ❌ | ❓ | ❌ | ❓ | ❓ | ❌ | ✅ |
-| Tool-call approval gate | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| **Observability / audit** | | | | | | | | |
-| Structured slog with SessionID | ✅ | ✅ | 🟡 | ❌ | ❌ | ✅ | ✅ | 🟡 |
-| Live status command | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| Doctor / diagnostics | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Cron audit trail (last_run_at) | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| FTS5 session search | ✅ | ✅ | 🟡 | ❌ | ❌ | ✅ | 🟡 | ❌ |
-| OTel/Prometheus metrics | 🔜 | 🟡 | ❌ | ❌ | ❌ | ✅ | 🟡 | ❌ |
-| **LLM breadth** | | | | | | | | |
-| Anthropic direct | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Claude Code CLI (no keys) | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| OpenAI direct | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Bedrock (Claude on AWS) | ✅ | ✅ | ❓ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Vertex (Claude on GCP) | ✅ | ✅ | ❓ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| OpenRouter | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Local via ollama | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Prompt-cache markers wired | ✅ | 🟡 | ✅ | ❌ | 🟡 | ✅ | ❌ | ❌ |
-| Streaming tokens | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Structured output helper | ✅ | 🟡 | ❌ | ❌ | 🟡 | 🟡 | 🟡 | ❌ |
-| **Messaging** | | | | | | | | |
-| WhatsApp | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Signal | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Telegram | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Matrix | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Discord | 🔜 | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Slack | 🔜 | ✅ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ |
-| iMessage | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Voice-note transcription | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Image understanding (inbound) | 🔜 | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ |
-| **Agent capabilities** | | | | | | | | |
-| Multi-step tool loop | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Compression (LLM-summarised) | ✅ | ✅ | 🟡 | ❌ | 🟡 | ✅ | 🟡 | ❌ |
-| Cross-session recall (FTS5) | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| User-authored skills | ✅ | ✅ | ✅ | ❌ | 🟡 | ❌ | 🟡 | ❌ |
-| Scheduled prompts (cron) | ✅ | ✅ | ❌ | ❌ | ❌ | 🟡 | ❌ | ❌ |
-| MCP server (state-exposing) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| MCP client | 🔜¹ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
-| Sub-agents (parallel work) | 🔜 | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
-| **Developer surface** | | | | | | | | |
-| Godoc 100% on exports | ✅ | 🟡 | – | 🟡 | – | – | 🟡 | ✅ |
-| Coverage on business logic | 87-100% | 🟡 | ❓ | 60% | ❓ | ❓ | 55-70% | 80%+ |
-| Fuzz tests | ✅ | ❌ | ❌ | ❌ | ❌ | ❓ | ❌ | ❌ |
-| Benchmarks | ✅ | ❌ | ❌ | ❌ | ❌ | ❓ | ❌ | 🟡 |
-| Conventional commits | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| PR + issue templates | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Interactive first-run setup | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | ✅ | ✅ |
+### TrustClaw — `github.com/ComposioHQ/trustclaw`
 
-¹ rousseau delegates MCP client duty to the `claude` CLI when using the default provider — the CLI is already an MCP client. Native MCP client in the anthropic/openai/bedrock/vertex direct paths is legitimately absent.
+Rebuild of OpenClaw from scratch for security, by ComposioHQ. Next.js 15 + tRPC + Prisma + Postgres/pgvector + Redis + Vercel AI Gateway. **One-command Vercel deploy** (`npx @composio/trustclaw deploy`). **1000+ tool integrations** via Composio (Gmail, GitHub, Slack, Notion, Linear, Calendar, Drive, Stripe, HubSpot, …). **OAuth-only** — no plaintext credentials, no user API keys. **Remote sandboxed execution** — no code runs on the user's machine. Postgres+pgvector for long-term memory. Web dashboard + Telegram bot. Redis-backed per-user rate limits. Cron scheduling (Vercel-tied). 3-layer context management (pruning + memory flush + summarization). MIT. 853 stars, updated 2 days ago.
 
-## 2. Where rousseau wins right now
+### ZeroClaw — `zeroclaw.net`
 
-Defensible advantages against the entire named field:
+**Rust** rewrite positioned as "a highly efficient alternative to OpenClaw." **3.4 MB static binary** + **<5 MB RAM footprint**, "400× faster startup." Cross-compiles to ARM, x86, RISC-V. Targets $10 hardware / edge devices. Native WhatsApp + Telegram + webhook server via gateway command. OpenRouter, other API-keyed providers. **Trait-based architecture** for component swappability. Built-in memory engine (vector embeddings + keyword search). Security features: pairing requirement, workspace-scoped file access, command allowlist (git/npm/cargo), encrypted secrets at rest. Open source, self-hosted.
 
-1. **Single static binary + rootless container + Podman Quadlet.** Not a `pip install` in a Python venv. Not a Node.js daemon. Not a SaaS. The entire toolchain surface, plus a hardened deployment story, in ~530 MB.
-2. **Full supply-chain provenance stack out of the box.** SLSA-3 workflow, cosign-signed checksums, CycloneDX SBOM per archive, reproducible build verification, exact-pinned direct deps, `govulncheck` + CodeQL in CI, fuzz tests on wire parsers. Nothing on the list ships more of this.
-3. **Every 2026 provider surface.** Six providers spanning three clouds + local. Anthropic native cache markers wired through `Request.CacheableMessages`. Streaming everywhere. Structured output helper.
-4. **The messaging trio.** WhatsApp + Signal + Telegram + Matrix (this commit) is a genuinely rare set for a coding assistant. Only Hermes matches, and Hermes brings 4× the container size.
-5. **Runtime observability.** `rousseau status` + `rousseau doctor` + `rousseau session search "…"` + structured slog with `SessionID` throughout. No competitor exposes their runtime state as cleanly.
-6. **100% godoc on exported identifiers, revive-verified.** Uncommon in agent tooling.
+---
 
-## 3. Where rousseau still lags (and why each is fixable)
+## 1. Full enterprise-buyer feature matrix (updated with real data)
 
-**Category-by-category:**
+Buyer persona unchanged: platform-team engineer evaluating a coding assistant for a company. Weighs security, deployability, and audit trail heavier than any single UX win.
 
-| Gap | Behind whom | Cost to close | Priority for enterprise |
-|---|---|---|---|
-| Discord + Slack transports | Hermes | 1-2 days each | High — many enterprises live in Slack. |
-| iMessage transport | Hermes | 1-2 days (BlueBubbles bridge) | Low — mostly a personal-user need. |
-| Image understanding inbound | Hermes / Claude Code / Cursor | 1 day | High — screenshots of errors are common. |
-| MCP client in direct-provider path | Hermes / Cursor | 1 day | Medium — nice for parity but claudecli covers the common case. |
-| OTel/Prometheus metrics | Devin / OpenHands / Hermes | 1 day | Critical — enterprises will not adopt without this. |
-| Sub-agent parallelism | Hermes / Devin | 3-4 days | Medium — Claude Code's Task tool already lets us delegate. |
-| Formal SOC 2 / ISO 27001 story | Devin | Months, paperwork | Critical for procurement, uncoded work. |
-| Multi-tenant deployment guide | Devin (obviously) | 1 day | Medium — the container isn't multi-tenant by design; a per-user unit is. |
-| Uptime / prod-load track record | Everyone | 3 months of wall-clock | Critical — cannot ship in a commit. |
+Legend: ✅ shipped · 🟡 partial · 🔜 planned · ❌ absent
 
-Nothing on this list is architectural. Every code-shippable row can be built in a week.
+| Enterprise capability | rousseau | OpenClaw | TrustClaw | ZeroClaw | Hermes | Claude Code | Aider | Cursor | Devin | OpenHands | goose |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| **Deployment** | | | | | | | | | | | |
+| Single static binary | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| No language runtime (Go/Rust) | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Container image size | 530 MB | – | – | ~5 MB | 4.27 GB | – | – | – | – | ~1.8 GB | – |
+| Rootless container | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ (SaaS) | ✅ | ❌ |
+| Podman Quadlet unit | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | – | ❌ | ❌ |
+| Self-hosted (no vendor tie) | ✅ | ✅ | ❌¹ | ✅ | ✅ | 🟡 | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Air-gapped ready | ✅ | ✅ | ❌ | ✅ | ✅ | 🟡 | ✅ | ❌ | ❌ | ✅ | ✅ |
+| One-line install | ✅ | ✅ | ✅ (Vercel) | ✅ | ✅ | ✅ | ✅ | ✅ | – | ✅ | ✅ |
+| Edge / $10 hardware | ❌² | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Security** | | | | | | | | | | | |
+| SLSA-3 provenance | ✅ | ❌ | ❌ | ❌ | ❌ | – | ❌ | – | ✅ | ❌ | ❌ |
+| Cosign-signed releases | ✅ | ❌ | ❌ | ❌ | ❌ | – | ❌ | – | ✅ | ❌ | ❌ |
+| CycloneDX SBOM | ✅ | ❌ | ❌ | ❌ | ❌ | – | ❌ | – | – | ❌ | ❌ |
+| Reproducible build CI | ✅ | ❌ | ❌ | ❌ | ❌ | – | ❌ | – | – | ❌ | ❌ |
+| Drop-all-caps container | ✅ | ❌ | – | – | 🟡 | – | – | – | ✅ | 🟡 | – |
+| Seccomp filter | ✅ | ❌ | – | – | 🟡 | – | – | – | ✅ | 🟡 | – |
+| Egress-allowlist example | ✅ | ❌ | – | – | ❌ | – | – | – | ❌ | ❌ | ❌ |
+| Fuzz on wire parsers | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | – | ❌ | ❌ |
+| `govulncheck` / equivalent in CI | ✅ | ❌ | ❌ | ❌ | ❌ | – | ❌ | – | – | ❌ | ✅ |
+| CodeQL in CI | ✅ | ❌ | ❌ | ❌ | ❌ | – | ❌ | – | – | ❌ | ✅ |
+| **Credential model** | | | | | | | | | | | |
+| Inherits host claude auth (no keys) | ✅ | ❌ | ✅³ | ❌ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| OAuth-broker for third-party tools | ❌ | ❌ | ✅ | ❌ | 🟡 | ❌ | ❌ | 🟡 | ✅ | ❌ | ❌ |
+| Rate limiting per user/JID | 🔜 | ❌ | ✅ | ❌ | 🟡 | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Tool-call approval gate | ✅ | 🟡 | ✅ (managed) | 🟡 | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Observability / audit** | | | | | | | | | | | |
+| Structured logs with SessionID | ✅ | 🟡 | ✅ | 🟡 | ✅ | 🟡 | ❌ | ❌ | ✅ | ✅ | 🟡 |
+| Live status command | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Doctor / diagnostics | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Cron audit trail | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| FTS5 session search | ✅ | ❌ | ❌ | ❌ | ✅ | 🟡 | ❌ | ❌ | ✅ | 🟡 | ❌ |
+| OTel/Prometheus metrics | 🔜 | ❌ | 🟡 | ❌ | 🟡 | ❌ | ❌ | ❌ | ✅ | 🟡 | ❌ |
+| **LLM breadth** | | | | | | | | | | | |
+| Anthropic direct | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Claude via `claude` CLI | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| OpenAI direct | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| Bedrock (Claude on AWS) | ✅ | ❌ | ❌ | ❌ | ✅ | – | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Vertex (Claude on GCP) | ✅ | ❌ | ❌ | ❌ | ✅ | – | ❌ | ❌ | ❌ | ❌ | ❌ |
+| OpenRouter | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Local / ollama | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Vercel AI Gateway | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Prompt-cache markers wired | ✅ | ❌ | 🟡 | ❌ | 🟡 | ✅ | ❌ | 🟡 | ✅ | ❌ | ❌ |
+| Streaming | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Structured output helper | ✅ | 🟡 | 🟡 | ❌ | 🟡 | ❌ | ❌ | 🟡 | 🟡 | 🟡 | ❌ |
+| **Messaging surface** | | | | | | | | | | | |
+| WhatsApp | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Signal | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Telegram | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Matrix | ✅ | ❌ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Discord | 🔜 | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Slack | 🔜 | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ |
+| iMessage | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Total transports | 4 | **29+** | 2 | 3 | 10+ | 0 | 0 | 1 | 0 | 0 | 0 |
+| Voice-note transcription | ✅ | 🟡 | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Image understanding inbound | 🔜 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ |
+| **Tool / integration surface** | | | | | | | | | | | |
+| Built-in tools (read/write/edit/grep/bash) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| MCP server (exposes state) | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| MCP client (consumes tools) | 🟡⁴ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ✅ |
+| Composio-brokered tools | ❌ | ❌ | **✅ 1000+** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Skill marketplace / registry | ❌ | ✅ (ClawHub) | ❌ | ❌ | ✅ (agentskills.io) | ✅ | ❌ | ✅ | ❌ | 🟡 | ❌ |
+| Self-authored skills | ✅ | ✅ | ❌ | 🟡 | ✅ | ✅ | ❌ | 🟡 | ❌ | 🟡 | ❌ |
+| Agent-authored skills (self-extend) | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Memory / recall** | | | | | | | | | | | |
+| Vector store (embeddings) | ❌ | 🟡 | ✅ (pgvector) | ✅ (built-in) | 🟡 (honcho opt) | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| FTS5 keyword recall | ✅ | ❌ | 🟡 | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| LLM-summarised compression | ✅ | 🟡 | ✅ (3-layer) | ❌ | ✅ | 🟡 | ❌ | 🟡 | ✅ | 🟡 | ❌ |
+| Cross-session recall | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| **Automation** | | | | | | | | | | | |
+| Scheduled prompts (cron) | ✅ | 🟡 | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | 🟡 | ❌ | ❌ |
+| Sub-agent parallelism | 🔜 | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| **DX / Docs** | | | | | | | | | | | |
+| 100% godoc on exports | ✅ | – | – | – | 🟡 | – | 🟡 | – | – | 🟡 | ✅ |
+| Business-logic coverage | 87–100% | ? | ? | ? | 🟡 | ? | ~60% | ? | ? | 55–70% | 80%+ |
+| Fuzz tests | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Benchmarks | ✅ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 🟡 |
+| Interactive first-run wizard | ✅ | ✅ | ✅ | ✅ | ✅ | 🟡 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Multilingual READMEs | ❌ | ❌ | ❌ | ❌ | ✅ (4 langs) | ❌ | ❌ | ❌ | – | 🟡 | ❌ |
 
-## 4. Proposal: enterprise readiness plan
+¹ TrustClaw's one-command deploy targets Vercel + Neon + Upstash. Self-hosting elsewhere requires re-plumbing the AI Gateway path.
+² Cross-compilation to ARM64 works; the 530 MB image is the real gate for edge deployment.
+³ TrustClaw routes LLM calls through Vercel AI Gateway — no user-supplied Anthropic/OpenAI keys. Equivalent effect to claudecli but different mechanism.
+⁴ rousseau delegates MCP client duty to the `claude` CLI when using the default provider. Native MCP client in the direct anthropic/openai/bedrock/vertex paths is legitimately absent.
 
-Grouped by the concern that a real buyer surfaces during evaluation.
+## 2. Head-to-head takeaways
 
-### 4.1 Compliance / procurement (the biggest actual blocker)
+### rousseau vs OpenClaw
 
-Enterprises reject tools without formal answers to certain questions, regardless of technical merit. Ship:
+**OpenClaw wins on**: raw transport count (29+ vs 4), skill marketplace + agent self-extension, cross-OS install ergonomics.
 
-- **`docs/SECURITY_AUDIT.md`** — a self-audit walking through OWASP Top 10, CIS Docker Benchmark, and CIS Container Runtime rows. Include the mitigations we ship and the ones we explicitly do not (with rationale).
-- **`docs/DATA_HANDLING.md`** — what leaves the container, to whom, when. Named per-provider — Anthropic sees your prompts; the whatsmeow client sees your WhatsApp traffic; the container itself sees only what you bind-mount. Includes a data-flow diagram.
-- **`docs/THREAT_MODEL.md`** — STRIDE against the daemon. Actor: hostile inbound message. Actor: compromised model provider. Actor: bind-mount escape. Actor: dep supply-chain attack. Named mitigations per row.
-- **`docs/SUPPLY_CHAIN.md`** — describe the SLSA-3 workflow, cosign verification, SBOM structure. Include the exact `slsa-verifier` and `cosign verify-blob` commands a buyer runs to check a release.
-- **`docs/PRIVACY.md`** — explicit statement of what rousseau does and does not collect. No telemetry back to any home base — assert and prove.
-- **`SECURITY.md`** hardened — clear vulnerability disclosure, 90-day embargo, SLA on triage, PGP key.
+**rousseau wins on**: single Go binary, container hardening (SLSA-3 + cosign + SBOM + reproducibility + drop-caps + seccomp + egress example), MCP server, cron scheduler, structured output helper, godoc + fuzz + benchmarks + business-logic coverage discipline.
 
-None of this is code; it changes procurement outcomes anyway.
+**Verdict**: OpenClaw is the breadth leader; rousseau is the security/observability leader. Different niches within the same "self-hosted personal daemon" category.
 
-### 4.2 Runtime hardening (the second biggest blocker)
+### rousseau vs TrustClaw
 
-- **Prometheus metrics endpoint** behind `--metrics-addr :9100` on daemon commands. Opt-in — no HTTP surface by default. Metrics: provider latency histogram, tool-call approval rates, cron fires, compressor rewrites, JID-map size.
-- **OpenTelemetry spans** propagated through `Turn`, `Complete`, tool execution, transport send/receive. OTLP export via env vars.
-- **Sensitive-log redaction pass** — walk the slog handler chain and gate anything that touches user text behind `log.level=debug`. Body of an inbound WhatsApp message should not appear at info level.
-- **Rate limiting** — per-JID (or per-chat-id) sliding-window limiter on inbound messages. Configurable ceiling. Enterprise abuse story sorted.
-- **Panic recovery** on every goroutine that talks to the outside world. Never crash the daemon because whatsmeow emitted an unexpected event.
-- **Circuit breaker** on the provider connection. After N consecutive failures, drop to a documented fallback message ("model unavailable — retry in a minute").
+**TrustClaw wins on**: Composio's 1000+ OAuth-brokered tool integrations (massive breadth against SaaS APIs), fully-managed credential model, ready-made web dashboard, remote sandboxed execution (no shell on user's laptop), 3-layer compression architecture, per-user rate limiting, pgvector for long-term memory. If your enterprise question is "how do we let an agent hit Gmail + Slack + GitHub + Linear + Notion in one config," TrustClaw is closer to that answer today.
 
-### 4.3 Coverage push (the sub-95% engineering gap)
+**rousseau wins on**: pure self-hosting (no Vercel / Neon / Upstash / Composio dependency chain), lower egress footprint, container hardening, MCP server surface, native Anthropic + Bedrock + Vertex support (TrustClaw's AI Gateway abstracts these away — good for setup, bad for procurement teams that want per-provider audit), single-binary deployment (no Postgres + Redis dependency chain).
 
-- Extract `wmClientLike` interface for whatsmeow.Client. Build `FakeWMClient` in `internal/transport/whatsapp/testutil/`. Backfill `Start()` + `onEvent()` + QR flow tests.
-- Same shape for signal-cli: `signalRuntime` interface abstracting `exec.Cmd`. Backfill `Start()` + `pump()` tests.
-- Cli RunE closure tests via the fakes above.
+**Verdict**: TrustClaw is the integrations leader in a SaaS-first world; rousseau is the sovereignty leader in a self-hosted world. A company willing to run Postgres + Redis + Vercel would prefer TrustClaw. A company that wants a single container and no third-party accounts would prefer rousseau.
 
-Expected uplift: overall 79.6% → ~88%.
+### rousseau vs ZeroClaw
 
-### 4.4 Breadth push (the enterprise-must-have transports)
+**ZeroClaw wins on**: raw performance (Rust, 3.4 MB binary, <5 MB RAM), edge / low-cost hardware fit, cross-arch (ARM/x86/RISC-V native).
 
-- **Slack Bolt** transport (`internal/transport/slack/`). Same shape as Telegram (poll → route → handler → send). Slack is where most enterprises actually talk.
-- **Discord Gateway** transport. WebSocket-based; more complex than the poll model.
-- **Email inbound + SMTP outbound**. IMAP idle for inbound, standard SMTP for send. This is the "everyone has one" transport.
+**rousseau wins on**: transport breadth (4 vs 3), MCP + cron + skills + compression + recall (all absent in ZeroClaw), documented supply-chain hardening (SLSA-3 + SBOM + cosign are not verifiably present in ZeroClaw), godoc + tests + benchmarks + fuzz.
 
-### 4.5 Model breadth
+**Verdict**: ZeroClaw is the edge-device leader; rousseau is the fully-featured self-hosted daemon. A Raspberry Pi Zero deployment picks ZeroClaw. A single Podman host picks rousseau.
 
-- **Vertex Gemini native** — Gemini is Google's native offering; the current vertex package only routes Anthropic-on-Vertex.
-- **Anthropic-on-Snowflake / Cortex** — the actual enterprise data-plane bind.
-- **NVIDIA NIM** — the on-prem GPU cloud story.
+## 3. Refreshed 10-category scorecard
 
-### 4.6 Developer productivity
+Updated with the three real competitors now visible. Prior scores in parens.
 
-- **`rousseau tail`** — live-follow structured logs, colorised by level, filterable by `SessionID`.
-- **`rousseau replay <session-id>`** — re-run a stored session against a different provider or system prompt. Regression testing for prompts.
-- **`rousseau eval <suite>`** — run a suite of prompt/expected-output pairs and report deltas. Ship a starter suite in `docs/eval/`.
-- **Grafana dashboard JSON** in `docs/grafana/` mapping the Prometheus metrics from §4.2.
+| # | Category | Score | Δ | Rationale |
+|---|---|:-:|:-:|---|
+| 1 | Core correctness | 8 (8) | – | Unchanged — needs wall-clock time. |
+| 2 | Documentation | 10 (10) | – | – |
+| 3 | Test coverage | 8 (8) | – | Business logic 87–100% remains strong vs any of the three. |
+| 4 | Security posture | 10 (10) | – | None of the three verifiably ships SLSA-3 + cosign + SBOM. |
+| 5 | Feature breadth | **7** (9) | −2 | Honest downgrade. OpenClaw ships 29+ transports; TrustClaw ships 1000+ Composio-brokered integrations. rousseau is legitimately behind here. |
+| 6 | Performance | **8** (9) | −1 | ZeroClaw's 3.4 MB / <5 MB RAM sets the true ceiling; rousseau's 530 MB container is very large by comparison. Benchmarks alone don't close it. |
+| 7 | Deployment | **9** (10) | −1 | ZeroClaw beats rousseau on edge deploy; TrustClaw beats rousseau on "click a Vercel button and it's live." rousseau still wins on rootless-container-with-Quadlet. |
+| 8 | Codebase quality | 10 (10) | – | – |
+| 9 | Developer experience | 10 (10) | – | – |
+| 10 | Ecosystem fit (2026) | 10 (10) | – | MCP + streaming + caching + structured output still all present. |
 
-### 4.7 Documentation
+**Aggregate: 90/100** (was 94). The four-point drop is entirely on rows 5–7, and reflects real competition, not any regression in rousseau.
 
-- **`docs/DEPLOYMENT_GUIDES/`**: k3s + FluxCD, ECS Fargate, Cloud Run, plain systemd on Debian. Each guide is copy-paste to a working deployment.
-- **`docs/INTEGRATION_GUIDES/`**: PagerDuty, GitHub Actions, GitLab CI, ArgoCD. Show a real cron job that summarises PagerDuty pages.
-- **`docs/COOKBOOK/`**: 20+ recipes for common workflows.
+The score card just got harder because the field grew. This is actually the correct direction — a rating that stays at 94 forever regardless of what competitors ship is not a useful rating.
 
-### 4.8 Correctness earning
+## 4. Where rousseau still wins outright
 
-- **Nightly canary** — a scheduled workflow that spins up rousseau, sends it a known corpus of prompts, and asserts the responses match a fixed golden output. Any drift alerts on Slack.
-- **Public status page** — Cloudflare / Statuspage integration showing daemon uptime for a reference deployment.
-- **Bug bounty** on HackerOne — even a $500 tier signals seriousness.
+Against **all three** new competitors simultaneously, rousseau is the only one that ships:
 
-## 5. Ranked priority list (24-item TODO)
+1. **SLSA-3 provenance workflow + cosign-signed release checksums + CycloneDX SBOM per archive + reproducible-build CI.** None of OpenClaw / TrustClaw / ZeroClaw has published equivalents.
+2. **A rootless Podman container with drop-all-caps + seccomp + read-only rootfs + `UserNS=keep-id`.** OpenHands and Devin approach this; the three "-claw" competitors don't ship a container hardening story at all.
+3. **An MCP server surface exposing session state and cron jobs to any host that speaks MCP.** Interoperability with Claude Code, Cursor, and every future MCP client. TrustClaw's Composio path is powerful but not MCP-standard.
+4. **Fuzz tests and benchmarks on load-bearing paths.** No competitor cites fuzz or benchmark discipline in their public docs.
+5. **100% godoc on exported identifiers, revive-verified in CI.** goose is the only competitor that credibly claims this.
+6. **A single-binary daemon that doesn't require Postgres, Redis, Vercel, Neon, Upstash, Composio, or ClawHub to run.** rousseau starts with `podman run` and needs nothing else. TrustClaw needs a five-service dependency chain; OpenClaw needs pnpm+skill sync; ZeroClaw is close but lacks the transport breadth.
 
-Ordered by dollar impact / week of engineering. Each item is one PR.
+## 5. The updated path to true category leadership
 
-| # | Item | Est. days | Category |
-|---|---|:-:|---|
-| 1 | Prometheus metrics endpoint | 1 | Runtime |
-| 2 | OTel spans through Turn/Complete | 1 | Runtime |
-| 3 | Slack Bolt transport | 2 | Breadth |
-| 4 | Rate limiter per-JID | 1 | Hardening |
-| 5 | Panic-recovery wrappers | 0.5 | Hardening |
-| 6 | Redacting slog handler | 0.5 | Security |
-| 7 | Whatsmeow fake + backfill | 2 | Coverage |
-| 8 | Signal-cli fake + backfill | 1 | Coverage |
-| 9 | Discord Gateway transport | 3 | Breadth |
-| 10 | Email IMAP+SMTP transport | 2 | Breadth |
-| 11 | Vertex Gemini native | 1 | Breadth |
-| 12 | Image understanding inbound | 1 | Breadth |
-| 13 | `rousseau tail` | 0.5 | DX |
-| 14 | `rousseau replay <session>` | 1 | DX |
-| 15 | `rousseau eval <suite>` | 1.5 | DX |
-| 16 | Circuit breaker on provider | 1 | Hardening |
-| 17 | Docs: SECURITY_AUDIT + THREAT_MODEL | 1 | Docs |
-| 18 | Docs: DEPLOYMENT_GUIDES (k3s/ECS/Cloud Run/systemd) | 2 | Docs |
-| 19 | Docs: COOKBOOK (20+ recipes) | 2 | Docs |
-| 20 | Grafana dashboard JSON | 0.5 | Docs |
-| 21 | Nightly canary workflow | 1 | Correctness |
-| 22 | Public status page | 0.5 | Correctness |
-| 23 | HackerOne / bug bounty setup | 0.5 | Correctness |
-| 24 | Multi-tenant deployment guide | 1 | Docs |
+Reprioritised now that we can see who's ahead where. Each item is a PR.
 
-**Total to full enterprise-ready**: ~28 engineering-days = **~6 focused weeks for a single senior engineer.** Plus 3 months wall-clock for §4.8's public reputation build.
+### 5.1 Match OpenClaw's breadth (2-3 weeks)
 
-At that point rousseau moves from **best-in-its-niche** to **legitimately the enterprise reference implementation of a self-hosted, MCP-native, multi-transport coding agent**.
+Not chasing 29+ transports for its own sake. But the ones enterprises actually use:
 
-## 6. The one-line pitch after all that lands
+- **Discord Gateway transport** (2 days) — WebSocket-based. Matches OpenClaw + Hermes.
+- **Slack Bolt transport** (2 days) — the transport every enterprise actually uses.
+- **iMessage via BlueBubbles bridge** (2 days) — Hermes has it; OpenClaw has it; personal-user niche.
+- **Email IMAP+SMTP** (2 days) — the universal transport.
+- **SMS via Twilio + Vonage** (1 day each) — 2FA-style flows.
 
-> "The only self-hosted coding agent that ships with SLSA-3 provenance, an MCP server, six model providers across three clouds, six messaging channels, an OpenTelemetry export, a Prometheus surface, and a container that survives CIS Docker Benchmark unchanged — in 530 MB, one binary, no keys required."
+Post-landing: **9 transports**, closing 2/3 of OpenClaw's lead. The last 20 in their count are niche (WeChat, Line, Kakao, VK, etc.) — add on demand.
 
-Every clause in that sentence is defensible today. The clauses that aren't are on the TODO above.
+### 5.2 Match TrustClaw's integration breadth (1 week)
+
+The 1000+ Composio number is impressive but the real value is a small handful:
+
+- **Google Workspace tool suite** — Gmail, Calendar, Drive, Docs, Meet. Google's official Go SDKs. Config: paste OAuth credentials.
+- **GitHub / GitLab tool suite** — repos, PRs, issues, actions.
+- **Slack tool suite** — post messages, read threads, react. Shares auth with the Slack transport above.
+- **Linear / Jira tool suite** — issue create/read/update.
+- **Stripe / QuickBooks tool suite** — read-only.
+
+That covers 90% of what people actually reach 1000+ integrations for. Native, no Composio dep, no runtime broker.
+
+**Then**: build the Composio adapter as a *tool provider* — the 1000+ list becomes an opt-in feature for users who want that surface, not a runtime requirement.
+
+### 5.3 Match ZeroClaw's binary size (2 days, contentious)
+
+- Migrate the container base from `node:22-alpine` to a distroless-style base with just claude-cli's binary layer. Should get the 530 MB down to ~150 MB.
+- Static-link the whatsmeow bits so we can produce a `rousseau-lite` binary (~20 MB) that doesn't ship claude-cli. Users install claude-cli separately.
+
+Not chasing 3.4 MB — that requires a Rust rewrite we aren't doing.
+
+### 5.4 Ship the hardening / observability items from the earlier list
+
+Unchanged from `docs/GAP_ANALYSIS_2026_07_12.md §5`:
+
+- Prometheus metrics endpoint (1 day)
+- OpenTelemetry spans (1 day)
+- Rate limiter per-JID (1 day)
+- Panic-recovery + circuit breaker (1 day)
+- Redacting slog handler (0.5 day)
+
+### 5.5 The "why not just use TrustClaw" answer
+
+Publish a `docs/WHY_NOT_TRUSTCLAW.md` (and equivalent for OpenClaw / ZeroClaw). Rather than pretending competition doesn't exist, name it, engage with it, and be honest about who should pick which. This is the doc that makes a procurement team trust the project.
+
+## 6. Final honest verdict
+
+Ratings dropped 94 → 90 because three legitimate competitors are now visible. The delta is real; none of rousseau's actual capabilities regressed.
+
+**rousseau's niche after this update**: the security-hardened, sovereign, container-native, MCP-standard, multi-transport self-hosted coding daemon. It is not the:
+
+- Widest-integration option (that's TrustClaw)
+- Most-transports option (that's OpenClaw)
+- Smallest-footprint option (that's ZeroClaw)
+- Enterprise-cloud-managed option (that's Devin)
+- IDE-embedded option (that's Cursor)
+
+It is the "I want to run this myself, in a container, with a provenance-verifiable release, that inherits my claude CLI auth, and connects to at least four messaging channels, and doesn't require me to trust Composio / Vercel / any third party" option. That is a defensible niche and probably a small but real market.
+
+**Two-week plan to true category leadership**: §5.1 + §5.2 land Discord + Slack + Email + Google Workspace + GitHub + Slack tools. At that point rousseau matches TrustClaw's practical integration surface without the Composio broker and matches OpenClaw's enterprise-relevant transports (the enterprise-irrelevant ones don't matter). Combined with the security posture rousseau already has, that's a genuine "you should pick us" pitch to a platform team.
