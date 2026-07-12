@@ -188,7 +188,7 @@ func parseBedrockResponse(body []byte) (agent.Response, error) {
 		}
 	}
 	return agent.Response{
-		Message: agent.Message{Role: agent.RoleAssistant, Content: blocks},
+		Message:    agent.Message{Role: agent.RoleAssistant, Content: blocks},
 		StopReason: mapStop(raw.StopReason),
 		Usage: agent.Usage{
 			InputTokens:  raw.Usage.InputTokens,

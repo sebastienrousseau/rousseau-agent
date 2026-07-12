@@ -337,9 +337,9 @@ type gatewayFrame struct {
 }
 
 type readyPayload struct {
-	V         int          `json:"v"`
-	User      discordUser  `json:"user"`
-	SessionID string       `json:"session_id"`
+	V         int         `json:"v"`
+	User      discordUser `json:"user"`
+	SessionID string      `json:"session_id"`
 }
 
 type discordMessage struct {

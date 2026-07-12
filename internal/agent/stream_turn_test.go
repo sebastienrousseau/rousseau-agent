@@ -104,7 +104,11 @@ func TestTurnStream_ProviderError(t *testing.T) {
 	events := make(chan StreamEvent, 8)
 	// Drain in the background so TurnStream can send.
 	drained := make(chan struct{})
-	go func() { defer close(drained); for range events {} }()
+	go func() {
+		defer close(drained)
+		for range events {
+		}
+	}()
 
 	_, err := a.TurnStream(context.Background(), s, events)
 	<-drained
@@ -125,7 +129,11 @@ func TestTurnStream_FallsBackToCompleteWhenProviderIsNotStreaming(t *testing.T) 
 	s.Append(NewUserText("hello"))
 	events := make(chan StreamEvent, 4)
 	drained := make(chan struct{})
-	go func() { defer close(drained); for range events {} }()
+	go func() {
+		defer close(drained)
+		for range events {
+		}
+	}()
 
 	final, err := a.TurnStream(context.Background(), s, events)
 	<-drained

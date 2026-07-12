@@ -22,10 +22,10 @@ func silentLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discar
 // ---- fake IMAP client -----------------------------------------------
 
 type fakeIMAP struct {
-	messages   []*imapclient.FetchMessageBuffer
-	seqNums    []uint32
-	seenAdded  bool
-	closeErr   error
+	messages  []*imapclient.FetchMessageBuffer
+	seqNums   []uint32
+	seenAdded bool
+	closeErr  error
 }
 
 func (f *fakeIMAP) Select(string, *imap.SelectOptions) (*imap.SelectData, error) {
@@ -45,7 +45,9 @@ func (f *fakeIMAP) Store(imap.NumSet, *imap.StoreFlags, *imap.StoreOptions) Stor
 }
 func (f *fakeIMAP) Close() error { return f.closeErr }
 
-type fakeFetch struct{ buffers []*imapclient.FetchMessageBuffer }
+type fakeFetch struct {
+	buffers []*imapclient.FetchMessageBuffer
+}
 
 func (f *fakeFetch) Collect() ([]*imapclient.FetchMessageBuffer, error) { return f.buffers, nil }
 func (f *fakeFetch) Close() error                                       { return nil }
@@ -166,7 +168,7 @@ func TestDeliver_SMTPErrorSurfaces(t *testing.T) {
 	c, err := New(Config{
 		IMAPAddr: "i:1", IMAPUsername: "u", IMAPPassword: "p",
 		SMTPAddr: "s:1", SMTPUsername: "u", SMTPPassword: "p",
-		From: "bot@x",
+		From:              "bot@x",
 		IMAPClientFactory: func(string, string, string) (IMAPClient, error) { return &fakeIMAP{}, nil },
 		SendMail: func(string, string, []string, []byte, string, string) error {
 			return errors.New("smtp connect refused")
@@ -209,7 +211,7 @@ func TestPollOnce_HandlerErrorSkipsReply(t *testing.T) {
 	c, err := New(Config{
 		IMAPAddr: "i:1", IMAPUsername: "u", IMAPPassword: "p",
 		SMTPAddr: "s:1", SMTPUsername: "u", SMTPPassword: "p",
-		From: "bot@x",
+		From:              "bot@x",
 		IMAPClientFactory: func(string, string, string) (IMAPClient, error) { return fake, nil },
 		SendMail: func(string, string, []string, []byte, string, string) error {
 			sendCount++

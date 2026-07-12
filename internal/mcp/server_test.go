@@ -170,7 +170,7 @@ func TestServer_ConcurrentServe(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			params, _ := json.Marshal(ToolsCallParams{Name: "ok"})
-			resp := call(t, s, MethodToolsCall, []byte(`"` + string(rune('a'+i)) + `"`), params)
+			resp := call(t, s, MethodToolsCall, []byte(`"`+string(rune('a'+i))+`"`), params)
 			assert.Nil(t, resp.Error)
 		}(i)
 	}

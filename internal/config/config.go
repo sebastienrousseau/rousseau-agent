@@ -19,26 +19,26 @@ type Config struct {
 	//   "openai"               — OpenAI Chat Completions
 	//   "openrouter"           — OpenRouter (openai config, BaseURL preset)
 	//   "ollama"               — local ollama (openai config, BaseURL preset)
-	Provider   string           `mapstructure:"provider"`
-	Anthropic  AnthropicConfig  `mapstructure:"anthropic"`
-	ClaudeCLI  ClaudeCLIConfig  `mapstructure:"claudecli"`
-	OpenAI     OpenAIConfig     `mapstructure:"openai"`
-	OpenRouter OpenAIConfig     `mapstructure:"openrouter"`
-	Ollama     OpenAIConfig     `mapstructure:"ollama"`
-	Log        LogConfig        `mapstructure:"log"`
-	State      StateConfig      `mapstructure:"state"`
-	Agent      AgentConfig      `mapstructure:"agent"`
-	WhatsApp   WhatsAppConfig   `mapstructure:"whatsapp"`
-	Signal     SignalConfig     `mapstructure:"signal"`
-	Telegram   TelegramConfig   `mapstructure:"telegram"`
-	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
-	Vertex     VertexConfig     `mapstructure:"vertex"`
-	Matrix     MatrixConfig     `mapstructure:"matrix"`
-	Slack      SlackConfig      `mapstructure:"slack"`
-	Discord    DiscordConfig    `mapstructure:"discord"`
-	SMS        SMSConfig        `mapstructure:"sms"`
-	IMessage   IMessageConfig   `mapstructure:"imessage"`
-	Email      EmailConfig      `mapstructure:"email"`
+	Provider   string          `mapstructure:"provider"`
+	Anthropic  AnthropicConfig `mapstructure:"anthropic"`
+	ClaudeCLI  ClaudeCLIConfig `mapstructure:"claudecli"`
+	OpenAI     OpenAIConfig    `mapstructure:"openai"`
+	OpenRouter OpenAIConfig    `mapstructure:"openrouter"`
+	Ollama     OpenAIConfig    `mapstructure:"ollama"`
+	Log        LogConfig       `mapstructure:"log"`
+	State      StateConfig     `mapstructure:"state"`
+	Agent      AgentConfig     `mapstructure:"agent"`
+	WhatsApp   WhatsAppConfig  `mapstructure:"whatsapp"`
+	Signal     SignalConfig    `mapstructure:"signal"`
+	Telegram   TelegramConfig  `mapstructure:"telegram"`
+	Bedrock    BedrockConfig   `mapstructure:"bedrock"`
+	Vertex     VertexConfig    `mapstructure:"vertex"`
+	Matrix     MatrixConfig    `mapstructure:"matrix"`
+	Slack      SlackConfig     `mapstructure:"slack"`
+	Discord    DiscordConfig   `mapstructure:"discord"`
+	SMS        SMSConfig       `mapstructure:"sms"`
+	IMessage   IMessageConfig  `mapstructure:"imessage"`
+	Email      EmailConfig     `mapstructure:"email"`
 }
 
 // SMSConfig configures the Twilio/Vonage SMS transport.
@@ -212,11 +212,11 @@ type StateConfig struct {
 
 // AgentConfig configures the agent loop.
 type AgentConfig struct {
-	SystemPrompt  string             `mapstructure:"system_prompt"`
-	MaxIterations int                `mapstructure:"max_iterations"`
-	Approver      ApproverConfig     `mapstructure:"approver"`
-	Compression   CompressionConfig  `mapstructure:"compression"`
-	SkillsDir     string             `mapstructure:"skills_dir"`
+	SystemPrompt  string            `mapstructure:"system_prompt"`
+	MaxIterations int               `mapstructure:"max_iterations"`
+	Approver      ApproverConfig    `mapstructure:"approver"`
+	Compression   CompressionConfig `mapstructure:"compression"`
+	SkillsDir     string            `mapstructure:"skills_dir"`
 }
 
 // CompressionConfig configures session compression. Disabled by

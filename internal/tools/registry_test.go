@@ -11,9 +11,9 @@ import (
 
 type fakeTool struct{ n string }
 
-func (f *fakeTool) Name() string                                  { return f.n }
-func (f *fakeTool) Description() string                           { return "fake" }
-func (f *fakeTool) InputSchema() map[string]any                   { return map[string]any{"type": "object"} }
+func (f *fakeTool) Name() string                { return f.n }
+func (f *fakeTool) Description() string         { return "fake" }
+func (f *fakeTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (f *fakeTool) Execute(context.Context, json.RawMessage) (string, error) {
 	return "ok", nil
 }

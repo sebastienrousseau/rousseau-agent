@@ -87,7 +87,7 @@ func TestOnEvent_MessageRoutesThroughHandler(t *testing.T) {
 	})
 	sender := types.JID{User: "15551234567", Server: "s.whatsapp.net"}
 	c.onEvent(&events.Message{
-		Info: types.MessageInfo{MessageSource: types.MessageSource{Sender: sender, Chat: sender.ToNonAD()}},
+		Info:    types.MessageInfo{MessageSource: types.MessageSource{Sender: sender, Chat: sender.ToNonAD()}},
 		Message: &waProto.Message{Conversation: proto.String("hi")},
 	})
 	assert.True(t, invoked)

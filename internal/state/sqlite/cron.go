@@ -23,14 +23,14 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
 
 // CronJob is one scheduled prompt.
 type CronJob struct {
-	ID         string
-	Name       string
-	CronExpr   string
-	Prompt     string
-	DeliverTo  string
-	Enabled    bool
-	CreatedAt  time.Time
-	LastRunAt  *time.Time
+	ID        string
+	Name      string
+	CronExpr  string
+	Prompt    string
+	DeliverTo string
+	Enabled   bool
+	CreatedAt time.Time
+	LastRunAt *time.Time
 }
 
 // CronStore persists scheduled prompts. All methods are safe for

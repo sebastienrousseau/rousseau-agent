@@ -86,9 +86,9 @@ func loadFile(path string) (Skill, error) {
 	}
 	fm, body := splitFrontMatter(raw)
 	s := Skill{
-		Name:        strings.TrimSuffix(filepath.Base(path), ".md"),
-		Body:        strings.TrimSpace(body),
-		Path:        path,
+		Name: strings.TrimSuffix(filepath.Base(path), ".md"),
+		Body: strings.TrimSpace(body),
+		Path: path,
 	}
 	if fm != "" {
 		var meta frontMatter

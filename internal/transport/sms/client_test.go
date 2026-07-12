@@ -58,9 +58,9 @@ func TestNew_VonageHappyPath(t *testing.T) {
 
 func TestTwilio_DeliverPostsExpectedForm(t *testing.T) {
 	var (
-		recordedURL   string
-		recordedBody  []byte
-		recordedAuth  string
+		recordedURL  string
+		recordedBody []byte
+		recordedAuth string
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recordedURL = r.URL.Path
@@ -137,7 +137,7 @@ func TestVonage_DeliverPostsExpectedForm(t *testing.T) {
 	require.NoError(t, c.Deliver(context.Background(), "+15559876543", "hi"))
 
 	form := parseForm(t, recorded)
-	assert.Equal(t, "15559876543", form.Get("to"))     // stripped leading +
+	assert.Equal(t, "15559876543", form.Get("to")) // stripped leading +
 	assert.Equal(t, "15551234567", form.Get("from"))
 	assert.Equal(t, "hi", form.Get("text"))
 	assert.Equal(t, "K", form.Get("api_key"))

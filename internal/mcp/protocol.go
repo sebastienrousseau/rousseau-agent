@@ -22,15 +22,15 @@ const (
 
 // Method names published by the server.
 const (
-	MethodInitialize            = "initialize"
-	MethodInitialized           = "notifications/initialized"
-	MethodToolsList             = "tools/list"
-	MethodToolsCall             = "tools/call"
-	MethodResourcesList         = "resources/list"
-	MethodResourcesRead         = "resources/read"
-	MethodPromptsList           = "prompts/list"
-	MethodShutdown              = "shutdown"
-	MethodPing                  = "ping"
+	MethodInitialize    = "initialize"
+	MethodInitialized   = "notifications/initialized"
+	MethodToolsList     = "tools/list"
+	MethodToolsCall     = "tools/call"
+	MethodResourcesList = "resources/list"
+	MethodResourcesRead = "resources/read"
+	MethodPromptsList   = "prompts/list"
+	MethodShutdown      = "shutdown"
+	MethodPing          = "ping"
 )
 
 // Envelope is the JSON-RPC 2.0 request / notification / response

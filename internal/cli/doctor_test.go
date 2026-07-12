@@ -207,8 +207,8 @@ func TestCheckWhatsApp_VoiceDisabled(t *testing.T) {
 
 func TestCheckConfig(t *testing.T) {
 	cfg := &config.Config{
-		Log:   config.LogConfig{Level: "info", Format: "text"},
-		Agent: config.AgentConfig{MaxIterations: 16},
+		Log:      config.LogConfig{Level: "info", Format: "text"},
+		Agent:    config.AgentConfig{MaxIterations: 16},
 		WhatsApp: config.WhatsAppConfig{ReplyHeader: "hi\n\n"},
 	}
 	got := checkConfig(cfg)

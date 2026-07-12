@@ -12,7 +12,7 @@ import (
 
 type nopProvider struct{}
 
-func (nopProvider) Name() string                                            { return "nop" }
+func (nopProvider) Name() string { return "nop" }
 func (nopProvider) Complete(context.Context, agent.Request) (agent.Response, error) {
 	return agent.Response{}, nil
 }

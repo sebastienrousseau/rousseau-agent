@@ -20,9 +20,9 @@ import (
 
 // diagResult is one row in the doctor report.
 type diagResult struct {
-	Name    string
-	Status  string // "ok", "warn", "fail", "info"
-	Detail  string
+	Name   string
+	Status string // "ok", "warn", "fail", "info"
+	Detail string
 }
 
 func newDoctorCmd(opts *Options) *cobra.Command {

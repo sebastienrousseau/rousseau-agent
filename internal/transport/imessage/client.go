@@ -286,12 +286,12 @@ func truncate(s string, n int) string {
 // -- wire types --------------------------------------------------------
 
 type messageRecord struct {
-	GUID        string         `json:"guid"`
-	Text        string         `json:"text"`
-	IsFromMe    bool           `json:"isFromMe"`
-	DateCreated int64          `json:"dateCreated"` // ms since epoch
-	Handle      handleRecord   `json:"handle"`
-	Chats       []chatRecord   `json:"chats"`
+	GUID        string       `json:"guid"`
+	Text        string       `json:"text"`
+	IsFromMe    bool         `json:"isFromMe"`
+	DateCreated int64        `json:"dateCreated"` // ms since epoch
+	Handle      handleRecord `json:"handle"`
+	Chats       []chatRecord `json:"chats"`
 }
 
 type handleRecord struct {
