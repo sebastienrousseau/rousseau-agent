@@ -29,6 +29,7 @@ type Config struct {
 	State      StateConfig      `mapstructure:"state"`
 	Agent      AgentConfig      `mapstructure:"agent"`
 	WhatsApp   WhatsAppConfig   `mapstructure:"whatsapp"`
+	Signal     SignalConfig     `mapstructure:"signal"`
 }
 
 // OpenAIConfig configures the OpenAI-compatible provider. Shared by
@@ -41,6 +42,19 @@ type OpenAIConfig struct {
 }
 
 // WhatsAppConfig configures the whatsapp transport.
+type SignalConfig struct {
+	// Binary is the signal-cli executable. Empty defaults to "signal-cli".
+	Binary string `mapstructure:"binary"`
+	// Account is the E.164 phone number the daemon runs as.
+	Account string `mapstructure:"account"`
+	// ExtraArgs are inserted between `-a <account>` and `jsonRpc`.
+	ExtraArgs []string `mapstructure:"extra_args"`
+	// ReplyHeader is prepended to every outbound message.
+	ReplyHeader string `mapstructure:"reply_header"`
+	// Allowlist restricts inbound handling to these E.164 numbers.
+	Allowlist []string `mapstructure:"allowlist"`
+}
+
 type WhatsAppConfig struct {
 	// ReplyHeader is prepended to every outbound message. Empty uses
 	// the built-in default ("💎 *Rousseau Agent*\n\n"). Set to a single
@@ -106,6 +120,7 @@ type AgentConfig struct {
 	MaxIterations int                `mapstructure:"max_iterations"`
 	Approver      ApproverConfig     `mapstructure:"approver"`
 	Compression   CompressionConfig  `mapstructure:"compression"`
+	SkillsDir     string             `mapstructure:"skills_dir"`
 }
 
 // CompressionConfig configures session compression. Disabled by

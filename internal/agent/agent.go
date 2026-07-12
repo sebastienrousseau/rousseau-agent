@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
@@ -25,6 +26,19 @@ type Options struct {
 	// session do so in place; the loop then proceeds against the
 	// smaller message list.
 	Compressor Compressor
+	// SkillsProvider is asked for a system-prompt appendix based on
+	// the session's most recent user message. Nil disables the feature.
+	SkillsProvider SkillsProvider
+	// RecallProvider is asked for a system-prompt appendix drawn from
+	// prior sessions. Nil disables the feature.
+	RecallProvider RecallProvider
+}
+
+// SkillsProvider returns text spliced into the system prompt for a
+// given session. Implementations typically look at the last user
+// message and select relevant skills.
+type SkillsProvider interface {
+	SystemAppendix(s *Session) string
 }
 
 // Agent orchestrates the model / tool-use loop against a Session.
@@ -81,7 +95,7 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	for i := 0; i < a.opts.MaxIterations; i++ {
 		req := Request{
 			SessionID: s.ID,
-			System:    a.opts.SystemPrompt,
+			System:    a.systemPrompt(ctx, s),
 			Messages:  s.Messages,
 			Tools:     toolDefs,
 		}
@@ -111,6 +125,35 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	}
 
 	return Message{}, ErrMaxIterations
+}
+
+// systemPrompt composes the base system prompt with any appendix the
+// configured SkillsProvider and RecallProvider choose to add. Called
+// once per iteration so provider decisions react to the most recent
+// user message.
+//
+// The context is intentionally the same one the Turn is running under;
+// slow providers that block will delay the model round-trip and are
+// caller-visible.
+func (a *Agent) systemPrompt(ctx context.Context, s *Session) string {
+	parts := make([]string, 0, 3)
+	if a.opts.SystemPrompt != "" {
+		parts = append(parts, a.opts.SystemPrompt)
+	}
+	if a.opts.SkillsProvider != nil {
+		if x := a.opts.SkillsProvider.SystemAppendix(s); x != "" {
+			parts = append(parts, x)
+		}
+	}
+	if a.opts.RecallProvider != nil {
+		if x := a.opts.RecallProvider.SystemAppendix(ctx, s); x != "" {
+			parts = append(parts, x)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Content, error) {
