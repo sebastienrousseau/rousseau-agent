@@ -213,7 +213,9 @@ func TestHandleFrame_EventsAPIRoutesAndAcks(t *testing.T) {
 
 	// Ack fired.
 	require.NotEmpty(t, ws.writes)
-	var ack struct{ EnvelopeID string `json:"envelope_id"` }
+	var ack struct {
+		EnvelopeID string `json:"envelope_id"`
+	}
 	require.NoError(t, json.Unmarshal(ws.writes[0], &ack))
 	assert.Equal(t, "e1", ack.EnvelopeID)
 

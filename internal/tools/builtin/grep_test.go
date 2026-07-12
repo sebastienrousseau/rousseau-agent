@@ -102,9 +102,9 @@ func TestGrepTool_SkipsBinary(t *testing.T) {
 
 func TestGrepTool_SkipsIgnoredDirs(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		".git/objects/abc":   "match",
-		"node_modules/x.js":  "match",
-		"src/a.go":           "match",
+		".git/objects/abc":  "match",
+		"node_modules/x.js": "match",
+		"src/a.go":          "match",
 	})
 	tool := NewGrepTool(0, 0)
 	in, err := json.Marshal(map[string]any{"pattern": "match", "path": root})

@@ -20,11 +20,11 @@ import (
 )
 
 type fakeSender struct {
-	mu        sync.Mutex
-	sent      []string
-	presence  []types.ChatPresence
-	sendErr   error
-	presErr   error
+	mu       sync.Mutex
+	sent     []string
+	presence []types.ChatPresence
+	sendErr  error
+	presErr  error
 }
 
 func (f *fakeSender) SendText(_ context.Context, _ types.JID, body string) error {

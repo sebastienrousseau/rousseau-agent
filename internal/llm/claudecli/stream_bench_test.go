@@ -35,7 +35,11 @@ func BenchmarkParseStream_LongTranscript(b *testing.B) {
 		events := make(chan agent.StreamEvent, 200)
 		// Drain events off-thread so parseStream never blocks.
 		done := make(chan struct{})
-		go func() { defer close(done); for range events {} }()
+		go func() {
+			defer close(done)
+			for range events {
+			}
+		}()
 		_, _ = parseStream(strings.NewReader(raw), events)
 		close(events)
 		<-done

@@ -87,7 +87,7 @@ func TestLLMCompressor_HeadAlreadyCompressedIsSkipped(t *testing.T) {
 	s := NewSession("x")
 	// Prime with an already-compressed head.
 	s.Append(Message{
-		Role: RoleUser,
+		Role:    RoleUser,
 		Content: []Content{{Kind: ContentText, Text: DefaultCompressorMarker + " (summary)"}},
 	})
 	for i := 0; i < 4; i++ {

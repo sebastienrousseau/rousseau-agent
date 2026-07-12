@@ -5,9 +5,9 @@
 // Bedrock); auth is Google Application Default Credentials via
 // golang.org/x/oauth2/google. Endpoint layout:
 //
-//     https://<region>-aiplatform.googleapis.com/v1/
-//         projects/<project>/locations/<region>/publishers/anthropic/
-//         models/<model>:rawPredict
+//	https://<region>-aiplatform.googleapis.com/v1/
+//	    projects/<project>/locations/<region>/publishers/anthropic/
+//	    models/<model>:rawPredict
 package vertex
 
 import (

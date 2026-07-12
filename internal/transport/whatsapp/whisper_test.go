@@ -11,14 +11,14 @@ import (
 
 func TestExtensionFor(t *testing.T) {
 	cases := map[string]string{
-		"audio/ogg; codecs=opus": ".ogg",
-		"audio/opus":             ".opus",
-		"audio/mp3":              ".mp3",
-		"audio/mpeg":             ".mp3",
-		"audio/wav":              ".wav",
-		"audio/aac":              ".aac",
-		"audio/m4a":              ".m4a",
-		"audio/mp4":              ".m4a",
+		"audio/ogg; codecs=opus":   ".ogg",
+		"audio/opus":               ".opus",
+		"audio/mp3":                ".mp3",
+		"audio/mpeg":               ".mp3",
+		"audio/wav":                ".wav",
+		"audio/aac":                ".aac",
+		"audio/m4a":                ".m4a",
+		"audio/mp4":                ".m4a",
 		"application/octet-stream": ".bin",
 	}
 	for mime, want := range cases {

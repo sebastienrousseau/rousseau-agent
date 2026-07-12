@@ -40,9 +40,9 @@ type stubTool struct {
 	err  error
 }
 
-func (s *stubTool) Name() string                   { return s.name }
-func (s *stubTool) Description() string            { return "stub" }
-func (s *stubTool) InputSchema() map[string]any    { return map[string]any{"type": "object"} }
+func (s *stubTool) Name() string                { return s.name }
+func (s *stubTool) Description() string         { return "stub" }
+func (s *stubTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (s *stubTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
 	return s.out, s.err
 }
