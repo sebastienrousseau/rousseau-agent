@@ -282,7 +282,8 @@ Local development mirrors CI via `make check`. Dependabot opens weekly PRs for b
 
 ## Roadmap
 
-- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — living implementation plan (P0/P1/P2 priorities, exit criteria, non-negotiable engineering standards).
+- [`docs/GAP_ANALYSIS_2026.md`](./docs/GAP_ANALYSIS_2026.md) — **active forward plan** (July 2026). Where rousseau sits after everything shipped, refreshed 2026 trend list, honest rating, phased plan to close the remaining gaps.
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) — historical roadmap (Q3/Q4 2026, fully shipped).
 - [`docs/COMPETITORS.md`](./docs/COMPETITORS.md) — 2026 landscape, competitor deep-dive, honest rating against Hermes/Claude Code/Aider/Cursor/Devin/OpenHands.
 
 ## Contributing
