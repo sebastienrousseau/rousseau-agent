@@ -11,6 +11,7 @@ import (
 	bedrockllm "github.com/sebastienrousseau/rousseau-agent/internal/llm/bedrock"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	openaillm "github.com/sebastienrousseau/rousseau-agent/internal/llm/openai"
+	vertexllm "github.com/sebastienrousseau/rousseau-agent/internal/llm/vertex"
 )
 
 // buildProvider selects and constructs the LLM provider from Config.
@@ -52,6 +53,17 @@ func buildProvider(cfg *config.Config) (agent.Provider, error) {
 			Model:     cfg.Bedrock.Model,
 			Profile:   cfg.Bedrock.Profile,
 			MaxTokens: cfg.Bedrock.MaxTokens,
+		})
+	case "vertex":
+		if cfg.Vertex.Project == "" || cfg.Vertex.Region == "" || cfg.Vertex.Model == "" {
+			return nil, errors.New("provider=vertex requires vertex.{project, region, model}")
+		}
+		return vertexllm.New(context.Background(), vertexllm.Config{
+			Project:         cfg.Vertex.Project,
+			Region:          cfg.Vertex.Region,
+			Model:           cfg.Vertex.Model,
+			CredentialsFile: cfg.Vertex.CredentialsFile,
+			MaxTokens:       cfg.Vertex.MaxTokens,
 		})
 	default:
 		return nil, fmt.Errorf("unknown provider %q (want claudecli/anthropic/openai/openrouter/ollama)", cfg.Provider)
