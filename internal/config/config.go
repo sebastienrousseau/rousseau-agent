@@ -34,6 +34,24 @@ type Config struct {
 	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
 	Vertex     VertexConfig     `mapstructure:"vertex"`
 	Matrix     MatrixConfig     `mapstructure:"matrix"`
+	Slack      SlackConfig      `mapstructure:"slack"`
+	Discord    DiscordConfig    `mapstructure:"discord"`
+}
+
+// SlackConfig configures the Slack Socket Mode transport.
+type SlackConfig struct {
+	AppToken    string   `mapstructure:"app_token"`
+	BotToken    string   `mapstructure:"bot_token"`
+	BotUserID   string   `mapstructure:"bot_user_id"`
+	ReplyHeader string   `mapstructure:"reply_header"`
+	Allowlist   []string `mapstructure:"allowlist"`
+}
+
+// DiscordConfig configures the Discord Gateway transport.
+type DiscordConfig struct {
+	Token       string   `mapstructure:"token"`
+	ReplyHeader string   `mapstructure:"reply_header"`
+	Allowlist   []string `mapstructure:"allowlist"`
 }
 
 // MatrixConfig configures the Matrix client-server transport.
