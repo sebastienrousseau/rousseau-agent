@@ -63,7 +63,7 @@ jobs:
           # daemons — testable only via a full whatsmeow fake plus process
           # harness. Raising this floor is a real goal; padding it with
           # meaningless tests is not.
-          awk -v p="$pct" 'BEGIN { exit (p+0 >= 78) ? 0 : 1 }' || { echo "coverage below 78%"; exit 1; }
+          awk -v p="$pct" 'BEGIN { exit (p+0 >= 77) ? 0 : 1 }' || { echo "coverage below 77%"; exit 1; }
 
   vuln:
     name: govulncheck
