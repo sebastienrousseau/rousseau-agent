@@ -104,7 +104,7 @@ func TestRouter_HandleFirstMessageCreatesSession(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "hi back", reply)
 
-	id, ok, _ := jid.Get(context.Background(), "1234@s.whatsapp.net")
+	id, ok, _ := jid.Get(context.Background(), "1234@s.whatsapp.net") //nolint:errcheck // ok covers the failure path
 	assert.True(t, ok)
 	assert.NotEmpty(t, id)
 	assert.Len(t, store.sessions, 1)

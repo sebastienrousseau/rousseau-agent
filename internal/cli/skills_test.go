@@ -108,7 +108,7 @@ func TestBuildRecallProvider_NilStoreReturnsNil(t *testing.T) {
 func TestBuildRecallProvider_ReturnsWrapper(t *testing.T) {
 	s, err := sqlitestore.Open(context.Background(), ":memory:")
 	require.NoError(t, err)
-	defer func() { _ = s.Close() }()
+	defer func() { _ = s.Close() }() //nolint:errcheck // test cleanup
 	got := buildRecallProvider(s)
 	assert.NotNil(t, got)
 }

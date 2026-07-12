@@ -48,10 +48,10 @@ func TestDeliver_BadChatID(t *testing.T) {
 func TestDeliver_PostsExpectedPayload(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		recorded = body
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true,"result":true}`))
+		_, _ = w.Write([]byte(`{"ok":true,"result":true}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -71,8 +71,8 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 func TestDeliver_PrependsReplyHeader(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		recorded, _ = io.ReadAll(r.Body)      //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{"ok":true}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -121,8 +121,8 @@ func TestRoute_IgnoresEmptyMessages(t *testing.T) {
 func TestRoute_InvokesHandlerAndReplies(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		recorded, _ = io.ReadAll(r.Body)      //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{"ok":true}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -171,14 +171,14 @@ func TestGetUpdates_OffsetAdvances(t *testing.T) {
 	call := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call++
-		body, _ := io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		if call == 1 {
 			assert.NotContains(t, string(body), `"offset"`)
-			_, _ = w.Write([]byte(`{"ok":true,"result":[{"update_id":42,"message":{"text":"hi","chat":{"id":1}}}]}`))
+			_, _ = w.Write([]byte(`{"ok":true,"result":[{"update_id":42,"message":{"text":"hi","chat":{"id":1}}}]}`)) //nolint:errcheck // test fixture
 			return
 		}
 		assert.Contains(t, string(body), `"offset":43`)
-		_, _ = w.Write([]byte(`{"ok":true,"result":[]}`))
+		_, _ = w.Write([]byte(`{"ok":true,"result":[]}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -196,7 +196,7 @@ func TestGetUpdates_OffsetAdvances(t *testing.T) {
 // branch when the server sends non-JSON.
 func TestCall_MalformedResponseErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`not json`))
+		_, _ = w.Write([]byte(`not json`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 

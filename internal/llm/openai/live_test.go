@@ -24,7 +24,7 @@ func mockCompletionServer(t *testing.T, fixture string) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(fixture))
+		_, _ = w.Write([]byte(fixture)) //nolint:errcheck // test fixture
 	}))
 }
 

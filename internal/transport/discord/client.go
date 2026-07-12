@@ -133,7 +133,7 @@ func (c *Client) Stop() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {
-		_ = c.conn.Close(websocket.StatusNormalClosure, "shutdown")
+		_ = c.conn.Close(websocket.StatusNormalClosure, "shutdown") //nolint:errcheck // best-effort close
 		c.conn = nil
 	}
 	return nil
@@ -152,7 +152,7 @@ func (c *Client) runOnce(ctx context.Context, handler transport.Handler) error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if c.conn != nil {
-			_ = c.conn.Close(websocket.StatusNormalClosure, "session end")
+			_ = c.conn.Close(websocket.StatusNormalClosure, "session end") //nolint:errcheck // best-effort close
 			c.conn = nil
 		}
 	}()
@@ -298,7 +298,7 @@ func (c *Client) postMessage(ctx context.Context, channelID, body string) error 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		rb, _ := io.ReadAll(resp.Body)
+		rb, _ := io.ReadAll(resp.Body) //nolint:errcheck // best-effort read of error body
 		return fmt.Errorf("discord: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400))
 	}
 	return nil
@@ -307,7 +307,10 @@ func (c *Client) postMessage(ctx context.Context, channelID, body string) error 
 // -- default WebSocket dialer -----------------------------------------
 
 func defaultDial(ctx context.Context, url string) (WSConn, error) {
-	conn, _, err := websocket.Dial(ctx, url, nil)
+	conn, resp, err := websocket.Dial(ctx, url, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return nil, err
 	}

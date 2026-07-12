@@ -37,7 +37,7 @@ func newTestStore(t *testing.T) *sqlitestore.Store {
 	t.Helper()
 	store, err := sqlitestore.Open(context.Background(), ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 	return store
 }
 

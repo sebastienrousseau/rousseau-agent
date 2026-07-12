@@ -28,7 +28,7 @@ func openTestStore(t *testing.T) (*sqlitestore.Store, *sqlitestore.CronStore) {
 	ctx := context.Background()
 	s, err := sqlitestore.Open(ctx, path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 	cs, err := sqlitestore.NewCronStore(ctx, s)
 	require.NoError(t, err)
 	return s, cs
@@ -96,7 +96,7 @@ func TestScheduler_FiresEnabledJob(t *testing.T) {
 	defer func() {
 		sctx, c := context.WithTimeout(context.Background(), time.Second)
 		defer c()
-		_ = s.Shutdown(sctx)
+		_ = s.Shutdown(sctx) //nolint:errcheck // test cleanup
 	}()
 
 	// Wait up to 1s for the first fire.
@@ -127,7 +127,7 @@ func TestScheduler_SkipsDisabledJob(t *testing.T) {
 	defer func() {
 		sctx, c := context.WithTimeout(context.Background(), time.Second)
 		defer c()
-		_ = s.Shutdown(sctx)
+		_ = s.Shutdown(sctx) //nolint:errcheck // test cleanup
 	}()
 	time.Sleep(300 * time.Millisecond)
 	assert.Equal(t, 0, runner.count())
@@ -148,7 +148,7 @@ func TestScheduler_ToggleEnableIsPickedUp(t *testing.T) {
 	defer func() {
 		sctx, c := context.WithTimeout(context.Background(), time.Second)
 		defer c()
-		_ = s.Shutdown(sctx)
+		_ = s.Shutdown(sctx) //nolint:errcheck // test cleanup
 	}()
 	time.Sleep(120 * time.Millisecond)
 	require.Equal(t, 0, runner.count(), "disabled job must not fire")
@@ -175,7 +175,7 @@ func TestScheduler_RunnerErrorLoggedNotFatal(t *testing.T) {
 	defer func() {
 		sctx, c := context.WithTimeout(context.Background(), time.Second)
 		defer c()
-		_ = s.Shutdown(sctx)
+		_ = s.Shutdown(sctx) //nolint:errcheck // test cleanup
 	}()
 	// Wait actively — CI schedulers can add jitter.
 	deadline := time.Now().Add(2 * time.Second)

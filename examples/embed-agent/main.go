@@ -59,5 +59,5 @@ func main() {
 
 	// The final assistant message is always the last one in the session
 	// and is also returned by Turn.
-	fmt.Printf("assistant: %s\n", reply.Content[0].Text)
+	fmt.Printf("assistant: %s\n", reply.Content[0].Text) //nolint:forbidigo // example program; stdout is the intended sink
 }

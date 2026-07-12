@@ -39,7 +39,7 @@ func newChatCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			registry := tools.NewRegistry()
 			registry.MustRegister(builtin.NewReadTool())

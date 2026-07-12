@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"strings"
 	"testing"
 
@@ -183,9 +182,3 @@ func TestMapStop(t *testing.T) {
 	assert.Equal(t, agent.StopMaxTokens, mapStop("max_tokens"))
 	assert.Equal(t, agent.StopOther, mapStop("weird"))
 }
-
-// discardReader is a small helper used to swallow response bodies in
-// tests that don't care about them.
-type discardReader struct{}
-
-func (discardReader) Read(_ []byte) (int, error) { return 0, io.EOF }

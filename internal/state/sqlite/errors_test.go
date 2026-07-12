@@ -29,7 +29,7 @@ func TestOpen_InMemoryWorks(t *testing.T) {
 func TestStore_ListEmpty(t *testing.T) {
 	s, err := Open(context.Background(), ":memory:")
 	require.NoError(t, err)
-	defer func() { _ = s.Close() }()
+	defer func() { _ = s.Close() }() //nolint:errcheck // test cleanup
 	got, err := s.List(context.Background(), 5)
 	require.NoError(t, err)
 	assert.Empty(t, got)
@@ -38,7 +38,7 @@ func TestStore_ListEmpty(t *testing.T) {
 func TestStore_ListWithoutLimit(t *testing.T) {
 	s, err := Open(context.Background(), ":memory:")
 	require.NoError(t, err)
-	defer func() { _ = s.Close() }()
+	defer func() { _ = s.Close() }() //nolint:errcheck // test cleanup
 	got, err := s.List(context.Background(), 0)
 	require.NoError(t, err)
 	assert.Empty(t, got)

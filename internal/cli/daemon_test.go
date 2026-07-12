@@ -72,7 +72,7 @@ func TestAssembleDaemon_HappyPath(t *testing.T) {
 
 	wiring, err := assembleDaemon(context.Background(), opts, []string{"1@s.whatsapp.net"})
 	require.NoError(t, err)
-	defer func() { _ = wiring.Sessions.Close() }()
+	defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // test cleanup
 
 	assert.NotNil(t, wiring.Provider)
 	assert.NotNil(t, wiring.Agent)
@@ -90,7 +90,7 @@ func TestStartCron_StartsAndShutsDownCleanly(t *testing.T) {
 
 	wiring, err := assembleDaemon(context.Background(), opts, nil)
 	require.NoError(t, err)
-	defer func() { _ = wiring.Sessions.Close() }()
+	defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // test cleanup
 
 	delivery := func(context.Context, string, string) error { return nil }
 	shutdown, err := wiring.startCron(context.Background(), delivery, silentLogger())

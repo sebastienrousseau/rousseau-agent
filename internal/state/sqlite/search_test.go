@@ -14,7 +14,7 @@ func openSearchTestStore(t *testing.T) *Store {
 	t.Helper()
 	s, err := Open(context.Background(), ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 	return s
 }
 

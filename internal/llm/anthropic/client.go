@@ -61,7 +61,7 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 	applyCacheMarkers(msgs, req.CacheableMessages)
 
 	params := sdk.MessageNewParams{
-		Model:     sdk.Model(p.cfg.Model),
+		Model:     p.cfg.Model,
 		MaxTokens: p.cfg.MaxTokens,
 		Messages:  msgs,
 	}

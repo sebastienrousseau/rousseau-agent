@@ -185,7 +185,7 @@ func TestGrepTool_CancelledContext(t *testing.T) {
 	cancel()
 	in, err := json.Marshal(map[string]any{"pattern": "line", "path": root})
 	require.NoError(t, err)
-	_, _ = tool.Execute(ctx, in)
+	_, _ = tool.Execute(ctx, in) //nolint:errcheck // exercising cancellation; error either way is acceptable
 	// Either returns an error or empty — both acceptable, we're just
 	// exercising the cancellation branch.
 }

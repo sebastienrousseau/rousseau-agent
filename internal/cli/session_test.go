@@ -24,7 +24,7 @@ func makeOpts(t *testing.T) *Options {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	// Prime the file so openStore does not fight over creation.
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	_ = os.MkdirAll(filepath.Dir(path), 0o755) //nolint:errcheck // test scaffolding
 	return &Options{
 		Config: &config.Config{State: config.StateConfig{Path: path}},
 		Logger: silentLogger(),

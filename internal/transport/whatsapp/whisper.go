@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -57,7 +58,7 @@ func (t *WhisperTranscriber) Transcribe(ctx context.Context, audio []byte, mimet
 	if err != nil {
 		return "", fmt.Errorf("whisper: temp dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
+	defer func() { _ = os.RemoveAll(dir) }() //nolint:errcheck // best-effort cleanup
 
 	ext := extensionFor(mimetype)
 	input := filepath.Join(dir, "input"+ext)
@@ -90,7 +91,7 @@ func (t *WhisperTranscriber) Transcribe(ctx context.Context, audio []byte, mimet
 		// Fallback: whisper.cpp variants that write next to the input.
 		txt2, err2 := os.ReadFile(input + ".txt")
 		if err2 != nil {
-			return "", fmt.Errorf("whisper: read transcript: %w (fallback: %v)", err, err2)
+			return "", fmt.Errorf("whisper: read transcript: %w", errors.Join(err, err2))
 		}
 		txt = txt2
 	}

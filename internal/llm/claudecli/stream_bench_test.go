@@ -40,7 +40,7 @@ func BenchmarkParseStream_LongTranscript(b *testing.B) {
 			for range events {
 			}
 		}()
-		_, _ = parseStream(strings.NewReader(raw), events)
+		_, _ = parseStream(strings.NewReader(raw), events) //nolint:errcheck // benchmark-only
 		close(events)
 		<-done
 	}

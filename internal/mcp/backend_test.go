@@ -17,7 +17,7 @@ func openBackend(t *testing.T) (SessionsBackend, *sqlitestore.Store, *sqlitestor
 	path := filepath.Join(t.TempDir(), "mcp.db")
 	s, err := sqlitestore.Open(context.Background(), path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 	cs, err := sqlitestore.NewCronStore(context.Background(), s)
 	require.NoError(t, err)
 	return NewStoreBackend(s, cs), s, cs
@@ -69,7 +69,7 @@ func TestStoreBackend_CronListNilCron(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "b.db")
 	s, err := sqlitestore.Open(context.Background(), path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 
 	be := NewStoreBackend(s, nil)
 	jobs, err := be.CronList(context.Background())

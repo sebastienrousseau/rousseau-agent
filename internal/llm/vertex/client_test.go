@@ -80,14 +80,9 @@ func TestNew_DefaultsMaxTokens(t *testing.T) {
 func TestComplete_HappyPath(t *testing.T) {
 	var seen []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen, _ = io.ReadAll(r.Body)
+		seen, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-      "id":"msg_01","type":"message","role":"assistant",
-      "stop_reason":"end_turn",
-      "content":[{"type":"text","text":"hi from vertex"}],
-      "usage":{"input_tokens":8,"output_tokens":4}
-    }`))
+		_, _ = w.Write([]byte(`{"id":"msg_01","type":"message","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"hi from vertex"}],"usage":{"input_tokens":8,"output_tokens":4}}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 

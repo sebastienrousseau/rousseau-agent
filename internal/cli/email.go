@@ -55,7 +55,7 @@ func newEmailCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }()
+			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
 
 			poll := 0 * time.Second
 			if s := firstNonEmpty(pollInterval, cfg.Email.PollInterval); s != "" {

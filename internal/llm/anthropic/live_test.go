@@ -34,7 +34,7 @@ func TestComplete_MockedHTTP(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(completeFixture))
+		_, _ = w.Write([]byte(completeFixture)) //nolint:errcheck // test fixture
 	}))
 	defer server.Close()
 
@@ -86,7 +86,7 @@ func TestStream_MockedHTTP(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		flusher, _ := w.(http.Flusher)
-		_, _ = w.Write([]byte(streamFixture))
+		_, _ = w.Write([]byte(streamFixture)) //nolint:errcheck // test fixture
 		if flusher != nil {
 			flusher.Flush()
 		}

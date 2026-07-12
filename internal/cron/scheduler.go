@@ -161,7 +161,6 @@ func (s *Scheduler) sync(ctx context.Context) error {
 		if _, exists := s.entries[id]; exists {
 			continue
 		}
-		job := job // capture
 		entryID, err := s.cron.AddFunc(job.CronExpr, func() {
 			s.fire(job)
 		})

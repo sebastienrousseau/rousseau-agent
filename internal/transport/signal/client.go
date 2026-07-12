@@ -106,7 +106,7 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 
 	c.logger.Info("signal.started", slog.String("account", c.cfg.Account))
 	err = c.pump(ctx, stdout, handler)
-	_ = c.Stop()
+	_ = c.Stop() //nolint:errcheck // best-effort stop after pump exit
 	return err
 }
 
@@ -118,10 +118,10 @@ func (c *Client) Stop() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.stdin != nil {
-		_ = c.stdin.Close()
+		_ = c.stdin.Close() //nolint:errcheck // best-effort close
 	}
 	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
+		_ = c.cmd.Process.Kill() //nolint:errcheck // best-effort kill
 	}
 	return nil
 }

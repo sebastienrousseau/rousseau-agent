@@ -144,7 +144,7 @@ func (c *Client) Deliver(ctx context.Context, chatGUID, body string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		rb, _ := io.ReadAll(resp.Body)
+		rb, _ := io.ReadAll(resp.Body) //nolint:errcheck // best-effort read of error body
 		return fmt.Errorf("imessage: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400))
 	}
 	return nil
@@ -187,12 +187,12 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 			break
 		}
 	}
+	// When newestBoundary is 0 and lastSeen is set, the cursor drifted off
+	// the page — treat everything returned as fresh (BlueBubbles caps by
+	// page size on its side).
 	fresh := msgs
 	if newestBoundary > 0 {
 		fresh = msgs[:newestBoundary]
-	} else if lastSeen != "" {
-		// The cursor drifted off — treat everything as fresh, but cap
-		// at page size (BlueBubbles limits by design).
 	}
 
 	// Reverse to oldest-first.

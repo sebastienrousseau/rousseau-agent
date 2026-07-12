@@ -43,8 +43,8 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/api/v1/message/text")
 		assert.Contains(t, r.URL.RawQuery, "password=p")
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{"status":200}`))
+		recorded, _ = io.ReadAll(r.Body)         //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{"status":200}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -64,8 +64,8 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 func TestDeliver_PrependsReplyHeader(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{}`))
+		recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{}`))     //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{BaseURL: srv.URL, Password: "p", ReplyHeader: "🍏 ", HTTPClient: srv.Client()}, silentLogger())
@@ -90,9 +90,7 @@ func TestDeliver_HTTPErrorSurfaces(t *testing.T) {
 
 func TestFetchMessages_ParsesResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[
-      {"guid":"m1","text":"hi","isFromMe":false,"dateCreated":1700000000000,"handle":{"address":"+14155551234"},"chats":[{"guid":"chat1"}]}
-    ]}`))
+		_, _ = w.Write([]byte(`{"data":[{"guid":"m1","text":"hi","isFromMe":false,"dateCreated":1700000000000,"handle":{"address":"+14155551234"},"chats":[{"guid":"chat1"}]}]}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{BaseURL: srv.URL, Password: "p", HTTPClient: srv.Client()}, silentLogger())
@@ -107,7 +105,7 @@ func TestFetchMessages_ParsesResponse(t *testing.T) {
 
 func TestPrimeCursor_RecordsNewestID(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"guid":"newest","text":"x"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"guid":"newest","text":"x"}]}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{BaseURL: srv.URL, Password: "p", HTTPClient: srv.Client()}, silentLogger())
@@ -118,7 +116,7 @@ func TestPrimeCursor_RecordsNewestID(t *testing.T) {
 
 func TestPrimeCursor_EmptyResponseNoop(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[]}`))
+		_, _ = w.Write([]byte(`{"data":[]}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{BaseURL: srv.URL, Password: "p", HTTPClient: srv.Client()}, silentLogger())
@@ -141,13 +139,13 @@ func TestPollOnce_RoutesFreshMessagesOldestFirst(t *testing.T) {
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/message/text" {
-			b, _ := io.ReadAll(r.Body)
+			b, _ := io.ReadAll(r.Body) //nolint:errcheck // test fixture
 			postedMu.Lock()
 			posted = append(posted, b)
 			postedMu.Unlock()
 			return
 		}
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(body)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -181,7 +179,7 @@ func TestPollOnce_SkipsAlreadyHandled(t *testing.T) {
 			atomic.AddInt32(&invoked, 1)
 			return
 		}
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(body)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -203,7 +201,7 @@ func TestPollOnce_SkipsSelfMessages(t *testing.T) {
     {"guid":"m1","text":"hello","isFromMe":true,"chats":[{"guid":"c"}]}
   ]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(body)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{BaseURL: srv.URL, Password: "p", HTTPClient: srv.Client()}, silentLogger())
@@ -220,7 +218,7 @@ func TestPollOnce_SkipsEmptyBody(t *testing.T) {
     {"guid":"m1","text":"","isFromMe":false,"chats":[{"guid":"c"}]}
   ]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(body)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{BaseURL: srv.URL, Password: "p", HTTPClient: srv.Client()}, silentLogger())
@@ -238,7 +236,7 @@ func TestPollOnce_HandlerErrorContinues(t *testing.T) {
 		if r.URL.Path == "/api/v1/message/text" {
 			t.Fatal("send must not fire on handler error")
 		}
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write([]byte(body)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{BaseURL: srv.URL, Password: "p", HTTPClient: srv.Client()}, silentLogger())

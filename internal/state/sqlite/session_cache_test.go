@@ -12,7 +12,7 @@ func TestClaudeSessionCache_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 
 	c, err := NewClaudeSessionCache(ctx, s)
 	require.NoError(t, err)
@@ -26,7 +26,7 @@ func TestClaudeSessionCache_HotCacheMirrorsDB(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 
 	c1, err := NewClaudeSessionCache(ctx, s)
 	require.NoError(t, err)
@@ -41,7 +41,7 @@ func TestClaudeSessionCache_IdempotentRemember(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 
 	c, err := NewClaudeSessionCache(ctx, s)
 	require.NoError(t, err)
