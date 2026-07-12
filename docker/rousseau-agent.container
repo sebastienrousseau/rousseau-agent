@@ -34,6 +34,15 @@ Volume=%h/team-rousseau-workspace:/workspace:rw,Z
 # via pasta (rootless network stack; slirp4netns was removed in newer
 # podman). Pasta blocks inbound from the host by default and is faster
 # than slirp on modern kernels.
+#
+# Egress hardening (kernel-level, layered on top of the container
+# namespace): drop everything except Meta's WhatsApp Web ranges,
+# Anthropic (behind CloudFront so use domain-based filter), and
+# Signal. If you want the tightest possible posture, run an
+# unbound/CoreDNS resolver in an adjacent container and only allow
+# outbound to that resolver + the CDN IPs it hands back. The rousseau
+# binary itself makes no other network calls; every deviation is a
+# bug worth flagging.
 Network=pasta
 
 # Map container UID/GID 1000 (rousseau) to the host user (seb, UID

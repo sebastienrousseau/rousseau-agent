@@ -30,6 +30,7 @@ type Config struct {
 	Agent      AgentConfig      `mapstructure:"agent"`
 	WhatsApp   WhatsAppConfig   `mapstructure:"whatsapp"`
 	Signal     SignalConfig     `mapstructure:"signal"`
+	Telegram   TelegramConfig   `mapstructure:"telegram"`
 }
 
 // OpenAIConfig configures the OpenAI-compatible provider. Shared by
@@ -41,7 +42,15 @@ type OpenAIConfig struct {
 	MaxTokens int64  `mapstructure:"max_tokens"`
 }
 
-// WhatsAppConfig configures the whatsapp transport.
+// TelegramConfig configures the Telegram Bot API transport.
+type TelegramConfig struct {
+	Token       string   `mapstructure:"token"`
+	BaseURL     string   `mapstructure:"base_url"`
+	ReplyHeader string   `mapstructure:"reply_header"`
+	Allowlist   []string `mapstructure:"allowlist"`
+}
+
+// SignalConfig configures the signal-cli transport.
 type SignalConfig struct {
 	// Binary is the signal-cli executable. Empty defaults to "signal-cli".
 	Binary string `mapstructure:"binary"`

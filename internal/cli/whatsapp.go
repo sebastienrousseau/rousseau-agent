@@ -5,17 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
-	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
-	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
-	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
-	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
-	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
-	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport/whatsapp"
 )
 
@@ -35,134 +27,64 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			"numbers using unofficial clients — do not run this on a number you rely on.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg := opts.Config
-			// A daemon has no interactive terminal for claude to prompt
-			// against. If the operator hasn't picked a permission mode,
-			// pick one that lets tool calls actually complete and log a
-			// prominent warning about the tradeoff.
-			if (cfg.Provider == "" || cfg.Provider == "claudecli") && cfg.ClaudeCLI.PermissionMode == "" {
-				cfg.ClaudeCLI.PermissionMode = "bypassPermissions"
-				opts.Logger.Warn("whatsapp.permission_mode_default",
-					"mode", "bypassPermissions",
-					"why", "no claudecli.permission_mode set; unattended daemon cannot approve prompts",
-					"how_to_override", "set claudecli.permission_mode in ~/.config/rousseau/config.yaml (acceptEdits is a narrower alternative)",
-				)
-			}
-			provider, err := buildProvider(cfg)
-			if err != nil {
-				return err
-			}
+			setUnattendedPermissionDefault(opts, "whatsapp")
 			ctx := cmd.Context()
 
-			sessionsStore, err := openStore(ctx, cfg.State.Path)
+			wiring, err := assembleDaemon(ctx, opts, allowlist)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = sessionsStore.Close() }()
-
-			concrete := sessionsStore.(*sqlitestore.Store)
-			jidMap, err := sqlitestore.NewJIDMap(ctx, concrete)
-			if err != nil {
-				return err
-			}
-			claudeCache, err := sqlitestore.NewClaudeSessionCache(ctx, concrete)
-			if err != nil {
-				return err
-			}
-			if cc, ok := provider.(*claudecli.Provider); ok {
-				cc.WithCache(claudeCache)
-			}
-
-			registry := tools.NewRegistry()
-			registry.MustRegister(builtin.NewReadTool())
-			registry.MustRegister(builtin.NewWriteTool())
-			registry.MustRegister(builtin.NewEditTool())
-			registry.MustRegister(builtin.NewGrepTool(0, 0))
-			registry.MustRegister(builtin.NewBashTool(60 * time.Second))
-
-			approver, err := buildApprover(cfg.Agent.Approver)
-			if err != nil {
-				return err
-			}
-			compressor := buildCompressor(cfg.Agent.Compression, provider)
-			skillsProv, err := buildSkillsProvider(opts)
-			if err != nil {
-				return err
-			}
-			recallProv := buildRecallProvider(concrete)
-			ag := agent.New(provider, registry, opts.Logger, agent.Options{
-				MaxIterations:  cfg.Agent.MaxIterations,
-				SystemPrompt:   systemPrompt(cfg.Agent.SystemPrompt),
-				Approver:       approver,
-				Compressor:     compressor,
-				SkillsProvider: skillsProv,
-				RecallProvider: recallProv,
-			})
-
-			router := transport.NewRouter(ag, sessionsStore, jidMap, opts.Logger, transport.RouterOptions{
-				Allowlist: allowlist,
-			})
+			defer func() { _ = wiring.Sessions.Close() }()
 
 			dsn, err := resolveWhatsAppDSN(storePath)
 			if err != nil {
 				return err
 			}
-			var transcriber whatsapp.Transcriber
-			if cfg.WhatsApp.Voice.Enabled {
-				transcriber = whatsapp.NewWhisperTranscriber(whatsapp.WhisperConfig{
-					Binary:    cfg.WhatsApp.Voice.Binary,
-					Model:     cfg.WhatsApp.Voice.Model,
-					ModelPath: cfg.WhatsApp.Voice.ModelPath,
-					Language:  cfg.WhatsApp.Voice.Language,
-					ExtraArgs: cfg.WhatsApp.Voice.ExtraArgs,
-				})
-				opts.Logger.Info("whatsapp.voice_enabled",
-					"binary", firstNonEmpty(cfg.WhatsApp.Voice.Binary, "whisper"),
-					"model", firstNonEmpty(cfg.WhatsApp.Voice.Model, cfg.WhatsApp.Voice.ModelPath))
-			}
 
 			client, err := whatsapp.New(whatsapp.Config{
 				StoreDSN:    dsn,
-				LogLevel:    whatsappLogLevel(cfg.Log.Level),
-				ReplyHeader: cfg.WhatsApp.ReplyHeader,
-				Transcriber: transcriber,
+				LogLevel:    whatsappLogLevel(opts.Config.Log.Level),
+				ReplyHeader: opts.Config.WhatsApp.ReplyHeader,
+				Transcriber: buildTranscriber(opts),
 			}, opts.Logger)
 			if err != nil {
 				return err
 			}
 
-			// Start the cron scheduler alongside the WhatsApp bridge.
-			// The scheduler needs Provider (for prompt execution) and a
-			// Delivery function (for shipping results); the WhatsApp
-			// client provides the latter via its Deliver method.
-			cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
+			shutdown, err := wiring.startCron(ctx, func(dctx context.Context, target, body string) error {
+				return client.Deliver(dctx, target, body)
+			}, opts.Logger)
 			if err != nil {
-				return err
-			}
-			scheduler := rcron.New(rcron.Config{
-				Store:  cronStore,
-				Runner: &rcron.ProviderRunner{Provider: provider, SystemPrompt: systemPrompt(cfg.Agent.SystemPrompt)},
-				Delivery: func(dctx context.Context, target, body string) error {
-					return client.Deliver(dctx, target, body)
-				},
-				Logger: opts.Logger,
-			})
-			if err := scheduler.Start(ctx); err != nil {
 				return fmt.Errorf("cron: %w", err)
 			}
-			defer func() {
-				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				_ = scheduler.Shutdown(sctx)
-			}()
+			defer shutdown()
 
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
-			return client.Start(ctx, router)
+			return client.Start(ctx, wiring.Router)
 		},
 	}
 	cmd.Flags().StringVar(&storePath, "store", "", "path to whatsmeow device store (default: $XDG_DATA_HOME/rousseau/whatsapp.db)")
 	cmd.Flags().StringSliceVar(&allowlist, "allow", nil, "restrict inbound to these JIDs (repeatable). Empty allows anyone — do not do this on a public number.")
 	return cmd
+}
+
+// buildTranscriber constructs a whisper-backed transcriber from config,
+// or returns nil when voice notes are disabled.
+func buildTranscriber(opts *Options) whatsapp.Transcriber {
+	v := opts.Config.WhatsApp.Voice
+	if !v.Enabled {
+		return nil
+	}
+	opts.Logger.Info("whatsapp.voice_enabled",
+		"binary", firstNonEmpty(v.Binary, "whisper"),
+		"model", firstNonEmpty(v.Model, v.ModelPath))
+	return whatsapp.NewWhisperTranscriber(whatsapp.WhisperConfig{
+		Binary:    v.Binary,
+		Model:     v.Model,
+		ModelPath: v.ModelPath,
+		Language:  v.Language,
+		ExtraArgs: v.ExtraArgs,
+	})
 }
 
 func resolveWhatsAppDSN(path string) (string, error) {
@@ -176,16 +98,8 @@ func resolveWhatsAppDSN(path string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create whatsapp store dir: %w", err)
 	}
-	// modernc.org/sqlite DSN. Notes on each pragma:
-	//   foreign_keys=ON      — whatsmeow's schema uses FK constraints.
-	//   journal_mode=WAL     — readers and writers coexist without blocking.
-	//   busy_timeout=15000   — wait up to 15s on lock contention. Without
-	//                          this, whatsmeow's concurrent writes during
-	//                          initial history-sync race and one loses with
-	//                          SQLITE_BUSY, which cascades into failed
-	//                          session-identity saves and dropped inbound
-	//                          message decryption.
-	//   synchronous=NORMAL   — safe with WAL, reduces fsync churn under load.
+	// modernc.org/sqlite DSN pragmas explained in git history; see
+	// commit 55fdee3 (SQLITE_BUSY fix) for the load-bearing rationale.
 	return "file:" + path + "?_pragma=foreign_keys(1)" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=busy_timeout(15000)" +

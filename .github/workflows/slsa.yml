@@ -1,0 +1,65 @@
+# SLSA Level 3 build provenance for tagged releases.
+#
+# The reusable slsa-github-generator/generic workflow attests the
+# checksums produced by goreleaser (release.yml) so a consumer can
+# verify a binary came from a known-good CI run with an unforgeable
+# GitHub OIDC identity.
+#
+# Verification, given a downloaded binary:
+#     slsa-verifier verify-artifact \
+#         --provenance-path <intoto>.jsonl \
+#         --source-uri github.com/sebastienrousseau/rousseau-agent \
+#         --source-tag v0.1.0 \
+#         ./rousseau
+
+name: slsa
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  # id-token: write is required for the reusable workflow to mint an
+  # OIDC token that anchors the provenance to this exact CI run.
+  id-token: write
+  contents: write
+  actions: read
+
+jobs:
+  hash:
+    runs-on: ubuntu-latest
+    outputs:
+      digests: ${{ steps.hash.outputs.digests }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: true
+      - name: Build artifacts (mirrors goreleaser layout)
+        run: |
+          mkdir -p dist
+          for os in linux darwin; do
+            for arch in amd64 arm64; do
+              GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
+                go build -trimpath -ldflags='-s -w' \
+                -o "dist/rousseau_${os}_${arch}" ./cmd/rousseau
+            done
+          done
+      - name: Generate hashes for provenance
+        id: hash
+        run: |
+          cd dist
+          echo "digests=$(sha256sum rousseau_* | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    needs: [hash]
+    permissions:
+      id-token: write
+      contents: write
+      actions: read
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.0.0
+    with:
+      base64-subjects: "${{ needs.hash.outputs.digests }}"
+      upload-assets: true
