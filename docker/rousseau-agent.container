@@ -8,9 +8,9 @@
 #     journalctl --user -u rousseau-agent -f
 #
 # The image is built locally from
-# ~/team-rousseau-workspace/repos/private/python/rousseau-agent/docker/Dockerfile
+# ~/team-rousseau-workspace/repos/private/go/rousseau-agent/docker/Dockerfile
 # and tagged rousseau-agent:local. Rebuild after code changes with:
-#     cd ~/team-rousseau-workspace/repos/private/python/rousseau-agent
+#     cd ~/team-rousseau-workspace/repos/private/go/rousseau-agent
 #     podman build -t rousseau-agent:local -f docker/Dockerfile .
 
 [Unit]
