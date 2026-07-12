@@ -68,7 +68,7 @@ func (s *Server) Register(t ToolSpec) error {
 // package-init wiring in main.
 func (s *Server) MustRegister(t ToolSpec) {
 	if err := s.Register(t); err != nil {
-		panic(err)
+		panic(err) //nolint:forbidigo // documented Must* variant; caller opts into panic-on-misconfiguration
 	}
 }
 
@@ -90,7 +90,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		}
 		var env Envelope
 		if err := json.Unmarshal(line, &env); err != nil {
-			_ = enc.Encode(errorResponse(nil, CodeParseError, "invalid JSON"))
+			if encErr := enc.Encode(errorResponse(nil, CodeParseError, "invalid JSON")); encErr != nil {
+				s.logger.Warn("mcp.encode_error", slog.String("err", encErr.Error()))
+			}
 			continue
 		}
 		resp := s.dispatch(ctx, env)

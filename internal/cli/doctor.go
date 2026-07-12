@@ -142,7 +142,7 @@ func checkProvider(ctx context.Context, cfg *config.Config) []diagResult {
 func checkState(cfg *config.Config) []diagResult {
 	path := cfg.State.Path
 	if path == "" {
-		home, _ := os.UserHomeDir()
+		home, _ := os.UserHomeDir() //nolint:errcheck // fall back to empty home; join still produces a valid probe path
 		path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
 	}
 	out := []diagResult{{Name: "state.path", Status: "info", Detail: path}}
@@ -160,7 +160,7 @@ func checkState(cfg *config.Config) []diagResult {
 }
 
 func checkWhatsApp(cfg *config.Config) []diagResult {
-	home, _ := os.UserHomeDir()
+	home, _ := os.UserHomeDir() //nolint:errcheck // fall back to empty home; diagnostic probe still meaningful
 	waPath := filepath.Join(home, ".local", "share", "rousseau", "whatsapp.db")
 	out := []diagResult{{Name: "whatsapp.store", Status: "info", Detail: waPath}}
 	if info, err := os.Stat(waPath); err == nil {
@@ -240,7 +240,7 @@ func countSessions(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.Close() }() //nolint:errcheck // best-effort cleanup
 	var n int
 	err = db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&n)
 	if err != nil {
@@ -277,6 +277,6 @@ func renderReport(w io.Writer, rs []diagResult) {
 		case "info":
 			icon = "·"
 		}
-		fmt.Fprintf(w, "%s  %-*s  %s\n", icon, maxName, r.Name, r.Detail)
+		fmt.Fprintf(w, "%s  %-*s  %s\n", icon, maxName, r.Name, r.Detail) //nolint:errcheck // CLI output; stdout write failures are unrecoverable
 	}
 }

@@ -127,7 +127,7 @@ func listSessionsTool(be SessionsBackend) ToolSpec {
 			var in struct {
 				Limit int `json:"limit"`
 			}
-			_ = json.Unmarshal(args, &in) // arguments are optional here
+			_ = json.Unmarshal(args, &in) //nolint:errcheck // arguments are optional; zero-value default is acceptable
 			hits, err := be.List(ctx, in.Limit)
 			if err != nil {
 				return nil, err
@@ -224,7 +224,7 @@ func cronListTool(be SessionsBackend) ToolSpec {
 func mustSchema(v map[string]any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
-		panic(err)
+		panic(err) //nolint:forbidigo // schemas are static hand-written maps; failure is a programmer error at package init
 	}
 	return b
 }

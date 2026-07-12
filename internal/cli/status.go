@@ -84,7 +84,7 @@ func collectStatus(ctx context.Context, path string) (StatusReport, error) {
 	if err != nil {
 		return report, err
 	}
-	defer func() { _ = db.Close() }()
+	defer func() { _ = db.Close() }() //nolint:errcheck // best-effort cleanup
 
 	report.Sessions = scanCount(ctx, db, "SELECT COUNT(*) FROM sessions")
 	report.CronJobs = scanCount(ctx, db, "SELECT COUNT(*) FROM cron_jobs")
@@ -114,16 +114,17 @@ func scanCount(ctx context.Context, db *sql.DB, q string) int {
 func renderStatus(w interface {
 	Write(p []byte) (int, error)
 }, r StatusReport) {
-	fmt.Fprintf(w, "rousseau %s (commit %s, built %s)\n", r.Version, r.Commit, r.BuildDate)
-	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "state.path             %s\n", r.StatePath)
-	fmt.Fprintf(w, "state.size             %s\n", humanBytes(r.StateSize))
-	fmt.Fprintf(w, "sessions               %d\n", r.Sessions)
-	fmt.Fprintf(w, "cron.jobs              %d (enabled=%d)\n", r.CronJobs, r.CronEnabled)
-	fmt.Fprintf(w, "transport.jid_mappings %d\n", r.JIDMappings)
-	fmt.Fprintf(w, "claude.cached_sessions %d\n", r.CachedClaude)
+	printf := func(f string, a ...any) { _, _ = fmt.Fprintf(w, f, a...) } //nolint:errcheck // CLI output
+	printf("rousseau %s (commit %s, built %s)\n", r.Version, r.Commit, r.BuildDate)
+	printf("\n")
+	printf("state.path             %s\n", r.StatePath)
+	printf("state.size             %s\n", humanBytes(r.StateSize))
+	printf("sessions               %d\n", r.Sessions)
+	printf("cron.jobs              %d (enabled=%d)\n", r.CronJobs, r.CronEnabled)
+	printf("transport.jid_mappings %d\n", r.JIDMappings)
+	printf("claude.cached_sessions %d\n", r.CachedClaude)
 	if !r.LastActivityAt.IsZero() {
-		fmt.Fprintf(w, "last_activity_at       %s (%s ago)\n",
+		printf("last_activity_at       %s (%s ago)\n",
 			r.LastActivityAt.Format(time.RFC3339),
 			time.Since(r.LastActivityAt).Round(time.Second))
 	}

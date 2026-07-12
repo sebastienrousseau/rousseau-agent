@@ -70,7 +70,7 @@ func TestServer_ToolsCall_HappyPath(t *testing.T) {
 			return TextContent("hello " + in.Name), nil
 		},
 	})
-	params, _ := json.Marshal(ToolsCallParams{Name: "greet", Arguments: json.RawMessage(`{"name":"seb"}`)})
+	params, _ := json.Marshal(ToolsCallParams{Name: "greet", Arguments: json.RawMessage(`{"name":"seb"}`)}) //nolint:errcheck // trusted static input
 	resp := call(t, s, MethodToolsCall, json.RawMessage(`3`), params)
 	require.Nil(t, resp.Error)
 	var r ToolsCallResult
@@ -88,7 +88,7 @@ func TestServer_ToolsCall_HandlerErrorReturnsIsError(t *testing.T) {
 			return nil, errors.New("boom")
 		},
 	})
-	params, _ := json.Marshal(ToolsCallParams{Name: "bad"})
+	params, _ := json.Marshal(ToolsCallParams{Name: "bad"}) //nolint:errcheck // trusted static input
 	resp := call(t, s, MethodToolsCall, json.RawMessage(`4`), params)
 	require.Nil(t, resp.Error)
 	var r ToolsCallResult
@@ -100,7 +100,7 @@ func TestServer_ToolsCall_HandlerErrorReturnsIsError(t *testing.T) {
 
 func TestServer_UnknownTool(t *testing.T) {
 	s := NewServer("rousseau-test", "0.0.0", silentLogger())
-	params, _ := json.Marshal(ToolsCallParams{Name: "missing"})
+	params, _ := json.Marshal(ToolsCallParams{Name: "missing"}) //nolint:errcheck // trusted static input
 	resp := call(t, s, MethodToolsCall, json.RawMessage(`5`), params)
 	require.NotNil(t, resp.Error)
 	assert.Equal(t, CodeToolNotFound, resp.Error.Code)
@@ -127,7 +127,7 @@ func TestServer_MalformedJSON(t *testing.T) {
 func TestServer_NotificationHasNoResponse(t *testing.T) {
 	s := NewServer("rousseau-test", "0.0.0", silentLogger())
 	req := Envelope{JSONRPC: jsonRPCVersion, Method: MethodInitialized}
-	b, _ := json.Marshal(req)
+	b, _ := json.Marshal(req) //nolint:errcheck // trusted static input
 	in := bytes.NewReader(append(b, '\n'))
 	out := &bytes.Buffer{}
 	require.NoError(t, s.Serve(context.Background(), in, out))
@@ -169,7 +169,7 @@ func TestServer_ConcurrentServe(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			params, _ := json.Marshal(ToolsCallParams{Name: "ok"})
+			params, _ := json.Marshal(ToolsCallParams{Name: "ok"}) //nolint:errcheck // trusted static input
 			resp := call(t, s, MethodToolsCall, []byte(`"`+string(rune('a'+i))+`"`), params)
 			assert.Nil(t, resp.Error)
 		}(i)

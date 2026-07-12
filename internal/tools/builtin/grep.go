@@ -109,7 +109,7 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 
 	walkErr := filepath.WalkDir(in.Path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // skip inaccessible entries; grep should degrade gracefully
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -131,7 +131,7 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 		}
 		info, statErr := d.Info()
 		if statErr != nil {
-			return nil
+			return nil //nolint:nilerr // skip entries whose stat fails mid-walk
 		}
 		if info.Size() > t.MaxFileBytes {
 			return nil
@@ -158,7 +158,7 @@ func searchFile(path string, re *regexp.Regexp, out *strings.Builder, matches *i
 	if err != nil {
 		return nil
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close() }() //nolint:errcheck // best-effort cleanup
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)

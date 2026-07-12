@@ -37,11 +37,11 @@ func newSkillsListCmd(opts *Options) *cobra.Command {
 			}
 			w := cmd.OutOrStdout()
 			if len(all) == 0 {
-				fmt.Fprintln(w, "(no skills)")
+				fmt.Fprintln(w, "(no skills)") //nolint:errcheck // CLI output
 				return nil
 			}
 			for _, s := range all {
-				fmt.Fprintf(w, "%-20s  triggers=%s\n    %s\n",
+				fmt.Fprintf(w, "%-20s  triggers=%s\n    %s\n", //nolint:errcheck // CLI output
 					s.Name, strings.Join(s.Triggers, ","), s.Description)
 			}
 			return nil
@@ -61,7 +61,7 @@ func newSkillsShowCmd(opts *Options) *cobra.Command {
 			}
 			for _, s := range all {
 				if s.Name == args[0] {
-					fmt.Fprintln(cmd.OutOrStdout(), s.Body)
+					fmt.Fprintln(cmd.OutOrStdout(), s.Body) //nolint:errcheck // CLI output
 					return nil
 				}
 			}

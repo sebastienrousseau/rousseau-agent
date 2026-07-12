@@ -51,7 +51,7 @@ func newCronAddCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
 			if err != nil {
@@ -68,7 +68,7 @@ func newCronAddCmd(opts *Options) *cobra.Command {
 			if err := cs.Put(cmd.Context(), job); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "added %s (%s) → %s\n", job.Name, job.CronExpr, job.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "added %s (%s) → %s\n", job.Name, job.CronExpr, job.ID) //nolint:errcheck // CLI output; stdout write failures are unrecoverable
 			return nil
 		},
 	}
@@ -89,7 +89,7 @@ func newCronListCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
 			if err != nil {
@@ -101,7 +101,7 @@ func newCronListCmd(opts *Options) *cobra.Command {
 			}
 			w := cmd.OutOrStdout()
 			if len(jobs) == 0 {
-				fmt.Fprintln(w, "(no jobs)")
+				fmt.Fprintln(w, "(no jobs)") //nolint:errcheck // CLI output; stdout write failures are unrecoverable
 				return nil
 			}
 			for _, j := range jobs {
@@ -113,7 +113,7 @@ func newCronListCmd(opts *Options) *cobra.Command {
 				if j.LastRunAt != nil {
 					last = j.LastRunAt.Format("2006-01-02 15:04")
 				}
-				fmt.Fprintf(w, "%s  %-3s  %-20s  %-20s  last=%s\n    %s → %s\n",
+				fmt.Fprintf(w, "%s  %-3s  %-20s  %-20s  last=%s\n    %s → %s\n", //nolint:errcheck // CLI output; stdout write failures are unrecoverable
 					shortID(j.ID), status, j.Name, j.CronExpr, last, j.Prompt, j.DeliverTo)
 			}
 			return nil
@@ -131,7 +131,7 @@ func newCronRemoveCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
 			if err != nil {
 				return err
@@ -157,7 +157,7 @@ func newCronToggleCmd(opts *Options, enable bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
 			if err != nil {
 				return err

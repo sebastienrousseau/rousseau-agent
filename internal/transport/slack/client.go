@@ -135,7 +135,7 @@ func (c *Client) Stop() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {
-		_ = c.conn.Close(websocket.StatusNormalClosure, "shutdown")
+		_ = c.conn.Close(websocket.StatusNormalClosure, "shutdown") //nolint:errcheck // best-effort close
 		c.conn = nil
 	}
 	return nil
@@ -159,7 +159,7 @@ func (c *Client) runOnce(ctx context.Context, handler transport.Handler) error {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if c.conn != nil {
-			_ = c.conn.Close(websocket.StatusNormalClosure, "loop exit")
+			_ = c.conn.Close(websocket.StatusNormalClosure, "loop exit") //nolint:errcheck // best-effort close
 			c.conn = nil
 		}
 	}()
@@ -211,7 +211,7 @@ func (c *Client) handleFrame(ctx context.Context, conn WSConn, raw []byte, handl
 		if env.EnvelopeID != "" {
 			ack := ackEnvelope{EnvelopeID: env.EnvelopeID}
 			if b, err := json.Marshal(ack); err == nil {
-				_ = conn.Write(ctx, b)
+				_ = conn.Write(ctx, b) //nolint:errcheck // best-effort ack
 			}
 		}
 		return c.dispatchEvent(ctx, env, handler)
@@ -221,7 +221,7 @@ func (c *Client) handleFrame(ctx context.Context, conn WSConn, raw []byte, handl
 		if env.EnvelopeID != "" {
 			ack := ackEnvelope{EnvelopeID: env.EnvelopeID}
 			if b, err := json.Marshal(ack); err == nil {
-				_ = conn.Write(ctx, b)
+				_ = conn.Write(ctx, b) //nolint:errcheck // best-effort ack
 			}
 		}
 		return nil
@@ -332,7 +332,10 @@ func (c *Client) post(ctx context.Context, method, token string, payload any, re
 // -- default WebSocket dialer -----------------------------------------
 
 func defaultDial(ctx context.Context, url string) (WSConn, error) {
-	conn, _, err := websocket.Dial(ctx, url, nil)
+	conn, resp, err := websocket.Dial(ctx, url, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		return nil, err
 	}

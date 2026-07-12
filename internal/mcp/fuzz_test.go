@@ -30,6 +30,6 @@ func FuzzServe(f *testing.F) {
 		// Ensure the input ends with a newline so the scanner sees a frame.
 		in := bytes.NewReader(append(raw, '\n'))
 		out := &bytes.Buffer{}
-		_ = s.Serve(context.Background(), in, out)
+		_ = s.Serve(context.Background(), in, out) //nolint:errcheck // fuzz
 	})
 }

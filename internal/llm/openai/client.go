@@ -76,7 +76,7 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 		return agent.Response{}, err
 	}
 	params := sdk.ChatCompletionNewParams{
-		Model:    shared.ChatModel(p.cfg.Model),
+		Model:    p.cfg.Model,
 		Messages: msgs,
 	}
 	if p.cfg.MaxTokens > 0 {
@@ -222,7 +222,7 @@ func fromSDKResponse(resp *sdk.ChatCompletion) (agent.Response, error) {
 			Role:    agent.RoleAssistant,
 			Content: blocks,
 		},
-		StopReason: mapFinishReason(string(choice.FinishReason)),
+		StopReason: mapFinishReason(choice.FinishReason),
 		Usage: agent.Usage{
 			InputTokens:  int(resp.Usage.PromptTokens),
 			OutputTokens: int(resp.Usage.CompletionTokens),

@@ -103,7 +103,7 @@ func TestReadSessionTool_HappyPath(t *testing.T) {
 	sess.Append(agent.NewUserText("hi"))
 	sess.Append(agent.NewAssistantText("hello"))
 	spec := readSessionTool(&fakeBackend{session: sess})
-	args, _ := json.Marshal(map[string]string{"id": sess.ID})
+	args, _ := json.Marshal(map[string]string{"id": sess.ID}) //nolint:errcheck // trusted static input
 	content, err := callTool(t, spec, string(args))
 	require.NoError(t, err)
 	assert.Contains(t, content[0].Text, "welcome")

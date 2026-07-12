@@ -82,7 +82,12 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 			if rerr != nil {
 				return nil, fmt.Errorf("vertex: read credentials: %w", rerr)
 			}
-			creds, err = google.CredentialsFromJSON(ctx, data, scopes...)
+			// SA1019: WithType variants require the caller to declare the credential
+			// type up front. Vertex clients provide either a service_account or an
+			// authorized_user file; we honor whichever is in the JSON. Callers are
+			// responsible for supplying trusted credential files (documented in the
+			// vertex.Config comments), so the parse-any-type path is acceptable here.
+			creds, err = google.CredentialsFromJSONWithParams(ctx, data, google.CredentialsParams{Scopes: scopes}) //nolint:staticcheck // SA1019: caller supplies trusted credentials; type-generic parse is intentional
 		} else {
 			creds, err = google.FindDefaultCredentials(ctx, scopes...)
 		}

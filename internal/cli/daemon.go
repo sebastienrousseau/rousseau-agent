@@ -68,12 +68,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 	jidMap, err := sqlitestore.NewJIDMap(ctx, concrete)
 	if err != nil {
-		_ = sessions.Close()
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
 	claudeCache, err := sqlitestore.NewClaudeSessionCache(ctx, concrete)
 	if err != nil {
-		_ = sessions.Close()
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
 	if cc, ok := provider.(*claudecli.Provider); ok {
@@ -89,12 +89,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 	approver, err := buildApprover(cfg.Agent.Approver)
 	if err != nil {
-		_ = sessions.Close()
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
 	skillsProv, err := buildSkillsProvider(opts)
 	if err != nil {
-		_ = sessions.Close()
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
@@ -112,7 +112,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
 	if err != nil {
-		_ = sessions.Close()
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
 
@@ -144,7 +144,7 @@ func (w *daemonWiring) startCron(ctx context.Context, delivery rcron.Delivery, l
 	shutdown := func() {
 		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = scheduler.Shutdown(sctx)
+		_ = scheduler.Shutdown(sctx) //nolint:errcheck // best-effort shutdown
 	}
 	return shutdown, nil
 }

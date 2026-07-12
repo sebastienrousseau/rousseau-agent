@@ -135,7 +135,7 @@ func (c *Client) sync(ctx context.Context) (*syncResponse, error) {
 	c.mu.Unlock()
 
 	q := url.Values{}
-	q.Set("timeout", strconv.FormatInt(int64(c.cfg.PollTimeout.Milliseconds()), 10))
+	q.Set("timeout", strconv.FormatInt(c.cfg.PollTimeout.Milliseconds(), 10))
 	if since != "" {
 		q.Set("since", since)
 	}

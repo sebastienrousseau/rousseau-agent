@@ -19,7 +19,7 @@ func buildApprover(cfg config.ApproverConfig) (agent.Approver, error) {
 	case "deny_all", "deny":
 		return agent.DenyAllApprover{Reason: cfg.Reason}, nil
 	case "pattern":
-		def := agent.DecisionDeny
+		var def agent.Decision
 		switch strings.ToLower(cfg.Default) {
 		case "allow":
 			def = agent.DecisionAllow

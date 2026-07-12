@@ -65,9 +65,9 @@ func TestTwilio_DeliverPostsExpectedForm(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recordedURL = r.URL.Path
 		recordedAuth = r.Header.Get("Authorization")
-		recordedBody, _ = io.ReadAll(r.Body)
+		recordedBody, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"sid":"SM1","status":"queued"}`))
+		_, _ = w.Write([]byte(`{"sid":"SM1","status":"queued"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -91,8 +91,8 @@ func TestTwilio_DeliverPostsExpectedForm(t *testing.T) {
 func TestTwilio_ReplyHeaderPrepended(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{}`))
+		recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{}`))     //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{
@@ -122,9 +122,9 @@ func TestTwilio_HTTPErrorSurfaces(t *testing.T) {
 func TestVonage_DeliverPostsExpectedForm(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
+		recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"messages":[{"status":"0","message-id":"m1"}]}`))
+		_, _ = w.Write([]byte(`{"messages":[{"status":"0","message-id":"m1"}]}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -146,7 +146,7 @@ func TestVonage_DeliverPostsExpectedForm(t *testing.T) {
 
 func TestVonage_ProviderErrorSurfaces(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"messages":[{"status":"4","error-text":"Bad credentials"}]}`))
+		_, _ = w.Write([]byte(`{"messages":[{"status":"4","error-text":"Bad credentials"}]}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{

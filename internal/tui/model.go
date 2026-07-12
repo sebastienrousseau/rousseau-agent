@@ -181,14 +181,10 @@ func (m Model) View() string {
 	)
 }
 
-// streamDelta is sent from the streaming goroutine each time a text
-// fragment arrives from the provider.
-type streamDelta struct{ text string }
-
 // doTurn returns the tea.Cmd(s) that advance a user turn. When the
 // bound Runner also implements StreamingRunner, doTurn kicks off a
 // streaming goroutine and returns two commands: one that receives
-// streamDelta messages and another that waits for the final result.
+// streaming messages and another that waits for the final result.
 // Otherwise it falls back to the single-shot Turn.
 func (m Model) doTurn() tea.Cmd {
 	sess := m.session

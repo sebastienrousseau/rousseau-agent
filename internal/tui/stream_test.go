@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,26 +8,6 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 )
-
-type streamingStubRunner struct {
-	deltas []string
-	reply  string
-	err    error
-}
-
-func (s *streamingStubRunner) Turn(context.Context, *agent.Session) (agent.Message, error) {
-	return agent.NewAssistantText(s.reply), s.err
-}
-
-func (s *streamingStubRunner) TurnStream(_ context.Context, sess *agent.Session, events chan<- agent.StreamEvent) (agent.Message, error) {
-	for _, d := range s.deltas {
-		events <- agent.StreamEvent{Kind: agent.StreamTextDelta, Delta: d}
-	}
-	close(events)
-	msg := agent.NewAssistantText(s.reply)
-	sess.Append(msg)
-	return msg, s.err
-}
 
 func TestDeltaPump_ReceivesEvent(t *testing.T) {
 	events := make(chan agent.StreamEvent, 2)

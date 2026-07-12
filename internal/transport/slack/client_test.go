@@ -83,8 +83,8 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/chat.postMessage", r.URL.Path)
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer xoxb-")
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{"ok":true,"ts":"1700000000.000100"}`))
+		recorded, _ = io.ReadAll(r.Body)                               //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{"ok":true,"ts":"1700000000.000100"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -107,8 +107,8 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 func TestDeliver_PrependsReplyHeader(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		recorded, _ = io.ReadAll(r.Body)      //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{"ok":true}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{
@@ -124,7 +124,7 @@ func TestDeliver_PrependsReplyHeader(t *testing.T) {
 
 func TestDeliver_SlackErrorSurfaces(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`))
+		_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{
@@ -156,7 +156,7 @@ func TestOpenConnection_ReturnsSocketURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/apps.connections.open", r.URL.Path)
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer xapp-")
-		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`))
+		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{
@@ -186,9 +186,9 @@ func TestHandleFrame_EventsAPIRoutesAndAcks(t *testing.T) {
 	var recordedPost []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/chat.postMessage" {
-			recordedPost, _ = io.ReadAll(r.Body)
+			recordedPost, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		}
-		_, _ = w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 

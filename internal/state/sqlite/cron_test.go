@@ -15,7 +15,7 @@ func openCronTestStore(t *testing.T) *CronStore {
 	path := filepath.Join(t.TempDir(), "cron.db")
 	s, err := Open(context.Background(), path)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = s.Close() })
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
 	cs, err := NewCronStore(context.Background(), s)
 	require.NoError(t, err)
 	return cs

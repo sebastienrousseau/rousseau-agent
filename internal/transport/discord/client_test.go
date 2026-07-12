@@ -71,7 +71,7 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/channels/C0/messages")
 		assert.Contains(t, r.Header.Get("Authorization"), "Bot ")
-		recorded, _ = io.ReadAll(r.Body)
+		recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -88,7 +88,7 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 func TestDeliver_PrependsReplyHeader(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
+		recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -148,7 +148,7 @@ func TestHandleFrame_MessageCreateRoutesAndPosts(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/channels/C1/messages" {
-			recorded, _ = io.ReadAll(r.Body)
+			recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		}
 	}))
 	defer srv.Close()

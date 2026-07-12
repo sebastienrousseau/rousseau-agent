@@ -163,7 +163,7 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 	if err != nil {
 		return fmt.Errorf("email: connect: %w", err)
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = client.Close() }() //nolint:errcheck // best-effort close
 
 	if _, err := client.Select(c.cfg.Mailbox, nil); err != nil {
 		return fmt.Errorf("email: select: %w", err)
@@ -185,7 +185,7 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 		BodySection:   []*imap.FetchItemBodySection{{}},
 		BodyStructure: &imap.FetchItemBodyStructure{},
 	})
-	defer func() { _ = fetch.Close() }()
+	defer func() { _ = fetch.Close() }() //nolint:errcheck // best-effort close
 	messages, err := fetch.Collect()
 	if err != nil {
 		return fmt.Errorf("email: fetch: %w", err)
@@ -229,7 +229,7 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 		Flags: []imap.Flag{imap.FlagSeen},
 	}, nil)
 	if store != nil {
-		_ = store.Close()
+		_ = store.Close() //nolint:errcheck // best-effort close after mark-seen
 	}
 	return nil
 }
@@ -299,7 +299,7 @@ func defaultIMAPFactory(addr, user, pass string) (IMAPClient, error) {
 		return nil, err
 	}
 	if err := client.Login(user, pass).Wait(); err != nil {
-		_ = client.Close()
+		_ = client.Close() //nolint:errcheck // best-effort cleanup on login failure
 		return nil, err
 	}
 	return imapAdapter{client}, nil

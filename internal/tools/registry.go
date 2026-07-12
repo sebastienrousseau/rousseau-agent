@@ -32,7 +32,7 @@ func (r *Registry) Register(t Tool) error {
 // wiring in main, never called from library code.
 func (r *Registry) MustRegister(t Tool) {
 	if err := r.Register(t); err != nil {
-		panic(err)
+		panic(err) //nolint:forbidigo // documented Must* variant; caller opts into panic-on-misconfiguration
 	}
 }
 

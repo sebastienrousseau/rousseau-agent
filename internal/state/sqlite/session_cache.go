@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -69,6 +70,8 @@ INSERT INTO claude_sessions (session_id, seen_at)
 VALUES (?, ?)
 ON CONFLICT(session_id) DO NOTHING
 `
-	_, _ = c.db.ExecContext(context.Background(), q, id,
-		time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
+	if _, err := c.db.ExecContext(context.Background(), q, id,
+		time.Now().UTC().Format("2006-01-02T15:04:05.000Z")); err != nil {
+		slog.Warn("sqlite: remember claude session", "id", id, "err", err)
+	}
 }

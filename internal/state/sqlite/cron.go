@@ -72,7 +72,7 @@ FROM cron_jobs ORDER BY created_at DESC`
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup on iteration completion
 
 	var out []CronJob
 	for rows.Next() {
@@ -123,6 +123,8 @@ func boolInt(b bool) int {
 
 func fmtTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 func parseTime(s string) time.Time {
-	t, _ := time.Parse("2006-01-02T15:04:05.000Z", s)
+	// Invalid stored timestamps degrade to zero time; DB writes always
+	// use fmtTime so this only triggers on manual edits or schema drift.
+	t, _ := time.Parse("2006-01-02T15:04:05.000Z", s) //nolint:errcheck // helper: zero time on parse failure by design
 	return t
 }

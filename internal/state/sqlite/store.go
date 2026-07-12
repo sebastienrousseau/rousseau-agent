@@ -33,27 +33,27 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-		_ = db.Close()
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, fmt.Errorf("sqlite: enable WAL: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
-		_ = db.Close()
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, fmt.Errorf("sqlite: enable foreign keys: %w", err)
 	}
 	// busy_timeout: wait on lock contention instead of failing with
 	// SQLITE_BUSY. Critical once concurrent transports (whatsapp today,
 	// telegram/slack tomorrow) write into the same session store.
 	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout=15000"); err != nil {
-		_ = db.Close()
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, fmt.Errorf("sqlite: set busy_timeout: %w", err)
 	}
 	if _, err := db.ExecContext(ctx, schema); err != nil {
-		_ = db.Close()
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, fmt.Errorf("sqlite: apply schema: %w", err)
 	}
 	s := &Store{db: db}
 	if err := s.EnsureSearch(ctx); err != nil {
-		_ = db.Close()
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, err
 	}
 	return s, nil
@@ -113,7 +113,7 @@ func (s *Store) List(ctx context.Context, limit int) ([]state.Summary, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list sessions: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup on iteration completion
 
 	var out []state.Summary
 	for rows.Next() {

@@ -42,7 +42,7 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }()
+			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
 
 			client, err := signal.New(signal.Config{
 				Binary:      firstNonEmpty(binary, cfg.Signal.Binary),

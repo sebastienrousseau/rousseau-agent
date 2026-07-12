@@ -33,7 +33,7 @@ func newSessionListCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			hits, err := store.List(cmd.Context(), limit)
 			if err != nil {
@@ -41,11 +41,11 @@ func newSessionListCmd(opts *Options) *cobra.Command {
 			}
 			w := cmd.OutOrStdout()
 			if len(hits) == 0 {
-				fmt.Fprintln(w, "(no sessions)")
+				fmt.Fprintln(w, "(no sessions)") //nolint:errcheck // CLI output
 				return nil
 			}
 			for _, h := range hits {
-				fmt.Fprintf(w, "%s  %-5d  %s  %s\n", shortID(h.ID), h.MessageCount, h.UpdatedAt, h.Title)
+				fmt.Fprintf(w, "%s  %-5d  %s  %s\n", shortID(h.ID), h.MessageCount, h.UpdatedAt, h.Title) //nolint:errcheck // CLI output
 			}
 			return nil
 		},
@@ -68,7 +68,7 @@ func newSessionSearchCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			hits, err := store.Search(cmd.Context(), args[0], sqlitestore.SearchOptions{Limit: limit})
 			if err != nil {
@@ -76,11 +76,11 @@ func newSessionSearchCmd(opts *Options) *cobra.Command {
 			}
 			w := cmd.OutOrStdout()
 			if len(hits) == 0 {
-				fmt.Fprintln(w, "(no matches)")
+				fmt.Fprintln(w, "(no matches)") //nolint:errcheck // CLI output
 				return nil
 			}
 			for _, h := range hits {
-				fmt.Fprintf(w, "%s  %-40s\n    rank=%.2f  %s\n", shortID(h.SessionID), h.Title, h.Rank, h.Snippet)
+				fmt.Fprintf(w, "%s  %-40s\n    rank=%.2f  %s\n", shortID(h.SessionID), h.Title, h.Rank, h.Snippet) //nolint:errcheck // CLI output
 			}
 			return nil
 		},
@@ -99,29 +99,30 @@ func newSessionShowCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			s, err := store.Load(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}
 			w := cmd.OutOrStdout()
-			fmt.Fprintf(w, "id:       %s\ntitle:    %s\ncreated:  %s\nupdated:  %s\nmessages: %d\n\n",
+			printf := func(f string, a ...any) { _, _ = fmt.Fprintf(w, f, a...) } //nolint:errcheck // CLI output
+			printf("id:       %s\ntitle:    %s\ncreated:  %s\nupdated:  %s\nmessages: %d\n\n",
 				s.ID, s.Title, s.CreatedAt, s.UpdatedAt, len(s.Messages))
 			for i, m := range s.Messages {
-				fmt.Fprintf(w, "[%d] %s\n", i, m.Role)
+				printf("[%d] %s\n", i, m.Role)
 				for _, c := range m.Content {
 					if c.Text != "" {
-						fmt.Fprintf(w, "    %s\n", c.Text)
+						printf("    %s\n", c.Text)
 					}
 					if c.ToolUse != nil {
-						fmt.Fprintf(w, "    → %s(%s)\n", c.ToolUse.Name, string(c.ToolUse.Input))
+						printf("    → %s(%s)\n", c.ToolUse.Name, string(c.ToolUse.Input))
 					}
 					if c.ToolResult != nil {
-						fmt.Fprintf(w, "    ← %s\n", c.ToolResult.Output)
+						printf("    ← %s\n", c.ToolResult.Output)
 					}
 				}
-				fmt.Fprintln(w)
+				_, _ = fmt.Fprintln(w) //nolint:errcheck // CLI output
 			}
 			return nil
 		},
@@ -142,7 +143,7 @@ func newSessionDeleteCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 			return store.Delete(cmd.Context(), args[0])
 		},
 	}
@@ -157,7 +158,7 @@ func openSessionStore(ctx context.Context, opts *Options) (*sqlitestore.Store, e
 	}
 	concrete, ok := store.(*sqlitestore.Store)
 	if !ok {
-		_ = store.Close()
+		_ = store.Close() //nolint:errcheck // best-effort cleanup on error path
 		return nil, errors.New("session commands require the sqlite store")
 	}
 	return concrete, nil

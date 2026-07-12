@@ -41,7 +41,7 @@ func newTelegramCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }()
+			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
 
 			client, err := telegram.New(telegram.Config{
 				Token:       tok,

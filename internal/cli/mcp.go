@@ -25,7 +25,7 @@ func newMCPCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }()
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 			concrete := store.(*sqlitestore.Store)
 
 			cronStore, err := sqlitestore.NewCronStore(ctx, concrete)

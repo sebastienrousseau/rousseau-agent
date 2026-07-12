@@ -35,22 +35,24 @@ func newInitCmd(opts *Options) *cobra.Command {
 // Split out so tests can pipe scripted stdin and inspect the resulting
 // config file without spawning cobra.
 func runInit(w io.Writer, in *bufio.Reader, opts *Options, force bool) error {
-	fmt.Fprintln(w, "rousseau init")
-	fmt.Fprintln(w, "")
+	println := func(a ...any) { _, _ = fmt.Fprintln(w, a...) }            //nolint:errcheck // CLI output
+	printf := func(f string, a ...any) { _, _ = fmt.Fprintf(w, f, a...) } //nolint:errcheck // CLI output
+	println("rousseau init")
+	println("")
 
 	// -- provider ------------------------------------------------------
-	fmt.Fprintln(w, "Which provider should the agent use?")
-	fmt.Fprintln(w, "  [1] claudecli  — shell out to the local `claude` CLI (default; no API key)")
-	fmt.Fprintln(w, "  [2] anthropic  — direct Anthropic API")
-	fmt.Fprintln(w, "  [3] openai     — OpenAI Chat Completions")
-	fmt.Fprintln(w, "  [4] openrouter — any model via OpenRouter (OpenAI shim)")
-	fmt.Fprintln(w, "  [5] ollama     — local ollama endpoint")
-	fmt.Fprintln(w, "  [6] bedrock    — AWS Bedrock (Anthropic Claude via SigV4)")
+	println("Which provider should the agent use?")
+	println("  [1] claudecli  — shell out to the local `claude` CLI (default; no API key)")
+	println("  [2] anthropic  — direct Anthropic API")
+	println("  [3] openai     — OpenAI Chat Completions")
+	println("  [4] openrouter — any model via OpenRouter (OpenAI shim)")
+	println("  [5] ollama     — local ollama endpoint")
+	println("  [6] bedrock    — AWS Bedrock (Anthropic Claude via SigV4)")
 	choice := prompt(w, in, "provider [1]: ", "1")
 	providerName, providerBlock := pickProvider(choice, w, in)
 
 	// -- workspace path ------------------------------------------------
-	home, _ := os.UserHomeDir()
+	home, _ := os.UserHomeDir() //nolint:errcheck // fall back to empty home; workspace path is still constructable
 	workspaceDefault := filepath.Join(home, "team-rousseau-workspace")
 	workspace := prompt(w, in, fmt.Sprintf("workspace path [%s]: ", workspaceDefault), workspaceDefault)
 
@@ -73,7 +75,7 @@ func runInit(w io.Writer, in *bufio.Reader, opts *Options, force bool) error {
 	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "\n✓ wrote %s\n\n", cfgPath)
+	printf("\n✓ wrote %s\n\n", cfgPath)
 
 	// -- next-steps summary -------------------------------------------
 	writeNextSteps(w, providerName, whatsappJID, telegramToken)
@@ -109,8 +111,8 @@ func pickProvider(choice string, w io.Writer, in *bufio.Reader) (string, string)
 
 // prompt reads a line, returns fallback when the user just hits Enter.
 func prompt(w io.Writer, in *bufio.Reader, question, fallback string) string {
-	fmt.Fprint(w, question)
-	line, _ := in.ReadString('\n')
+	_, _ = fmt.Fprint(w, question) //nolint:errcheck // CLI output
+	line, _ := in.ReadString('\n') //nolint:errcheck // interactive input; EOF/error yields fallback
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return fallback
@@ -145,18 +147,21 @@ func renderConfig(provider, providerBlock, workspace, whatsappJID, telegramToken
 }
 
 func writeNextSteps(w io.Writer, provider, whatsappJID, telegramToken string) {
-	fmt.Fprintln(w, "Next steps:")
-	if whatsappJID != "" {
-		fmt.Fprintf(w, "  1. `rousseau whatsapp --allow %s`  (first launch prints a QR code)\n", whatsappJID)
-	} else if telegramToken != "" {
-		fmt.Fprintln(w, "  1. `rousseau telegram`  (starts long-polling right away)")
-	} else {
-		fmt.Fprintln(w, "  1. `rousseau chat`  (interactive TUI)")
+	println := func(a ...any) { _, _ = fmt.Fprintln(w, a...) }            //nolint:errcheck // CLI output
+	printf := func(f string, a ...any) { _, _ = fmt.Fprintf(w, f, a...) } //nolint:errcheck // CLI output
+	println("Next steps:")
+	switch {
+	case whatsappJID != "":
+		printf("  1. `rousseau whatsapp --allow %s`  (first launch prints a QR code)\n", whatsappJID)
+	case telegramToken != "":
+		println("  1. `rousseau telegram`  (starts long-polling right away)")
+	default:
+		println("  1. `rousseau chat`  (interactive TUI)")
 	}
-	fmt.Fprintln(w, "  2. `rousseau status`  (verify state DB, cron jobs)")
-	fmt.Fprintln(w, "  3. `rousseau doctor`  (full diagnostic sweep)")
+	println("  2. `rousseau status`  (verify state DB, cron jobs)")
+	println("  3. `rousseau doctor`  (full diagnostic sweep)")
 	if provider == "claudecli" {
-		fmt.Fprintln(w, "  - claude CLI must be on $PATH. If missing, install Claude Code first.")
+		println("  - claude CLI must be on $PATH. If missing, install Claude Code first.")
 	}
-	fmt.Fprintln(w, "")
+	println("")
 }

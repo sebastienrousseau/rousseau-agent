@@ -15,7 +15,7 @@ func TestStore_SaveLoadRoundtrip(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	s := agent.NewSession("first")
 	s.Append(agent.NewUserText("hello"))
@@ -34,7 +34,7 @@ func TestStore_LoadMissing(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	_, err = store.Load(ctx, "nope")
 	assert.ErrorIs(t, err, state.ErrNotFound)
@@ -44,7 +44,7 @@ func TestStore_List(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	for _, title := range []string{"a", "b", "c"} {
 		s := agent.NewSession(title)
@@ -59,7 +59,7 @@ func TestStore_Delete(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	s := agent.NewSession("t")
 	require.NoError(t, store.Save(ctx, s))

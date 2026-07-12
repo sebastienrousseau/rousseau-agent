@@ -151,6 +151,7 @@ type SignalConfig struct {
 	Allowlist []string `mapstructure:"allowlist"`
 }
 
+// WhatsAppConfig groups the whatsapp transport tuning knobs.
 type WhatsAppConfig struct {
 	// ReplyHeader is prepended to every outbound message. Empty uses
 	// the built-in default ("💎 *Rousseau Agent*\n\n"). Set to a single

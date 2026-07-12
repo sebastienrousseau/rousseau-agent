@@ -43,13 +43,13 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 		mu       sync.Mutex
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		mu.Lock()
 		recorded = body
 		mu.Unlock()
 		assert.Contains(t, r.URL.Path, "/rooms/!abc")
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ")
-		_, _ = w.Write([]byte(`{"event_id":"$evt"}`))
+		_, _ = w.Write([]byte(`{"event_id":"$evt"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -74,8 +74,8 @@ func TestDeliver_PostsExpectedPayload(t *testing.T) {
 func TestDeliver_PrependsReplyHeader(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		recorded, _ = io.ReadAll(r.Body)
-		_, _ = w.Write([]byte(`{}`))
+		recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{}`))     //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 	c, err := New(Config{
@@ -107,11 +107,11 @@ func TestSync_TracksSinceCursor(t *testing.T) {
 		call++
 		if call == 1 {
 			assert.NotContains(t, r.URL.RawQuery, "since=")
-			_, _ = w.Write([]byte(`{"next_batch":"s1"}`))
+			_, _ = w.Write([]byte(`{"next_batch":"s1"}`)) //nolint:errcheck // test fixture
 			return
 		}
 		assert.Contains(t, r.URL.RawQuery, "since=s1")
-		_, _ = w.Write([]byte(`{"next_batch":"s2"}`))
+		_, _ = w.Write([]byte(`{"next_batch":"s2"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -127,9 +127,9 @@ func TestRoute_InvokesHandlerAndReplies(t *testing.T) {
 	var recorded []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
-			recorded, _ = io.ReadAll(r.Body)
+			recorded, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
 		}
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 

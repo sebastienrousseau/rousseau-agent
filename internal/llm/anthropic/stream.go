@@ -25,7 +25,7 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 		return nil, nil, err
 	}
 	params := sdk.MessageNewParams{
-		Model:     sdk.Model(p.cfg.Model),
+		Model:     p.cfg.Model,
 		MaxTokens: p.cfg.MaxTokens,
 		Messages:  msgs,
 	}

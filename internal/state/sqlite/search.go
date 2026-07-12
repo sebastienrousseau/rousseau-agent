@@ -111,7 +111,7 @@ LIMIT %d
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: search: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup on iteration completion
 
 	var out []SearchHit
 	for rows.Next() {
@@ -144,7 +144,7 @@ SELECT payload FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: recent: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup on iteration completion
 
 	var out []*agent.Session
 	for rows.Next() {

@@ -12,7 +12,7 @@ func TestJIDMap_PutAndGet(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	jm, err := NewJIDMap(ctx, store)
 	require.NoError(t, err)
@@ -29,7 +29,7 @@ func TestJIDMap_GetMissing(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	jm, err := NewJIDMap(ctx, store)
 	require.NoError(t, err)
@@ -43,7 +43,7 @@ func TestJIDMap_PutReplaces(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, ":memory:")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	jm, err := NewJIDMap(ctx, store)
 	require.NoError(t, err)
