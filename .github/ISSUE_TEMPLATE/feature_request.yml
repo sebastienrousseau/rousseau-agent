@@ -1,0 +1,30 @@
+name: Feature request
+description: Something you want rousseau to do that it does not today.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem you are trying to solve
+      description: What are you doing today, and what falls short?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed
+    attributes:
+      label: Proposed approach
+      description: >
+        A rough shape. Point at the relevant ROADMAP.md section if this
+        aligns with a planned item, or explain why it fits the
+        "narrow personal daemon" scope (COMPETITORS.md §5).
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+    validations:
+      required: false
