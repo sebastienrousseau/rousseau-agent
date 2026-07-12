@@ -36,6 +36,45 @@ type Config struct {
 	Matrix     MatrixConfig     `mapstructure:"matrix"`
 	Slack      SlackConfig      `mapstructure:"slack"`
 	Discord    DiscordConfig    `mapstructure:"discord"`
+	SMS        SMSConfig        `mapstructure:"sms"`
+	IMessage   IMessageConfig   `mapstructure:"imessage"`
+	Email      EmailConfig      `mapstructure:"email"`
+}
+
+// SMSConfig configures the Twilio/Vonage SMS transport.
+type SMSConfig struct {
+	Provider    string `mapstructure:"provider"` // "twilio" or "vonage"
+	From        string `mapstructure:"from"`
+	AccountSID  string `mapstructure:"account_sid"` // Twilio
+	AuthToken   string `mapstructure:"auth_token"`  // Twilio or Vonage secret
+	APIKey      string `mapstructure:"api_key"`     // Vonage
+	BaseURL     string `mapstructure:"base_url"`    // override for testing / regional endpoints
+	ReplyHeader string `mapstructure:"reply_header"`
+}
+
+// IMessageConfig configures the BlueBubbles-backed iMessage transport.
+type IMessageConfig struct {
+	BaseURL      string `mapstructure:"base_url"`      // "http://localhost:1234"
+	Password     string `mapstructure:"password"`      // BlueBubbles server password
+	ChatGUID     string `mapstructure:"chat_guid"`     // outbound target
+	PollInterval string `mapstructure:"poll_interval"` // duration string, e.g. "2s"
+	ReplyHeader  string `mapstructure:"reply_header"`
+}
+
+// EmailConfig configures the IMAP+SMTP email transport.
+type EmailConfig struct {
+	IMAPAddr     string `mapstructure:"imap_addr"`
+	IMAPUsername string `mapstructure:"imap_username"`
+	IMAPPassword string `mapstructure:"imap_password"`
+	Mailbox      string `mapstructure:"mailbox"`
+	PollInterval string `mapstructure:"poll_interval"`
+
+	SMTPAddr     string `mapstructure:"smtp_addr"`
+	SMTPUsername string `mapstructure:"smtp_username"`
+	SMTPPassword string `mapstructure:"smtp_password"`
+
+	From        string `mapstructure:"from"`
+	ReplyHeader string `mapstructure:"reply_header"`
 }
 
 // SlackConfig configures the Slack Socket Mode transport.

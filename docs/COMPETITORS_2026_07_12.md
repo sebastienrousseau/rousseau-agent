@@ -78,10 +78,12 @@ Legend: ✅ shipped · 🟡 partial · 🔜 planned · ❌ absent
 | Signal | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Telegram | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Matrix | ✅ | ❌ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Discord | 🔜 | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Slack | 🔜 | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ |
-| iMessage | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Total transports | 4 | **29+** | 2 | 3 | 10+ | 0 | 0 | 1 | 0 | 0 | 0 |
+| Discord | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Slack | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | 🟡 | ❌ | ❌ | ❌ |
+| iMessage | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| SMS (Twilio/Vonage) | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Email (IMAP/SMTP) | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Total transports | 9 | **29+** | 2 | 3 | 10+ | 0 | 0 | 1 | 0 | 0 | 0 |
 | Voice-note transcription | ✅ | 🟡 | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Image understanding inbound | 🔜 | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ |
 | **Tool / integration surface** | | | | | | | | | | | |
@@ -117,7 +119,7 @@ Legend: ✅ shipped · 🟡 partial · 🔜 planned · ❌ absent
 
 ### rousseau vs OpenClaw
 
-**OpenClaw wins on**: raw transport count (29+ vs 4), skill marketplace + agent self-extension, cross-OS install ergonomics.
+**OpenClaw wins on**: raw transport count (29+ vs 9), skill marketplace + agent self-extension, cross-OS install ergonomics.
 
 **rousseau wins on**: single Go binary, container hardening (SLSA-3 + cosign + SBOM + reproducibility + drop-caps + seccomp + egress example), MCP server, cron scheduler, structured output helper, godoc + fuzz + benchmarks + business-logic coverage discipline.
 
@@ -135,7 +137,7 @@ Legend: ✅ shipped · 🟡 partial · 🔜 planned · ❌ absent
 
 **ZeroClaw wins on**: raw performance (Rust, 3.4 MB binary, <5 MB RAM), edge / low-cost hardware fit, cross-arch (ARM/x86/RISC-V native).
 
-**rousseau wins on**: transport breadth (4 vs 3), MCP + cron + skills + compression + recall (all absent in ZeroClaw), documented supply-chain hardening (SLSA-3 + SBOM + cosign are not verifiably present in ZeroClaw), godoc + tests + benchmarks + fuzz.
+**rousseau wins on**: transport breadth (9 vs 3), MCP + cron + skills + compression + recall (all absent in ZeroClaw), documented supply-chain hardening (SLSA-3 + SBOM + cosign are not verifiably present in ZeroClaw), godoc + tests + benchmarks + fuzz.
 
 **Verdict**: ZeroClaw is the edge-device leader; rousseau is the fully-featured self-hosted daemon. A Raspberry Pi Zero deployment picks ZeroClaw. A single Podman host picks rousseau.
 
@@ -179,13 +181,13 @@ Reprioritised now that we can see who's ahead where. Each item is a PR.
 
 Not chasing 29+ transports for its own sake. But the ones enterprises actually use:
 
-- **Discord Gateway transport** (2 days) — WebSocket-based. Matches OpenClaw + Hermes.
-- **Slack Bolt transport** (2 days) — the transport every enterprise actually uses.
-- **iMessage via BlueBubbles bridge** (2 days) — Hermes has it; OpenClaw has it; personal-user niche.
-- **Email IMAP+SMTP** (2 days) — the universal transport.
-- **SMS via Twilio + Vonage** (1 day each) — 2FA-style flows.
+- ~~**Discord Gateway transport**~~ ✅ shipped — WebSocket-based. Matches OpenClaw + Hermes.
+- ~~**Slack Socket Mode transport**~~ ✅ shipped — the transport every enterprise actually uses.
+- ~~**iMessage via BlueBubbles bridge**~~ ✅ shipped — Hermes has it; OpenClaw has it; personal-user niche.
+- ~~**Email IMAP+SMTP**~~ ✅ shipped — the universal transport.
+- ~~**SMS via Twilio + Vonage**~~ ✅ shipped — 2FA-style flows.
 
-Post-landing: **9 transports**, closing 2/3 of OpenClaw's lead. The last 20 in their count are niche (WeChat, Line, Kakao, VK, etc.) — add on demand.
+Landed: **9 transports** (whatsapp, signal, telegram, matrix, slack, discord, sms, imessage, email). §5.1 complete. The last 20 in OpenClaw's count are niche (WeChat, Line, Kakao, VK, etc.) — add on demand.
 
 ### 5.2 Match TrustClaw's integration breadth (1 week)
 
