@@ -31,6 +31,15 @@ type Config struct {
 	WhatsApp   WhatsAppConfig   `mapstructure:"whatsapp"`
 	Signal     SignalConfig     `mapstructure:"signal"`
 	Telegram   TelegramConfig   `mapstructure:"telegram"`
+	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
+}
+
+// BedrockConfig configures the AWS Bedrock provider.
+type BedrockConfig struct {
+	Region    string `mapstructure:"region"`
+	Model     string `mapstructure:"model"`
+	Profile   string `mapstructure:"profile"`
+	MaxTokens int64  `mapstructure:"max_tokens"`
 }
 
 // OpenAIConfig configures the OpenAI-compatible provider. Shared by
