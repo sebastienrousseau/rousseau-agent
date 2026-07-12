@@ -32,6 +32,17 @@ type Config struct {
 	Signal     SignalConfig     `mapstructure:"signal"`
 	Telegram   TelegramConfig   `mapstructure:"telegram"`
 	Bedrock    BedrockConfig    `mapstructure:"bedrock"`
+	Vertex     VertexConfig     `mapstructure:"vertex"`
+}
+
+// VertexConfig configures the Google Vertex AI provider (Anthropic on
+// Vertex).
+type VertexConfig struct {
+	Project         string `mapstructure:"project"`
+	Region          string `mapstructure:"region"`
+	Model           string `mapstructure:"model"`
+	CredentialsFile string `mapstructure:"credentials_file"`
+	MaxTokens       int64  `mapstructure:"max_tokens"`
 }
 
 // BedrockConfig configures the AWS Bedrock provider.

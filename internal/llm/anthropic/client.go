@@ -55,6 +55,10 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 	if err != nil {
 		return agent.Response{}, err
 	}
+	// Mark the requested leading window for the ephemeral prompt cache.
+	// See docs/GAP_ANALYSIS_2026.md phase G. No-op when CacheableMessages
+	// is 0 or exceeds len(msgs).
+	applyCacheMarkers(msgs, req.CacheableMessages)
 
 	params := sdk.MessageNewParams{
 		Model:     sdk.Model(p.cfg.Model),
@@ -62,7 +66,13 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 		Messages:  msgs,
 	}
 	if req.System != "" {
-		params.System = []sdk.TextBlockParam{{Text: req.System}}
+		sys := sdk.TextBlockParam{Text: req.System}
+		if req.CacheableMessages > 0 {
+			// The system prompt survives every turn — always cache it
+			// when the caller is opting into caching at all.
+			sys.CacheControl = sdk.NewCacheControlEphemeralParam()
+		}
+		params.System = []sdk.TextBlockParam{sys}
 	}
 	if len(req.Tools) > 0 {
 		params.Tools = toSDKTools(req.Tools)
