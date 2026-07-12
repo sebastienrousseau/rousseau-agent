@@ -47,6 +47,29 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
+# SBOM per release — CycloneDX format from anchore/syft. Consumers can
+# audit the exact set of packages that went into the binary.
+sboms:
+  - artifacts: archive
+    documents:
+      - "${artifact}.cyclonedx.sbom.json"
+    cmd: syft
+    args: ["scan", "$artifact", "--output", "cyclonedx-json=$document"]
+
+# Cosign-signed checksums so release consumers can verify provenance
+# without trusting the GitHub tarball alone.
+signs:
+  - cmd: cosign
+    stdin: '{{ .Env.COSIGN_PASSWORD }}'
+    args:
+      - "sign-blob"
+      - "--yes"
+      - "--key=env://COSIGN_PRIVATE_KEY"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
 

@@ -53,6 +53,12 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 	if evt.Info.IsGroup {
 		return Resolved{Skip: SkipGroup}
 	}
+	// A message with an unparseable / empty sender JID cannot be routed
+	// safely; drop it rather than pass a malformed From to the handler.
+	// Discovered by FuzzResolveInbound.
+	if evt.Info.Sender.User == "" || evt.Info.Sender.Server == "" {
+		return Resolved{Skip: SkipEmptyText}
+	}
 	// Loop-prevention: skip messages sent by *this* linked device
 	// (our own replies echoing back). Messages from the account's
 	// other linked devices (the primary phone testing "message

@@ -1,0 +1,54 @@
+name: Bug report
+description: Something the daemon or CLI does wrong.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The observed behaviour. Paste the exact command you ran.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: >
+        Ideally a minimal step list starting from a clean install.
+        `rousseau doctor` output helps a lot.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: rousseau version
+      description: Output of `rousseau version`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [linux, macOS, windows, containerised]
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Relevant lines from `journalctl --user -u rousseau-agent.service`
+        or the terminal running `rousseau chat`. Redact secrets.
+      render: shell

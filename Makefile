@@ -1,4 +1,4 @@
-.PHONY: help setup build install test test-race lint vet vuln check clean tidy fmt
+.PHONY: help setup build install test test-race lint vet vuln check clean tidy fmt bench fuzz
 
 BIN         := bin/rousseau
 PKG         := ./...
@@ -37,6 +37,17 @@ test-race: ## Run tests with race detector
 
 vuln: ## Scan for known vulnerabilities
 	@govulncheck $(PKG)
+
+bench: ## Run all Go benchmarks
+	@go test -run=^$$ -bench=. -benchmem $(PKG)
+
+fuzz: ## Run every Fuzz function for 10s each
+	@for pkg in $$(go list $(PKG) | xargs -I{} sh -c 'go test -list=Fuzz {} 2>/dev/null | grep -q Fuzz && echo {}'); do \
+	    echo "== fuzzing $$pkg =="; \
+	    for fn in $$(go test -list=Fuzz $$pkg | grep -E '^Fuzz'); do \
+	        go test -run=^$$ -fuzz=^$$fn$$ -fuzztime=10s $$pkg; \
+	    done; \
+	done
 
 check: vet lint test-race vuln ## Full quality gate
 
