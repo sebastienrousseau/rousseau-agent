@@ -34,3 +34,4 @@ go.work.sum
 
 # Release notes drafts
 RELEASE_v*.md
+.corral-state.json
