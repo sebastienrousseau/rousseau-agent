@@ -1,17 +1,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
-	"time"
+	"fmt"
 
 	"github.com/spf13/cobra"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
-	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
-	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
-	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
-	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
-	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport/signal"
 )
 
@@ -31,68 +26,23 @@ func newSignalCmd(opts *Options) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg := opts.Config
-			acct := account
-			if acct == "" {
-				acct = cfg.Signal.Account
-			}
+			acct := firstNonEmpty(account, cfg.Signal.Account)
 			if acct == "" {
 				return errors.New("--account or signal.account is required")
 			}
-
-			if (cfg.Provider == "" || cfg.Provider == "claudecli") && cfg.ClaudeCLI.PermissionMode == "" {
-				cfg.ClaudeCLI.PermissionMode = "bypassPermissions"
-				opts.Logger.Warn("signal.permission_mode_default",
-					"mode", "bypassPermissions",
-					"why", "no claudecli.permission_mode set; unattended daemon cannot approve prompts")
-			}
-			provider, err := buildProvider(cfg)
-			if err != nil {
-				return err
-			}
-			ctx := cmd.Context()
-
-			store, err := openStore(ctx, cfg.State.Path)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = store.Close() }()
-			concrete := store.(*sqlitestore.Store)
-			jidMap, err := sqlitestore.NewJIDMap(ctx, concrete)
-			if err != nil {
-				return err
-			}
-			claudeCache, err := sqlitestore.NewClaudeSessionCache(ctx, concrete)
-			if err != nil {
-				return err
-			}
-			if cc, ok := provider.(*claudecli.Provider); ok {
-				cc.WithCache(claudeCache)
-			}
-
-			registry := tools.NewRegistry()
-			registry.MustRegister(builtin.NewReadTool())
-			registry.MustRegister(builtin.NewWriteTool())
-			registry.MustRegister(builtin.NewEditTool())
-			registry.MustRegister(builtin.NewGrepTool(0, 0))
-			registry.MustRegister(builtin.NewBashTool(60 * time.Second))
-
-			approver, err := buildApprover(cfg.Agent.Approver)
-			if err != nil {
-				return err
-			}
-			compressor := buildCompressor(cfg.Agent.Compression, provider)
-			ag := agent.New(provider, registry, opts.Logger, agent.Options{
-				MaxIterations: cfg.Agent.MaxIterations,
-				SystemPrompt:  systemPrompt(cfg.Agent.SystemPrompt),
-				Approver:      approver,
-				Compressor:    compressor,
-			})
+			setUnattendedPermissionDefault(opts, "signal")
 
 			allow := allowlist
 			if len(allow) == 0 {
 				allow = cfg.Signal.Allowlist
 			}
-			router := transport.NewRouter(ag, store, jidMap, opts.Logger, transport.RouterOptions{Allowlist: allow})
+
+			ctx := cmd.Context()
+			wiring, err := assembleDaemon(ctx, opts, allow)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = wiring.Sessions.Close() }()
 
 			client, err := signal.New(signal.Config{
 				Binary:      firstNonEmpty(binary, cfg.Signal.Binary),
@@ -103,8 +53,17 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			shutdown, err := wiring.startCron(ctx, func(dctx context.Context, target, body string) error {
+				return client.Deliver(dctx, target, body)
+			}, opts.Logger)
+			if err != nil {
+				return fmt.Errorf("cron: %w", err)
+			}
+			defer shutdown()
+
 			opts.Logger.Info("signal.starting", "account", acct, "allowlist", len(allow))
-			return client.Start(ctx, router)
+			return client.Start(ctx, wiring.Router)
 		},
 	}
 	cmd.Flags().StringVar(&account, "account", "", "E.164 phone number the daemon runs as")

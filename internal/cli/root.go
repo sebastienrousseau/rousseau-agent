@@ -62,6 +62,8 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.AddCommand(newMCPCmd(opts))
 	root.AddCommand(newSkillsCmd(opts))
 	root.AddCommand(newSignalCmd(opts))
+	root.AddCommand(newTelegramCmd(opts))
+	root.AddCommand(newStatusCmd(opts))
 	root.AddCommand(newVersionCmd())
 	return root
 }
