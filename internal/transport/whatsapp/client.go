@@ -20,6 +20,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
@@ -49,13 +50,22 @@ type Config struct {
 }
 
 // Client is a transport.Transport backed by whatsmeow.
+//
+// The whatsmeow.Client is stored on wm; the concrete client's
+// send/download surface is stored on sender/downloader as the small
+// interfaces the rest of the package speaks. Populating those
+// separately lets unit tests swap in fakes without instantiating a
+// whatsmeow.Client or opening a real socket.
 type Client struct {
-	cfg     Config
-	logger  *slog.Logger
-	mu      sync.Mutex
-	wm      *whatsmeow.Client
-	handler transport.Handler
-	stopped bool
+	cfg        Config
+	logger     *slog.Logger
+	mu         sync.Mutex
+	wm         *whatsmeow.Client
+	sender     Sender
+	downloader Downloader
+	ownID      *types.JID
+	handler    transport.Handler
+	stopped    bool
 }
 
 // New constructs a Client. Connect is deferred until Start.
@@ -107,6 +117,9 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 
 	c.mu.Lock()
 	c.wm = wm
+	c.sender = newWMSender(wm)
+	c.downloader = newWMDownloader(wm)
+	c.ownID = wm.Store.ID
 	c.mu.Unlock()
 
 	if wm.Store.ID == nil {
@@ -142,16 +155,16 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 // this package's types directly.
 func (c *Client) Deliver(ctx context.Context, target, body string) error {
 	c.mu.Lock()
-	wm := c.wm
+	sender := c.sender
 	c.mu.Unlock()
-	if wm == nil {
+	if sender == nil {
 		return errors.New("whatsapp: not connected")
 	}
 	jid, err := parseJID(target)
 	if err != nil {
 		return err
 	}
-	return newWMSender(wm).SendText(ctx, jid, PrependHeader(body, c.cfg.ReplyHeader))
+	return sender.SendText(ctx, jid, PrependHeader(body, c.cfg.ReplyHeader))
 }
 
 // Stop disconnects the whatsmeow client. Safe to call multiple times.
@@ -183,16 +196,16 @@ func (c *Client) onEvent(raw any) {
 
 func (c *Client) handleMessage(evt *events.Message) {
 	c.mu.Lock()
-	wm := c.wm
+	sender, downloader, ownID := c.sender, c.downloader, c.ownID
 	c.mu.Unlock()
-	if wm == nil {
+	if sender == nil {
 		return
 	}
 	Dispatch(context.Background(), DispatchInput{
 		Event:       evt,
-		OwnID:       wm.Store.ID,
-		Sender:      newWMSender(wm),
-		Downloader:  newWMDownloader(wm),
+		OwnID:       ownID,
+		Sender:      sender,
+		Downloader:  downloader,
 		Handler:     c.handler,
 		Transcriber: c.cfg.Transcriber,
 		Header:      c.cfg.ReplyHeader,
