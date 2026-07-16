@@ -9,29 +9,51 @@ on:
 permissions:
   contents: read
 
-# Verifies that two clean container builds from the same commit
-# produce identical binary digests. Any drift means non-determinism has
-# crept into the toolchain (unpinned base image, time-dependent build
-# args, filesystem-order-dependent bytecode, etc.).
+# Verifies that two clean builds from the same commit produce
+# identical binary digests. Any drift means non-determinism has crept
+# into the toolchain (unpinned base image, time-dependent build args,
+# filesystem-order-dependent bytecode, etc.).
+#
+# Key knobs holding the build deterministic:
+#
+#   GOTOOLCHAIN=local        Prevents Go from probing for and
+#                            switching to a different toolchain
+#                            version between the two invocations.
+#   GOFLAGS=-buildvcs=false  Prevents `go build` from stamping the
+#                            binary with VCS info (last-commit,
+#                            uncommitted-changes) which varies with
+#                            the runner's git state.
+#   -trimpath                Strips module and gopath prefixes.
+#   -buildid=""              Suppresses the compiler-embedded build id.
+#   -s -w                    Strips symbol + DWARF tables.
+#   SOURCE_DATE_EPOCH        Fixed timestamp used for any embedded
+#                            time metadata (though with -trimpath +
+#                            -buildid there should be none).
 
 jobs:
   twice:
     runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+      GOFLAGS: -buildvcs=false
+      # Stable inputs so -X ldflags do not diverge run-to-run.
+      VERSION: repro
+      BUILD_DATE: '2000-01-01T00:00:00Z'
+      SOURCE_DATE_EPOCH: '946684800'
     steps:
       - uses: actions/checkout@v7
+
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.5'
-          cache: true
+          cache: false  # We control cache lifecycle between builds.
+
+      - name: Warm the module cache once (both builds use the same modules)
+        run: go mod download
 
       - name: Build A
         env:
-          # Stable inputs so goreleaser's -X ldflags do not diverge run-
-          # to-run. We commit-pin the version and use a fixed date.
-          VERSION: 'repro'
-          COMMIT:  ${{ github.sha }}
-          BUILD_DATE: '2000-01-01T00:00:00Z'
-          SOURCE_DATE_EPOCH: '946684800'
+          COMMIT: ${{ github.sha }}
         run: |
           mkdir -p out-a
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
@@ -43,13 +65,12 @@ jobs:
               -o out-a/rousseau ./cmd/rousseau
           sha256sum out-a/rousseau
 
-      - name: Build B (fresh cache)
+      - name: Build B (fresh build cache)
         env:
-          VERSION: 'repro'
-          COMMIT:  ${{ github.sha }}
-          BUILD_DATE: '2000-01-01T00:00:00Z'
-          SOURCE_DATE_EPOCH: '946684800'
+          COMMIT: ${{ github.sha }}
         run: |
+          # Only the build cache is cleared — the module cache is left
+          # warm so both builds see identically-resolved dependencies.
           go clean -cache
           mkdir -p out-b
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
@@ -68,6 +89,10 @@ jobs:
           echo "A: $A"
           echo "B: $B"
           if [ "$A" != "$B" ]; then
+            # Debug aids for future regressions.
+            echo "First 40 bytes of A:"; head -c 40 out-a/rousseau | xxd | head
+            echo "First 40 bytes of B:"; head -c 40 out-b/rousseau | xxd | head
+            echo "cmp -l | head:"; cmp -l out-a/rousseau out-b/rousseau 2>/dev/null | head -10 || true
             echo "::error::Reproducibility broken — build A and B differ."
             exit 1
           fi

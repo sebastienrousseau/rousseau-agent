@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -86,8 +88,12 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 
 	if changed, err := a.opts.Compressor.Compress(ctx, s); err != nil {
 		a.logger.Warn("agent.compress_failed", slog.String("err", err.Error()))
+		observability.CompressorRewrites.WithLabelValues("error").Inc()
 	} else if changed {
 		a.logger.Info("agent.compressed", slog.Int("messages", len(s.Messages)))
+		observability.CompressorRewrites.WithLabelValues("rewrote").Inc()
+	} else {
+		observability.CompressorRewrites.WithLabelValues("skipped").Inc()
 	}
 
 	toolDefs := a.registry.Definitions()
@@ -100,8 +106,11 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 			Tools:     toolDefs,
 		}
 
+		start := time.Now()
 		resp, err := a.provider.Complete(ctx, req)
+		observability.ObserveProviderLatency(a.provider.Name(), "complete", start)
 		if err != nil {
+			observability.ProviderErrors.WithLabelValues(a.provider.Name(), "other").Inc()
 			return Message{}, fmt.Errorf("provider: %w", err)
 		}
 
@@ -173,6 +182,7 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 			Input:     use.Input,
 			SessionID: sessionID,
 		}); decision == DecisionDeny {
+			observability.ToolCalls.WithLabelValues(use.Name, "deny").Inc()
 			if reason == "" {
 				reason = "denied by policy"
 			}
@@ -184,6 +194,7 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 			}})
 			continue
 		}
+		observability.ToolCalls.WithLabelValues(use.Name, "allow").Inc()
 
 		a.logger.Info("tool.execute", slog.String("name", use.Name), slog.String("id", use.ID))
 		out, err := tool.Execute(ctx, use.Input)

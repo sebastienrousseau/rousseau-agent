@@ -19,26 +19,40 @@ type Config struct {
 	//   "openai"               — OpenAI Chat Completions
 	//   "openrouter"           — OpenRouter (openai config, BaseURL preset)
 	//   "ollama"               — local ollama (openai config, BaseURL preset)
-	Provider   string          `mapstructure:"provider"`
-	Anthropic  AnthropicConfig `mapstructure:"anthropic"`
-	ClaudeCLI  ClaudeCLIConfig `mapstructure:"claudecli"`
-	OpenAI     OpenAIConfig    `mapstructure:"openai"`
-	OpenRouter OpenAIConfig    `mapstructure:"openrouter"`
-	Ollama     OpenAIConfig    `mapstructure:"ollama"`
-	Log        LogConfig       `mapstructure:"log"`
-	State      StateConfig     `mapstructure:"state"`
-	Agent      AgentConfig     `mapstructure:"agent"`
-	WhatsApp   WhatsAppConfig  `mapstructure:"whatsapp"`
-	Signal     SignalConfig    `mapstructure:"signal"`
-	Telegram   TelegramConfig  `mapstructure:"telegram"`
-	Bedrock    BedrockConfig   `mapstructure:"bedrock"`
-	Vertex     VertexConfig    `mapstructure:"vertex"`
-	Matrix     MatrixConfig    `mapstructure:"matrix"`
-	Slack      SlackConfig     `mapstructure:"slack"`
-	Discord    DiscordConfig   `mapstructure:"discord"`
-	SMS        SMSConfig       `mapstructure:"sms"`
-	IMessage   IMessageConfig  `mapstructure:"imessage"`
-	Email      EmailConfig     `mapstructure:"email"`
+	Provider      string              `mapstructure:"provider"`
+	Anthropic     AnthropicConfig     `mapstructure:"anthropic"`
+	ClaudeCLI     ClaudeCLIConfig     `mapstructure:"claudecli"`
+	OpenAI        OpenAIConfig        `mapstructure:"openai"`
+	OpenRouter    OpenAIConfig        `mapstructure:"openrouter"`
+	Ollama        OpenAIConfig        `mapstructure:"ollama"`
+	Log           LogConfig           `mapstructure:"log"`
+	State         StateConfig         `mapstructure:"state"`
+	Agent         AgentConfig         `mapstructure:"agent"`
+	Observability ObservabilityConfig `mapstructure:"observability"`
+	WhatsApp      WhatsAppConfig      `mapstructure:"whatsapp"`
+	Signal        SignalConfig        `mapstructure:"signal"`
+	Telegram      TelegramConfig      `mapstructure:"telegram"`
+	Bedrock       BedrockConfig       `mapstructure:"bedrock"`
+	Vertex        VertexConfig        `mapstructure:"vertex"`
+	Matrix        MatrixConfig        `mapstructure:"matrix"`
+	Slack         SlackConfig         `mapstructure:"slack"`
+	Discord       DiscordConfig       `mapstructure:"discord"`
+	SMS           SMSConfig           `mapstructure:"sms"`
+	IMessage      IMessageConfig      `mapstructure:"imessage"`
+	Email         EmailConfig         `mapstructure:"email"`
+}
+
+// ObservabilityConfig configures the optional Prometheus metrics endpoint
+// and OpenTelemetry tracer. Both are opt-in — leaving them empty means
+// the daemon runs with zero inbound HTTP surface (matching rousseau's
+// default posture) and zero telemetry output.
+type ObservabilityConfig struct {
+	// MetricsAddr binds the Prometheus /metrics endpoint, e.g. ":9100".
+	// Empty disables the endpoint entirely.
+	MetricsAddr string `mapstructure:"metrics_addr"`
+	// OTLPEndpoint is the base URL of an OTLP-HTTP collector, e.g.
+	// "http://otel-collector:4318". Empty leaves the tracer noop.
+	OTLPEndpoint string `mapstructure:"otlp_endpoint"`
 }
 
 // SMSConfig configures the Twilio/Vonage SMS transport.
