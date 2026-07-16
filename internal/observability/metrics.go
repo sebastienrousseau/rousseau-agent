@@ -98,6 +98,36 @@ var (
 		Name: "rousseau_session_active",
 		Help: "Number of chat sessions currently held in memory.",
 	})
+
+	// PanicsRecovered counts every panic the resilience middleware
+	// caught before it could take down the daemon, labelled by the
+	// surface that produced it (transport / tool / provider).
+	PanicsRecovered = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "rousseau_panics_recovered_total",
+		Help: "Panics caught by the resilience recover middleware, by surface.",
+	}, []string{"surface"})
+
+	// CircuitState reports the current state of a circuit breaker
+	// (0 = Closed, 1 = HalfOpen, 2 = Open), labelled by the wrapped
+	// resource (provider name, transport name, tool name).
+	CircuitState = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rousseau_circuit_state",
+		Help: "Circuit breaker state (0=Closed, 1=HalfOpen, 2=Open), by wrapped resource.",
+	}, []string{"resource"})
+
+	// CircuitTrips counts every transition into the Open state,
+	// labelled by resource. Useful for alerts on repeated tripping.
+	CircuitTrips = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "rousseau_circuit_trips_total",
+		Help: "Circuit breaker Open transitions, by wrapped resource.",
+	}, []string{"resource"})
+
+	// RateLimitDenied counts inbound messages the per-JID rate limiter
+	// blocked, labelled by transport.
+	RateLimitDenied = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "rousseau_ratelimit_denied_total",
+		Help: "Inbound messages denied by the per-JID rate limiter, by transport.",
+	}, []string{"transport"})
 )
 
 func init() {
