@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -269,4 +270,68 @@ func TestStart_HandlerNilErrors(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hi", truncate("hi", 10))
 	assert.True(t, len(truncate("hello world", 5)) < len("hello world"))
+}
+
+// TestStart_PollsAndExitsOnCancel drives Start through primeCursor
+// and at least one pollOnce tick against a fake BlueBubbles server,
+// then cancels the context.
+func TestStart_PollsAndExitsOnCancel(t *testing.T) {
+	polled := make(chan struct{}, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+		_, _ = w.Write([]byte(`{"status":200,"data":[]}`)) //nolint:errcheck // test fixture
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{
+		BaseURL: srv.URL, Password: "p",
+		PollInterval: 5 * time.Millisecond,
+		HTTPClient:   srv.Client(),
+	}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	}()
+
+	select {
+	case <-polled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start never polled")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after cancel")
+	}
+}
+
+// TestStart_ContinuesOnPollError exercises the backoff branch when
+// the BlueBubbles server errors on poll.
+func TestStart_ContinuesOnPollError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{
+		BaseURL: srv.URL, Password: "p",
+		PollInterval: 5 * time.Millisecond,
+		HTTPClient:   srv.Client(),
+	}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
