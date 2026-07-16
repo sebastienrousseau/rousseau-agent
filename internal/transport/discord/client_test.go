@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
@@ -24,6 +26,7 @@ type fakeWS struct {
 	mu     sync.Mutex
 	inbox  [][]byte
 	writes [][]byte
+	closed bool
 	err    error
 }
 
@@ -51,7 +54,12 @@ func (f *fakeWS) Write(_ context.Context, msg []byte) error {
 	return nil
 }
 
-func (f *fakeWS) Close(websocket.StatusCode, string) error { return nil }
+func (f *fakeWS) Close(websocket.StatusCode, string) error {
+	f.mu.Lock()
+	f.closed = true
+	f.mu.Unlock()
+	return nil
+}
 
 func TestNew_RequiresToken(t *testing.T) {
 	_, err := New(Config{}, silentLogger())
@@ -270,4 +278,66 @@ func TestPump_ReadErrorReturns(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hi", truncate("hi", 10))
 	assert.True(t, len(truncate("hello world", 5)) < len("hello world"))
+}
+
+// -- Start / runOnce coverage --------------------------------------
+
+func TestStart_HandlerNilErrors(t *testing.T) {
+	c, err := New(Config{Token: "bot"}, silentLogger())
+	require.NoError(t, err)
+	err = c.Start(context.Background(), nil)
+	assert.Error(t, err)
+}
+
+func TestStart_RunOnceExitsOnContextCancel(t *testing.T) {
+	ws := &fakeWS{}
+	c, err := New(Config{
+		Token:         "bot",
+		DialWebSocket: func(context.Context, string) (WSConn, error) { return ws, nil },
+	}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) {
+		return "", nil
+	}))
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.True(t, ws.closed, "connection should close on exit")
+}
+
+func TestRunOnce_DialErrorPropagates(t *testing.T) {
+	c, err := New(Config{
+		Token: "bot",
+		DialWebSocket: func(context.Context, string) (WSConn, error) {
+			return nil, errors.New("gateway unreachable")
+		},
+	}, silentLogger())
+	require.NoError(t, err)
+
+	err = c.runOnce(context.Background(), transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "gateway unreachable")
+}
+
+func TestStart_RetriesOnRunOnceFailure(t *testing.T) {
+	var calls atomic.Int32
+	c, err := New(Config{
+		Token: "bot",
+		DialWebSocket: func(context.Context, string) (WSConn, error) {
+			calls.Add(1)
+			return nil, errors.New("boom")
+		},
+	}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.GreaterOrEqual(t, calls.Load(), int32(1))
 }

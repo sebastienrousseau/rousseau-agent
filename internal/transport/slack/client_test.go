@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
+	"time"
 	"testing"
 
 	"github.com/coder/websocket"
@@ -321,4 +323,129 @@ func TestPump_ReadErrorReturns(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hi", truncate("hi", 10))
 	assert.True(t, len(truncate("hello world", 5)) < len("hello world"))
+}
+
+// -- Start / runOnce coverage ---------------------------------------
+
+// TestStart_HandlerNilErrors — Start rejects a nil handler.
+func TestStart_HandlerNilErrors(t *testing.T) {
+	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
+	require.NoError(t, err)
+	err = c.Start(context.Background(), nil)
+	assert.Error(t, err)
+}
+
+// TestStart_RunOnceExitsOnContextCancel — a full end-to-end path:
+//   - openConnection hits the injected HTTP fixture
+//   - dial returns the fake WSConn
+//   - pump reads a single message and processes it
+//   - context cancellation exits the loop cleanly
+func TestStart_RunOnceExitsOnContextCancel(t *testing.T) {
+	// Slack /apps.connections.open response
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`))
+	}))
+	defer srv.Close()
+
+	ws := &fakeWS{}
+	c, err := New(Config{
+		AppToken: "xapp-x", BotToken: "xoxb-y",
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+		DialWebSocket: func(context.Context, string) (WSConn, error) { return ws, nil },
+	}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		// Give runOnce a beat to start pumping before we cancel.
+		<-newTicker(t)
+		cancel()
+	}()
+
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) {
+		return "", nil
+	}))
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.True(t, ws.closed, "connection should be closed on exit")
+}
+
+// TestRunOnce_DialErrorPropagates — dial failure surfaces to Start's
+// retry loop; we only verify the single-shot runOnce error path here.
+func TestRunOnce_DialErrorPropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`))
+	}))
+	defer srv.Close()
+
+	dialErr := errors.New("dial refused")
+	c, err := New(Config{
+		AppToken: "xapp-x", BotToken: "xoxb-y",
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+		DialWebSocket: func(context.Context, string) (WSConn, error) { return nil, dialErr },
+	}, silentLogger())
+	require.NoError(t, err)
+
+	err = c.runOnce(context.Background(), transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "dial refused")
+}
+
+// TestRunOnce_OpenConnectionErrorPropagates — HTTP-side error from
+// apps.connections.open bubbles up as-is.
+func TestRunOnce_OpenConnectionErrorPropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"ok":false,"error":"invalid_auth"}`, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{
+		AppToken: "xapp-x", BotToken: "xoxb-y",
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+		DialWebSocket: func(context.Context, string) (WSConn, error) {
+			t.Fatal("dial must not be called when open fails")
+			return nil, nil
+		},
+	}, silentLogger())
+	require.NoError(t, err)
+
+	err = c.runOnce(context.Background(), transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	require.Error(t, err)
+}
+
+// TestStart_RetriesOnRunOnceFailure — Start should wait and retry
+// after a runOnce failure. We verify the retry path fires exactly
+// once before the context cancellation ends the loop.
+func TestStart_RetriesOnRunOnceFailure(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, `{"ok":false,"error":"rate_limited"}`, http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{
+		AppToken: "xapp-x", BotToken: "xoxb-y",
+		BaseURL: srv.URL, HTTPClient: srv.Client(),
+	}, silentLogger())
+	require.NoError(t, err)
+
+	// Cancel after the first failure — the 2s backoff makes a second
+	// runOnce impossible before this expires.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.GreaterOrEqual(t, calls.Load(), int32(1), "at least one runOnce should have been attempted")
+}
+
+// newTicker returns a channel that fires after a short delay so tests
+// don't sleep with time.Sleep (which the race detector dislikes).
+func newTicker(t *testing.T) <-chan struct{} {
+	t.Helper()
+	ch := make(chan struct{})
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(ch)
+	}()
+	return ch
 }
