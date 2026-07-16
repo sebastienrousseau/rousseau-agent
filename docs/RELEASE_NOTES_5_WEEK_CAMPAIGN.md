@@ -87,23 +87,29 @@ one in Week 4 §8):
 - **RISC-V / armhf** binaries — ZeroClaw's niche; ARM64 covered.
 - **Vercel AI Gateway support** — anti-goal.
 
-## Score-card impact (2026-08-20)
+## Score-card impact (honest)
 
-Applying the Week-5 delta to `docs/COMPETITORS_2026_07_12.md §3`:
+Applying the Week-5 + Week-6 delta to `docs/COMPETITORS_2026_07_12.md §3`:
 
 | # | Category | Before | After | Note |
 |---|---|:-:|:-:|---|
-| 1 | Core correctness | 8 | **10** | Fuzz + property + wall-clock soak gate |
-| 2 | Documentation | 10 | 10 | — |
-| 3 | Test coverage | 8 | **10** | +175 tests; every new package ≥ 85% |
-| 4 | Security posture | 10 | 10 | (Was already 10 after this session's SLSA/cosign work) |
-| 5 | Feature breadth | 7 | **9** | Native tool suite + image content + sub-agent |
-| 6 | Performance | 8 | **9** | Distroless 10× smaller; further gains gated on `:lite` |
-| 7 | Deployment | 9 | **10** | Two container tags + Quadlet + reproducible build |
-| 8 | Codebase quality | 10 | 10 | — |
+| 1 | Core correctness | 8 | **9.5** | Fuzz + property + soak *framework* + PR gate; short of 10 because "wall-clock time" as evidence needs months of nightly-green history, and the campaign is 24 h old. |
+| 2 | Documentation | 10 | 10 | Godoc enforced + 3 comparative docs + implementation plan + runnable Example* on every Week-1-5 package |
+| 3 | Test coverage | 8 | **8.5** | Overall package-avg 81.3% (up from 75.9%). Every new package ≥ 85%. Whatsapp `Start` still 0% (whatsmeow-driver), some CLI RunE closures uncovered. |
+| 4 | Security posture | 10 | 10 | SLSA-3 + cosign + SBOM + reproducible + redact + AEAD vault + breaker + CodeQL. |
+| 5 | Feature breadth | 7 | **10** | Native tool suite + image content + sub-agent + Composio adapter (1000+ opt-in) closes the row. |
+| 6 | Performance | 8 | **9.5** | `:distroless` 10× smaller than baseline; `:lite` 47 MB. ZeroClaw's 3.4 MB / <5 MB-RAM edge story still a real gap. |
+| 7 | Deployment | 9 | **9.5** | Three container tags + Quadlet + reproducible + rootless. Edge / RISC-V / armhf remain uncovered. |
+| 8 | Codebase quality | 10 | 10 | Zero lint issues, zero CI regressions across 15+ commits. |
 | 9 | Developer experience | 10 | 10 | — |
 | 10 | Ecosystem fit (2026) | 10 | 10 | — |
-| **Aggregate** | | **90** | **98** | Row 5 short of 10 because Composio's 1000+ number remains a documented gap |
+| **Aggregate** | | **90** | **97** | 3-point gap is real — Row 3 (specific uncovered packages), Row 1 (calendar time not compressible), and Row 6/7 (ZeroClaw / edge). See "What's honestly still open" below. |
+
+### What's honestly still open
+
+- **Coverage**: `whatsapp.Start` (0%, whatsmeow driver dep), `state/sqlite` schema-error branches, `agent.Agent.Run` tool-loop error paths. Every package that shipped this campaign now has an Example* function and a benchmark file, but genuine 100% would require ~2–3 more days of fake-harness work.
+- **Wall-clock evidence**: soak passes every push (10 min) + PR (30 min) + nightly (24 h), but calendar time can't be compressed. This row will settle at 10 after ~30 nightly-green runs.
+- **Edge deployment**: `:lite` at 47 MB is a real improvement but not competitive with ZeroClaw's 3.4 MB. Closing to 10 on Rows 6/7 would need a Rust rewrite of a hot subset — an explicit non-goal per the plan §12.
 
 ## Verification
 
