@@ -10,8 +10,8 @@ import (
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
@@ -343,7 +343,7 @@ func TestStart_HandlerNilErrors(t *testing.T) {
 func TestStart_RunOnceExitsOnContextCancel(t *testing.T) {
 	// Slack /apps.connections.open response
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`))
+		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
@@ -373,7 +373,7 @@ func TestStart_RunOnceExitsOnContextCancel(t *testing.T) {
 // retry loop; we only verify the single-shot runOnce error path here.
 func TestRunOnce_DialErrorPropagates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`))
+		_, _ = w.Write([]byte(`{"ok":true,"url":"wss://slack.example/sm"}`)) //nolint:errcheck // test fixture
 	}))
 	defer srv.Close()
 
