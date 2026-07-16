@@ -1,0 +1,53 @@
+# syntax=docker/dockerfile:1.7
+#
+# Distroless runtime for rousseau-agent — same binary as :latest but
+# without the Node.js runtime and the claude CLI. Operators supply
+# claude-code on the host and bind-mount it into the container, or
+# use a direct provider (anthropic / bedrock / vertex / openai /
+# openrouter / ollama).
+#
+# Target size: ~30 MB (vs 530 MB for :latest).
+
+########################  BUILDER  ########################
+ARG GO_VERSION=1.26
+FROM golang:${GO_VERSION}-alpine AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+
+ARG VERSION=container
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=linux \
+    go build \
+        -trimpath \
+        -ldflags="-s -w \
+          -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.version=${VERSION}' \
+          -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.commit=${COMMIT}' \
+          -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.buildDate=${BUILD_DATE}'" \
+        -o /out/rousseau ./cmd/rousseau
+
+########################  RUNTIME  ########################
+# distroless static — no shell, no libc, no package manager. Runs
+# under a non-root user (UID 65532) by default. TLS certificates are
+# baked in via /etc/ssl/certs/ca-certificates.crt.
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+COPY --from=builder /out/rousseau /usr/local/bin/rousseau
+
+# distroless already runs as nonroot (UID 65532); no USER directive
+# needed. HOME is set to /home/nonroot by the base image.
+WORKDIR /workspace
+ENV HOME=/home/nonroot
+
+# No HTTP surface — nothing to expose. Health is process-alive.
+ENTRYPOINT ["/usr/local/bin/rousseau"]
+CMD ["--help"]

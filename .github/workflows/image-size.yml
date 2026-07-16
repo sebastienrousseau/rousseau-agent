@@ -1,0 +1,51 @@
+name: image size
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Non-blocking on failure while we tune the budget. Once we've had a
+# few weeks of green runs on main, promote this to required-check
+# status in the branch ruleset.
+
+jobs:
+  distroless-size:
+    name: distroless size budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the :distroless image
+        run: |
+          docker buildx build \
+            --file docker/Dockerfile.distroless \
+            --tag rousseau-agent:distroless-ci \
+            --load .
+
+      - name: Inspect image size
+        id: size
+        run: |
+          bytes=$(docker image inspect rousseau-agent:distroless-ci --format '{{.Size}}')
+          mb=$((bytes / 1024 / 1024))
+          echo "size_mb=$mb" >> "$GITHUB_OUTPUT"
+          echo "distroless image: ${mb} MB"
+
+      - name: Fail on regression
+        run: |
+          mb=${{ steps.size.outputs.size_mb }}
+          budget=70          # target is <=55 MB; buffer to 70 for lint/refactor churn
+          if [ "$mb" -gt "$budget" ]; then
+            echo "::error::distroless image is ${mb} MB, budget is ${budget} MB"
+            exit 1
+          fi
+          echo "distroless image ${mb} MB within budget ${budget} MB"
+
+      - name: Emit a size annotation
+        if: always()
+        run: |
+          echo "::notice title=rousseau-agent:distroless size::${{ steps.size.outputs.size_mb }} MB"
