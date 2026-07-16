@@ -89,7 +89,7 @@ func TestWrap_CustomDeniedReply(t *testing.T) {
 	limiter := NewKeyedLimiter(1, 0.001, 10)
 	wrapped := Wrap(inner, limiter, "sms", "slow down please")
 	// First message allowed.
-	_, _ = wrapped.Handle(context.Background(), transport.IncomingMessage{From: "u1"}) //nolint:errcheck // consume the free token
+	_, _ = wrapped.Handle(context.Background(), transport.IncomingMessage{From: "u1"})      //nolint:errcheck // consume the free token
 	reply, _ := wrapped.Handle(context.Background(), transport.IncomingMessage{From: "u1"}) //nolint:errcheck // asserting reply only
 	assert.Equal(t, "slow down please", reply)
 }
