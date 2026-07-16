@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability/redact"
 )
 
 var (
@@ -105,5 +106,20 @@ func newLogger(level, format string, w io.Writer) *slog.Logger {
 	} else {
 		h = slog.NewTextHandler(w, handlerOpts)
 	}
+	if os.Getenv(envLogNoRedact) != "1" {
+		rules := redact.DefaultRules()
+		if os.Getenv(envLogRedactPhones) == "1" {
+			rules = append(rules, redact.PhoneRule())
+		}
+		h = redact.New(h, rules)
+	}
 	return slog.New(h)
 }
+
+// envLogNoRedact opts out of the redacting slog handler; intended for
+// local debugging only.
+const envLogNoRedact = "ROUSSEAU_LOG_NO_REDACT"
+
+// envLogRedactPhones opts the phone-number rule in on top of the
+// default rule set.
+const envLogRedactPhones = "ROUSSEAU_LOG_REDACT_PHONES"
