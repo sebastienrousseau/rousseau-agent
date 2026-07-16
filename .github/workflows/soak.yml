@@ -1,0 +1,68 @@
+name: soak
+
+# Nightly 24-hour soak on main + 30-minute soak on every PR.
+# Runs the harness in test/integration/soak that drives synthetic
+# workload against a fake provider while a Monitor samples runtime +
+# FD counts, asserts leak invariants at the end, and uploads a
+# markdown report as an artefact.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"          # 03:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Override SOAK_DURATION (Go duration, e.g. 1h30m)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: soak (${{ github.event_name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 1500      # 25 hours; nightly needs 24
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Pick duration
+        id: pick
+        run: |
+          if [ -n "${{ inputs.duration }}" ]; then
+            echo "duration=${{ inputs.duration }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "${{ github.event_name }}" in
+            schedule|workflow_dispatch) echo "duration=24h" >> "$GITHUB_OUTPUT" ;;
+            push)                        echo "duration=10m" >> "$GITHUB_OUTPUT" ;;
+            pull_request)                echo "duration=30m" >> "$GITHUB_OUTPUT" ;;
+            *)                           echo "duration=5m"  >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Run soak
+        env:
+          SOAK_DURATION: ${{ steps.pick.outputs.duration }}
+          SOAK_REPORT: /tmp/soak-report.md
+        run: |
+          echo "Running soak for $SOAK_DURATION"
+          go test -count=1 -timeout 25h ./test/integration/soak/...
+
+      - name: Upload report artefact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-report-${{ github.run_id }}
+          path: /tmp/soak-report.md
+          retention-days: 30
