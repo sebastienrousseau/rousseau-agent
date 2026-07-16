@@ -13,6 +13,7 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -164,6 +165,18 @@ func toVertexContent(cs []agent.Content) ([]vertexContent, error) {
 		switch c.Kind {
 		case agent.ContentText:
 			out = append(out, vertexContent{Type: "text", Text: c.Text})
+		case agent.ContentImage:
+			if c.Image == nil {
+				return nil, errors.New("vertex: image content missing payload")
+			}
+			out = append(out, vertexContent{
+				Type: "image",
+				Source: &vertexImageSource{
+					Type:      "base64",
+					MediaType: c.Image.MediaType,
+					Data:      base64.StdEncoding.EncodeToString(c.Image.Data),
+				},
+			})
 		case agent.ContentToolUse:
 			if c.ToolUse == nil {
 				return nil, errors.New("vertex: tool_use content missing payload")
@@ -261,14 +274,22 @@ type vertexMessage struct {
 }
 
 type vertexContent struct {
+	Type      string             `json:"type"`
+	Text      string             `json:"text,omitempty"`
+	Source    *vertexImageSource `json:"source,omitempty"`
+	ID        string             `json:"id,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Input     any                `json:"input,omitempty"`
+	ToolUseID string             `json:"tool_use_id,omitempty"`
+	Content   string             `json:"content,omitempty"`
+	IsError   bool               `json:"is_error,omitempty"`
+}
+
+// vertexImageSource matches Anthropic's image block on Vertex.
+type vertexImageSource struct {
 	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Input     any    `json:"input,omitempty"`
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type vertexResponse struct {

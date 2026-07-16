@@ -4,6 +4,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,9 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
+
+// base64Encode wraps stdlib for readability at the call site.
+func base64Encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
 // Config configures the Anthropic Provider.
 type Config struct {
@@ -126,6 +130,11 @@ func toSDKContent(in []agent.Content) ([]sdk.ContentBlockParamUnion, error) {
 		switch c.Kind {
 		case agent.ContentText:
 			out = append(out, sdk.NewTextBlock(c.Text))
+		case agent.ContentImage:
+			if c.Image == nil {
+				return nil, errors.New("anthropic: image content missing payload")
+			}
+			out = append(out, sdk.NewImageBlockBase64(c.Image.MediaType, base64Encode(c.Image.Data)))
 		case agent.ContentToolUse:
 			if c.ToolUse == nil {
 				return nil, errors.New("anthropic: tool_use content missing payload")

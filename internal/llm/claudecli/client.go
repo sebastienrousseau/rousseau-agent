@@ -16,7 +16,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -122,21 +124,26 @@ func (*Provider) Name() string { return "claudecli" }
 // previous rousseau run we optimistically try --session-id first, catch
 // the "already in use" error, and retry with --resume.
 func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
-	prompt, err := lastUserText(req.Messages)
+	prompt, images, err := lastUserContent(req.Messages)
 	if err != nil {
 		return agent.Response{}, err
 	}
+	imagePaths, cleanup, err := writeImages(images)
+	if err != nil {
+		return agent.Response{}, err
+	}
+	defer cleanup()
 
 	sessionFlag := "--session-id"
 	if req.SessionID != "" && p.knowsSession(req.SessionID) {
 		sessionFlag = "--resume"
 	}
 
-	resp, err := p.invoke(ctx, sessionFlag, req, prompt)
+	resp, err := p.invoke(ctx, sessionFlag, req, prompt, imagePaths)
 	if err != nil && sessionFlag == "--session-id" && strings.Contains(err.Error(), "already in use") {
 		// Cold-start miss: claude has state from a previous rousseau run.
 		p.rememberSession(req.SessionID)
-		resp, err = p.invoke(ctx, "--resume", req, prompt)
+		resp, err = p.invoke(ctx, "--resume", req, prompt, imagePaths)
 	}
 	if err != nil {
 		return agent.Response{}, err
@@ -147,7 +154,7 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 	return resp, nil
 }
 
-func (p *Provider) invoke(ctx context.Context, sessionFlag string, req agent.Request, prompt string) (agent.Response, error) {
+func (p *Provider) invoke(ctx context.Context, sessionFlag string, req agent.Request, prompt string, imagePaths []string) (agent.Response, error) {
 	args := []string{"--print", "--output-format", "json"}
 	if req.SessionID != "" {
 		args = append(args, sessionFlag, req.SessionID)
@@ -164,6 +171,11 @@ func (p *Provider) invoke(ctx context.Context, sessionFlag string, req agent.Req
 		args = append(args, "--permission-mode", p.cfg.PermissionMode)
 	}
 	args = append(args, p.cfg.ExtraArgs...)
+	// The claude CLI accepts one or more --image paths preceding the
+	// prompt. Attach every temp-file image from the last user message.
+	for _, path := range imagePaths {
+		args = append(args, "--image", path)
+	}
 	args = append(args, prompt)
 
 	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
@@ -231,26 +243,78 @@ func mapStop(s string) agent.StopReason {
 	}
 }
 
-func lastUserText(msgs []agent.Message) (string, error) {
+// lastUserContent walks the messages from the tail and returns the
+// text + images from the most recent user turn that carries any
+// non-empty content. Empty text is allowed when at least one image
+// is present (image-only turns).
+func lastUserContent(msgs []agent.Message) (text string, images []*agent.Image, err error) {
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role != agent.RoleUser {
 			continue
 		}
 		var b strings.Builder
+		var imgs []*agent.Image
 		for _, c := range msgs[i].Content {
-			if c.Kind == agent.ContentText {
-				if b.Len() > 0 {
-					b.WriteString("\n")
+			switch c.Kind {
+			case agent.ContentText:
+				if c.Text != "" {
+					if b.Len() > 0 {
+						b.WriteString("\n")
+					}
+					b.WriteString(c.Text)
 				}
-				b.WriteString(c.Text)
+			case agent.ContentImage:
+				if c.Image != nil {
+					imgs = append(imgs, c.Image)
+				}
 			}
 		}
-		if b.Len() == 0 {
+		if b.Len() == 0 && len(imgs) == 0 {
 			continue
 		}
-		return b.String(), nil
+		return b.String(), imgs, nil
 	}
-	return "", errors.New("claudecli: no user text message to send")
+	return "", nil, errors.New("claudecli: no user content to send")
+}
+
+// writeImages persists every image to a temp file and returns their
+// paths + a cleanup function that removes the files after the CLI
+// call. Empty images list is a noop.
+func writeImages(images []*agent.Image) (paths []string, cleanup func(), err error) {
+	if len(images) == 0 {
+		return nil, func() {}, nil
+	}
+	dir, err := os.MkdirTemp("", "rousseau-cli-imgs-")
+	if err != nil {
+		return nil, func() {}, err
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) } //nolint:errcheck // best-effort cleanup
+	for i, img := range images {
+		ext := extensionFor(img.MediaType)
+		path := filepath.Join(dir, fmt.Sprintf("img-%d%s", i, ext))
+		if err := os.WriteFile(path, img.Data, 0o600); err != nil {
+			cleanup()
+			return nil, func() {}, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, cleanup, nil
+}
+
+// extensionFor maps common MIME types to file extensions. Unknown
+// types fall back to .bin.
+func extensionFor(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	}
+	return ".bin"
 }
 
 func defaultRun(cmd *exec.Cmd) ([]byte, error) {

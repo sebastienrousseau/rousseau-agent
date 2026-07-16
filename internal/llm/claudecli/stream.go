@@ -44,10 +44,18 @@ const (
 // daemon) can observe progress without waiting for --output-format json
 // to buffer the whole response.
 func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.StreamEvent, <-chan agent.StreamReport, error) {
-	prompt, err := lastUserText(req.Messages)
+	prompt, images, err := lastUserContent(req.Messages)
 	if err != nil {
 		return nil, nil, err
 	}
+	imagePaths, cleanup, err := writeImages(images)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Cleanup runs when the caller closes the returned channels via
+	// ctx cancel; the child process finishes reading the image files
+	// well before the JSON stream completes.
+	defer cleanup()
 
 	sessionFlag := "--session-id"
 	if req.SessionID != "" && p.knowsSession(req.SessionID) {
@@ -72,6 +80,9 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 		args = append(args, "--permission-mode", p.cfg.PermissionMode)
 	}
 	args = append(args, p.cfg.ExtraArgs...)
+	for _, path := range imagePaths {
+		args = append(args, "--image", path)
+	}
 	args = append(args, prompt)
 
 	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)

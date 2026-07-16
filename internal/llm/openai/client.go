@@ -6,6 +6,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,9 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
+
+// base64Encode wraps stdlib for readability at the call site.
+func base64Encode(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
 // Config configures the provider.
 type Config struct {
@@ -112,9 +116,7 @@ func toSDKMessages(system string, in []agent.Message) ([]sdk.ChatCompletionMessa
 func toSDKMessage(m agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
 	switch m.Role {
 	case agent.RoleUser:
-		return []sdk.ChatCompletionMessageParamUnion{
-			sdk.UserMessage(collectText(m.Content)),
-		}, nil
+		return []sdk.ChatCompletionMessageParamUnion{userMessage(m.Content)}, nil
 	case agent.RoleAssistant:
 		text := collectText(m.Content)
 		toolCalls := collectToolUses(m.Content)
@@ -148,6 +150,44 @@ func toSDKMessage(m agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error
 		return nil, fmt.Errorf("openai: unsupported role %q", m.Role)
 	}
 	return out, nil
+}
+
+// userMessage constructs a user ChatCompletion message. When cs
+// contains any image blocks the message uses the parts-array shape
+// (text + image_url parts); otherwise a plain string message is
+// returned for compatibility with older OpenAI-compatible endpoints
+// that don't support the parts shape.
+func userMessage(cs []agent.Content) sdk.ChatCompletionMessageParamUnion {
+	// Fast path: no images → plain string content.
+	hasImage := false
+	for _, c := range cs {
+		if c.Kind == agent.ContentImage {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return sdk.UserMessage(collectText(cs))
+	}
+	// Multipart content: preserve order across text and image blocks.
+	parts := make([]sdk.ChatCompletionContentPartUnionParam, 0, len(cs))
+	for _, c := range cs {
+		switch c.Kind {
+		case agent.ContentText:
+			if c.Text != "" {
+				parts = append(parts, sdk.TextContentPart(c.Text))
+			}
+		case agent.ContentImage:
+			if c.Image == nil {
+				continue
+			}
+			parts = append(parts, sdk.ImageContentPart(sdk.ChatCompletionContentPartImageImageURLParam{
+				URL: fmt.Sprintf("data:%s;base64,%s", c.Image.MediaType,
+					base64Encode(c.Image.Data)),
+			}))
+		}
+	}
+	return sdk.UserMessage(parts)
 }
 
 func collectText(cs []agent.Content) string {

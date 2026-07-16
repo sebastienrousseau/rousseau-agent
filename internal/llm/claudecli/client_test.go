@@ -30,17 +30,17 @@ func TestMapStop(t *testing.T) {
 	assert.Equal(t, agent.StopEndTurn, mapStop("unknown"))
 }
 
-func TestLastUserText_Basic(t *testing.T) {
+func TestLastUserContent_Basic(t *testing.T) {
 	msgs := []agent.Message{
 		agent.NewAssistantText("earlier"),
 		agent.NewUserText("hello world"),
 	}
-	got, err := lastUserText(msgs)
+	got, _, err := lastUserContent(msgs)
 	require.NoError(t, err)
 	assert.Equal(t, "hello world", got)
 }
 
-func TestLastUserText_ConcatenatesTextBlocks(t *testing.T) {
+func TestLastUserContent_ConcatenatesTextBlocks(t *testing.T) {
 	msgs := []agent.Message{{
 		Role: agent.RoleUser,
 		Content: []agent.Content{
@@ -48,23 +48,23 @@ func TestLastUserText_ConcatenatesTextBlocks(t *testing.T) {
 			{Kind: agent.ContentText, Text: "b"},
 		},
 	}}
-	got, err := lastUserText(msgs)
+	got, _, err := lastUserContent(msgs)
 	require.NoError(t, err)
 	assert.Equal(t, "a\nb", got)
 }
 
-func TestLastUserText_NoUserErrors(t *testing.T) {
+func TestLastUserContent_NoUserErrors(t *testing.T) {
 	msgs := []agent.Message{agent.NewAssistantText("only assistant")}
-	_, err := lastUserText(msgs)
+	_, _, err := lastUserContent(msgs)
 	assert.Error(t, err)
 }
 
-func TestLastUserText_SkipsUserWithNoText(t *testing.T) {
+func TestLastUserContent_SkipsUserWithNoText(t *testing.T) {
 	msgs := []agent.Message{
 		agent.NewUserText("first"),
 		{Role: agent.RoleUser, Content: []agent.Content{{Kind: agent.ContentToolResult}}},
 	}
-	got, err := lastUserText(msgs)
+	got, _, err := lastUserContent(msgs)
 	require.NoError(t, err)
 	assert.Equal(t, "first", got)
 }

@@ -7,6 +7,7 @@ package bedrock
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,6 +131,18 @@ func toBedrockContent(cs []agent.Content) ([]bedrockContent, error) {
 		switch c.Kind {
 		case agent.ContentText:
 			out = append(out, bedrockContent{Type: "text", Text: c.Text})
+		case agent.ContentImage:
+			if c.Image == nil {
+				return nil, errors.New("bedrock: image content missing payload")
+			}
+			out = append(out, bedrockContent{
+				Type: "image",
+				Source: &bedrockImageSource{
+					Type:      "base64",
+					MediaType: c.Image.MediaType,
+					Data:      base64.StdEncoding.EncodeToString(c.Image.Data),
+				},
+			})
 		case agent.ContentToolUse:
 			if c.ToolUse == nil {
 				return nil, errors.New("bedrock: tool_use content missing payload")
@@ -227,14 +240,25 @@ type bedrockMessage struct {
 }
 
 type bedrockContent struct {
+	Type      string              `json:"type"`
+	Text      string              `json:"text,omitempty"`
+	Source    *bedrockImageSource `json:"source,omitempty"`
+	ID        string              `json:"id,omitempty"`
+	Name      string              `json:"name,omitempty"`
+	Input     any                 `json:"input,omitempty"`
+	ToolUseID string              `json:"tool_use_id,omitempty"`
+	Content   string              `json:"content,omitempty"`
+	IsError   bool                `json:"is_error,omitempty"`
+}
+
+// bedrockImageSource is the payload for a type:"image" content block.
+// Bedrock/Vertex speak the same Anthropic wire shape:
+//
+//	{"type":"image","source":{"type":"base64","media_type":"...","data":"..."}}
+type bedrockImageSource struct {
 	Type      string `json:"type"`
-	Text      string `json:"text,omitempty"`
-	ID        string `json:"id,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Input     any    `json:"input,omitempty"`
-	ToolUseID string `json:"tool_use_id,omitempty"`
-	Content   string `json:"content,omitempty"`
-	IsError   bool   `json:"is_error,omitempty"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type bedrockResponse struct {
