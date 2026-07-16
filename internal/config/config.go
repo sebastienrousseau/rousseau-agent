@@ -40,6 +40,42 @@ type Config struct {
 	SMS           SMSConfig           `mapstructure:"sms"`
 	IMessage      IMessageConfig      `mapstructure:"imessage"`
 	Email         EmailConfig         `mapstructure:"email"`
+	RateLimit     RateLimitConfig     `mapstructure:"ratelimit"`
+	Resilience    ResilienceConfig    `mapstructure:"resilience"`
+}
+
+// RateLimitConfig configures the per-JID token-bucket rate limiter.
+// A zero-value config disables rate limiting entirely.
+type RateLimitConfig struct {
+	// Default is the fallback rate for transports without a specific
+	// override. Format: "Nr/Duration", e.g. "10r/1m".
+	Default string `mapstructure:"default"`
+	// PerTransport overrides Default on a per-transport basis. Keys
+	// are transport names ("whatsapp", "slack", "email", …).
+	PerTransport map[string]string `mapstructure:"per_transport"`
+	// MaxKeys caps the LRU of tracked senders. Zero uses the built-in
+	// default (10 000).
+	MaxKeys int `mapstructure:"max_keys"`
+	// DeniedReply overrides the user-facing string returned when a
+	// message is rate-limited. Empty uses ratelimit.DefaultDeniedReply.
+	DeniedReply string `mapstructure:"denied_reply"`
+}
+
+// ResilienceConfig configures panic-recovery and circuit-breaker
+// middleware.
+type ResilienceConfig struct {
+	// CircuitBreaker configures every provider-side breaker with the
+	// same settings. Zero-value uses gobreaker defaults documented on
+	// resilience.BreakerConfig.
+	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
+}
+
+// CircuitBreakerConfig mirrors resilience.BreakerConfig via viper tags.
+type CircuitBreakerConfig struct {
+	MaxFailures uint32 `mapstructure:"max_failures"`
+	IntervalMS  int    `mapstructure:"interval_ms"`
+	TimeoutMS   int    `mapstructure:"timeout_ms"`
+	HalfOpenMax uint32 `mapstructure:"half_open_max"`
 }
 
 // ObservabilityConfig configures the optional Prometheus metrics endpoint
