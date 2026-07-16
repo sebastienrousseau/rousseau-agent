@@ -120,11 +120,11 @@ func TestStartOTel_wiresProvider(t *testing.T) {
 	require.NoError(t, err)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	})
 	srv.Handler = mux
-	go func() { _ = srv.Serve(l) }()
-	defer func() { _ = srv.Shutdown(context.Background()) }()
+	go func() { _ = srv.Serve(l) }()                          //nolint:errcheck // test fixture
+	defer func() { _ = srv.Shutdown(context.Background()) }() //nolint:errcheck // test fixture
 
 	endpoint := "http://" + l.Addr().String()
 	shutdown, err := StartOTel(context.Background(), endpoint, "test-version", silent())
