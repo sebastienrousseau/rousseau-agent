@@ -8,10 +8,13 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
+	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
+	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -29,6 +32,11 @@ type daemonWiring struct {
 	Concrete    *sqlitestore.Store
 	JIDMap      *sqlitestore.JIDMap
 	ClaudeCache *sqlitestore.ClaudeSessionCache
+	// RateLimiters is a per-transport [ratelimit.KeyedLimiter] map,
+	// populated only when the RateLimit config block is non-empty.
+	// Transports lookup their entry by name and wrap their Router
+	// handler via ratelimit.Wrap before serving.
+	RateLimiters map[string]*ratelimit.KeyedLimiter
 }
 
 // setUnattendedPermissionDefault forces the claudecli provider into a
@@ -87,6 +95,24 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	registry.MustRegister(builtin.NewGrepTool(0, 0))
 	registry.MustRegister(builtin.NewBashTool(60 * time.Second))
 
+	// Register every enabled tool-integration suite. Each suite is
+	// opt-in via the integrations block in the config; a nil
+	// integrations config leaves the registry unchanged.
+	intCfg := integrationsFromConfig(cfg)
+	if err := integrations.RegisterAll(registry, intCfg, opts.Logger); err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
+
+	// Build the per-transport rate-limiter map. Empty ratelimit config
+	// leaves the map nil, so the transport callsites simply skip the
+	// Wrap when they look up their entry and find nothing.
+	rateLimiters, err := buildRateLimiters(cfg.RateLimit)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
+
 	approver, err := buildApprover(cfg.Agent.Approver)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
@@ -117,16 +143,34 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 
 	return &daemonWiring{
-		Provider:    provider,
-		Agent:       ag,
-		Registry:    registry,
-		Router:      router,
-		CronStore:   cronStore,
-		Sessions:    sessions,
-		Concrete:    concrete,
-		JIDMap:      jidMap,
-		ClaudeCache: claudeCache,
+		Provider:     provider,
+		Agent:        ag,
+		Registry:     registry,
+		Router:       router,
+		CronStore:    cronStore,
+		Sessions:     sessions,
+		Concrete:     concrete,
+		JIDMap:       jidMap,
+		ClaudeCache:  claudeCache,
+		RateLimiters: rateLimiters,
 	}, nil
+}
+
+// TransportHandler returns the transport.Handler each transport
+// should attach to its inbound loop. The chain is:
+//
+//	ratelimit.Wrap  →  resilience.Recover  →  wiring.Router
+//
+// Rate limiting is only applied when the ratelimit config has a
+// non-nil entry for the transport name; Recover always fires so a
+// panic in one handler never takes down the whole daemon.
+func (w *daemonWiring) TransportHandler(name string, logger *slog.Logger) transport.Handler {
+	h := transport.Handler(w.Router)
+	h = resilience.Recover(h, name, logger)
+	if lim, ok := w.RateLimiters[name]; ok {
+		h = ratelimit.Wrap(h, lim, name, "")
+	}
+	return h
 }
 
 // startCron starts a cron scheduler using w.CronStore and the provided

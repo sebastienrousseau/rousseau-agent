@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"log/slog"
 
+	//nolint:gci // grouped by function, not path
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations/composio"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations/github"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations/google"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations/linear"
@@ -19,11 +22,25 @@ import (
 // Config groups the per-suite configs. A zero-value entry disables
 // that suite; wiring is opt-in per suite.
 type Config struct {
-	GitHub GitHubConfig
-	Slack  SlackConfig
-	Google GoogleConfig
-	Linear LinearConfig
-	Stripe StripeConfig
+	GitHub   GitHubConfig
+	Slack    SlackConfig
+	Google   GoogleConfig
+	Linear   LinearConfig
+	Stripe   StripeConfig
+	Composio ComposioConfig
+}
+
+// ComposioConfig toggles + configures the Composio-brokered
+// tool-provider adapter. Opt-in: enabling it registers every action
+// the operator has authorised in the Composio console.
+type ComposioConfig struct {
+	Enabled bool
+	APIKey  string
+	UserID  string
+	// Apps restricts registration to the named Composio apps
+	// (case-insensitive). Empty registers every visible action —
+	// convenient for exploration, dangerous for auditing.
+	Apps []string
 }
 
 // GitHubConfig toggles + configures the GitHub suite.
@@ -121,6 +138,23 @@ func RegisterAll(reg *tools.Registry, cfg Config, logger *slog.Logger) error {
 			return err
 		}
 		logger.Info("integrations.registered", slog.String("suite", "stripe"))
+	}
+
+	if cfg.Composio.Enabled {
+		c, err := composio.New(composio.Config{
+			APIKey: cfg.Composio.APIKey,
+			UserID: cfg.Composio.UserID,
+		})
+		if err != nil {
+			return fmt.Errorf("integrations/composio: %w", err)
+		}
+		n, err := composio.Register(context.Background(), reg, c, cfg.Composio.Apps)
+		if err != nil {
+			return fmt.Errorf("integrations/composio: %w", err)
+		}
+		logger.Info("integrations.registered",
+			slog.String("suite", "composio"),
+			slog.Int("action_count", n))
 	}
 
 	return nil
