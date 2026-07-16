@@ -109,3 +109,33 @@ func TestStartSpan_returnsSpan(t *testing.T) {
 	assert.NotNil(t, ctx)
 	span.End()
 }
+
+// TestStartOTel_wiresProvider drives the full wiring against a fake
+// OTLP-HTTP collector: an httptest server that acknowledges every POST
+// to /v1/traces with 200 OK. It exercises the exporter, resource,
+// TracerProvider set-up, and the returned Shutdown path.
+func TestStartOTel_wiresProvider(t *testing.T) {
+	srv := http.Server{}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	})
+	srv.Handler = mux
+	go func() { _ = srv.Serve(l) }()
+	defer func() { _ = srv.Shutdown(context.Background()) }()
+
+	endpoint := "http://" + l.Addr().String()
+	shutdown, err := StartOTel(context.Background(), endpoint, "test-version", silent())
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+
+	// Emit a span so the tracer provider is used, then shut down.
+	_, span := StartSpan(context.Background(), "unit-test-span")
+	span.End()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	assert.NoError(t, shutdown(ctx))
+}
