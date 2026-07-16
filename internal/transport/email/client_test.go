@@ -318,3 +318,92 @@ func TestStopIdempotent(t *testing.T) {
 	require.NoError(t, c.Stop())
 	require.NoError(t, c.Stop())
 }
+
+// TestStart_PollsAndExitsOnContextCancel walks Start through at least
+// one poll tick against the fake IMAP, then cancels the context and
+// asserts the returned error is context.Canceled.
+func TestStart_PollsAndExitsOnContextCancel(t *testing.T) {
+	fake := &fakeIMAP{
+		seqNums:  []uint32{1},
+		messages: []*imapclient.FetchMessageBuffer{mkMessage("alice@example.com", "hi", "b")},
+	}
+	c, err := New(Config{
+		IMAPAddr: "i:1", IMAPUsername: "u", IMAPPassword: "p",
+		SMTPAddr: "s:1", SMTPUsername: "u", SMTPPassword: "p",
+		From:              "bot@x",
+		PollInterval:      5 * time.Millisecond,
+		IMAPClientFactory: func(string, string, string) (IMAPClient, error) { return fake, nil },
+		SendMail:          func(string, string, []string, []byte, string, string) error { return nil },
+	}, silentLogger())
+	require.NoError(t, err)
+
+	handled := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) {
+			select {
+			case handled <- struct{}{}:
+			default:
+			}
+			return "", nil
+		}))
+	}()
+
+	select {
+	case <-handled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start never dispatched a message")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after cancel")
+	}
+}
+
+// TestStart_ExitsWhenStopped verifies the fast-path exit when Stop was
+// called before Start observed a tick.
+func TestStart_ExitsWhenStopped(t *testing.T) {
+	c, err := New(Config{
+		IMAPAddr: "i:1", IMAPUsername: "u", IMAPPassword: "p",
+		SMTPAddr: "s:1", SMTPUsername: "u", SMTPPassword: "p",
+		From:              "bot@x",
+		PollInterval:      50 * time.Millisecond,
+		IMAPClientFactory: func(string, string, string) (IMAPClient, error) { return &fakeIMAP{}, nil },
+		SendMail:          func(string, string, []string, []byte, string, string) error { return nil },
+	}, silentLogger())
+	require.NoError(t, err)
+	require.NoError(t, c.Stop())
+
+	// Start observes stopped=true on the first loop iteration.
+	err = c.Start(context.Background(), transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	assert.NoError(t, err)
+}
+
+// TestStart_ContinuesOnPollError exercises the branch where pollOnce
+// returns an error (connect failure) and the loop logs + continues
+// until ctx cancels.
+func TestStart_ContinuesOnPollError(t *testing.T) {
+	c, err := New(Config{
+		IMAPAddr: "i:1", IMAPUsername: "u", IMAPPassword: "p",
+		SMTPAddr: "s:1", SMTPUsername: "u", SMTPPassword: "p",
+		From:         "bot@x",
+		PollInterval: 5 * time.Millisecond,
+		IMAPClientFactory: func(string, string, string) (IMAPClient, error) {
+			return nil, errors.New("dial refused")
+		},
+		SendMail: func(string, string, []string, []byte, string, string) error { return nil },
+	}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}

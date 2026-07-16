@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -247,4 +248,70 @@ func TestStopIdempotent(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hi", truncate("hi", 10))
 	assert.True(t, strings.HasSuffix(truncate("hello world", 5), "…"))
+}
+
+func TestStart_HandlerNilErrors(t *testing.T) {
+	c, err := New(Config{HomeserverURL: "http://x", AccessToken: "t"}, silentLogger())
+	require.NoError(t, err)
+	assert.Error(t, c.Start(context.Background(), nil))
+}
+
+// TestStart_SyncsAndExitsOnCancel drives Start through at least one
+// successful /sync round-trip against a fake homeserver, then cancels
+// the context and asserts the returned error is context.Canceled.
+func TestStart_SyncsAndExitsOnCancel(t *testing.T) {
+	synced := make(chan struct{}, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/sync") {
+			select {
+			case synced <- struct{}{}:
+			default:
+			}
+			_, _ = w.Write([]byte(`{"next_batch":"s1"}`)) //nolint:errcheck // test fixture
+			return
+		}
+		_, _ = w.Write([]byte(`{}`)) //nolint:errcheck // test fixture
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{HomeserverURL: srv.URL, AccessToken: "t", HTTPClient: srv.Client(), PollTimeout: 100 * time.Millisecond}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	}()
+
+	select {
+	case <-synced:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start never issued a sync")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after cancel")
+	}
+}
+
+// TestStart_ContinuesOnSyncError exercises the branch where sync fails
+// and the loop backs off until ctx cancels.
+func TestStart_ContinuesOnSyncError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{HomeserverURL: srv.URL, AccessToken: "t", HTTPClient: srv.Client(), PollTimeout: 10 * time.Millisecond}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }

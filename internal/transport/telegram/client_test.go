@@ -207,6 +207,66 @@ func TestCall_MalformedResponseErrors(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestStart_HandlerNilErrors(t *testing.T) {
+	c, err := New(Config{Token: "t"}, silentLogger())
+	require.NoError(t, err)
+	assert.Error(t, c.Start(context.Background(), nil))
+}
+
+// TestStart_PollsAndExitsOnCancel walks Start through at least one
+// successful getUpdates round-trip and then cancels the context.
+func TestStart_PollsAndExitsOnCancel(t *testing.T) {
+	polled := make(chan struct{}, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case polled <- struct{}{}:
+		default:
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"result":[]}`)) //nolint:errcheck // test fixture
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{Token: "t", BaseURL: srv.URL, HTTPClient: srv.Client(), PollTimeout: 100 * time.Millisecond}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	}()
+
+	select {
+	case <-polled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start never polled")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after cancel")
+	}
+}
+
+// TestStart_ContinuesOnPollError exercises the backoff branch.
+func TestStart_ContinuesOnPollError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c, err := New(Config{Token: "t", BaseURL: srv.URL, HTTPClient: srv.Client(), PollTimeout: 10 * time.Millisecond}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hi", truncate("hi", 10))
 	assert.True(t, len(truncate(string(bytes.Repeat([]byte{'a'}, 20)), 5)) < 20)
