@@ -73,8 +73,11 @@ SecurityLabelDisable=false
 # Kernel isolation for the daemon.
 SeccompProfile=/usr/share/containers/seccomp.json
 
-# CLI args: the WhatsApp subcommand pinned to your JID.
-Exec=whatsapp --allow 15551234567@s.whatsapp.net
+# CLI args: run the WhatsApp subcommand. Supply your JID via the
+# ROUSSEAU_WHATSAPP_ALLOW env var (Environment= below, or drop an
+# EnvironmentFile= directive pointing at a systemd secret).
+Environment=ROUSSEAU_WHATSAPP_ALLOW=15551234567@s.whatsapp.net
+Exec=whatsapp
 
 [Service]
 Restart=on-failure

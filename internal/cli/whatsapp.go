@@ -5,11 +5,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport/whatsapp"
 )
+
+// envWhatsAppAllow seeds --allow from the environment when the flag
+// is not passed. Comma-separated JIDs. The shipped docker image and
+// systemd unit consume this so the operator supplies their JID
+// without baking it into the image.
+const envWhatsAppAllow = "ROUSSEAU_WHATSAPP_ALLOW"
 
 func newWhatsAppCmd(opts *Options) *cobra.Command {
 	var (
@@ -29,6 +36,16 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			setUnattendedPermissionDefault(opts, "whatsapp")
 			ctx := cmd.Context()
+
+			if len(allowlist) == 0 {
+				if env := strings.TrimSpace(os.Getenv(envWhatsAppAllow)); env != "" {
+					for _, jid := range strings.Split(env, ",") {
+						if jid = strings.TrimSpace(jid); jid != "" {
+							allowlist = append(allowlist, jid)
+						}
+					}
+				}
+			}
 
 			wiring, err := assembleDaemon(ctx, opts, allowlist)
 			if err != nil {
@@ -64,7 +81,7 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&storePath, "store", "", "path to whatsmeow device store (default: $XDG_DATA_HOME/rousseau/whatsapp.db)")
-	cmd.Flags().StringSliceVar(&allowlist, "allow", nil, "restrict inbound to these JIDs (repeatable). Empty allows anyone — do not do this on a public number.")
+	cmd.Flags().StringSliceVar(&allowlist, "allow", nil, "restrict inbound to these JIDs (repeatable). Falls back to $"+envWhatsAppAllow+" (comma-separated). Empty allows anyone — do not do this on a public number.")
 	return cmd
 }
 

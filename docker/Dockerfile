@@ -79,5 +79,10 @@ ENV HOME=/home/rousseau
 
 # rousseau has no HTTP surface — no ports to expose. Health is the
 # process being alive; podman restart policy handles crashes.
+#
+# The image ships without a hardcoded allowlist. Supply your JID via
+# the ROUSSEAU_WHATSAPP_ALLOW env var, e.g.
+#   docker run -e ROUSSEAU_WHATSAPP_ALLOW=15551234567@s.whatsapp.net rousseau
+# or explicitly with `--allow` at container invocation.
 ENTRYPOINT ["/usr/local/bin/rousseau"]
-CMD ["whatsapp", "--allow", "15551234567@s.whatsapp.net"]
+CMD ["whatsapp"]
