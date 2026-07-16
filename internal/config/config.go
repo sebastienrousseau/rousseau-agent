@@ -42,6 +42,42 @@ type Config struct {
 	Email         EmailConfig         `mapstructure:"email"`
 	RateLimit     RateLimitConfig     `mapstructure:"ratelimit"`
 	Resilience    ResilienceConfig    `mapstructure:"resilience"`
+	Recall        RecallConfig        `mapstructure:"recall"`
+}
+
+// RecallConfig configures the vector-based long-term memory (§9 of
+// docs/IMPLEMENTATION_PLAN_2026_07_16.md). Zero-value disables recall
+// entirely.
+type RecallConfig struct {
+	// Enabled toggles the entire subsystem.
+	Enabled bool `mapstructure:"enabled"`
+	// Embedder chooses the backend. Supported: "noop", "voyage".
+	// "noop" produces zero-vectors — useful in tests + when the
+	// operator is exercising storage without embedding cost.
+	Embedder string `mapstructure:"embedder"`
+	// EmbedderModel overrides the backend's default model.
+	EmbedderModel string `mapstructure:"embedder_model"`
+	// EmbedderAPIKey supplies credentials to the backend. Empty falls
+	// back to the backend-specific env var
+	// (ROUSSEAU_VOYAGE_API_KEY for voyage).
+	EmbedderAPIKey string `mapstructure:"embedder_api_key"`
+	// EmbedderDims overrides auto-detected dimensionality; required
+	// for non-well-known models.
+	EmbedderDims int `mapstructure:"embedder_dims"`
+	// ChunkTokens is the target chunk size for ingestion. Default 400.
+	ChunkTokens int `mapstructure:"chunk_tokens"`
+	// ChunkOverlap is the token overlap between adjacent chunks.
+	// Default 40.
+	ChunkOverlap int `mapstructure:"chunk_overlap"`
+	// RetrievalK caps how many rows Recall returns per query.
+	// Default 6.
+	RetrievalK int `mapstructure:"retrieval_k"`
+	// HybridWeight is the vector-vs-keyword blend passed to the
+	// retriever. Default 0.7 (vector-heavy). Range [0, 1].
+	HybridWeight float32 `mapstructure:"hybrid_weight"`
+	// PurgeAfter drops rows older than this. Zero disables purge.
+	// Format: any time.ParseDuration string (e.g. "4320h" for 180d).
+	PurgeAfter string `mapstructure:"purge_after"`
 }
 
 // RateLimitConfig configures the per-JID token-bucket rate limiter.
