@@ -128,6 +128,13 @@ var (
 		Name: "rousseau_ratelimit_denied_total",
 		Help: "Inbound messages denied by the per-JID rate limiter, by transport.",
 	}, []string{"transport"})
+
+	// SubagentSpawned counts every sub-agent Task Spawn dispatched,
+	// labelled by the effective provider name.
+	SubagentSpawned = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "rousseau_subagent_spawned_total",
+		Help: "Sub-agent Task invocations dispatched by Spawn, by provider.",
+	}, []string{"provider"})
 )
 
 func init() {
