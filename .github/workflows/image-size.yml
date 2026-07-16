@@ -49,3 +49,42 @@ jobs:
         if: always()
         run: |
           echo "::notice title=rousseau-agent:distroless size::${{ steps.size.outputs.size_mb }} MB"
+
+  lite-size:
+    name: lite size budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the :lite image
+        run: |
+          docker buildx build \
+            --file docker/Dockerfile.lite \
+            --tag rousseau-agent:lite-ci \
+            --load .
+
+      - name: Inspect image size
+        id: size
+        run: |
+          bytes=$(docker image inspect rousseau-agent:lite-ci --format '{{.Size}}')
+          mb=$((bytes / 1024 / 1024))
+          echo "size_mb=$mb" >> "$GITHUB_OUTPUT"
+          echo "lite image: ${mb} MB"
+
+      - name: Fail on regression
+        run: |
+          mb=${{ steps.size.outputs.size_mb }}
+          budget=60          # target is <=46 MB; buffer to 60 for lint/refactor churn
+          if [ "$mb" -gt "$budget" ]; then
+            echo "::error::lite image is ${mb} MB, budget is ${budget} MB"
+            exit 1
+          fi
+          echo "lite image ${mb} MB within budget ${budget} MB"
+
+      - name: Emit a size annotation
+        if: always()
+        run: |
+          echo "::notice title=rousseau-agent:lite size::${{ steps.size.outputs.size_mb }} MB"

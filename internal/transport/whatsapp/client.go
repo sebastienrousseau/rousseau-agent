@@ -1,3 +1,5 @@
+//go:build !no_whatsmeow
+
 // Package whatsapp implements transport.Transport on top of
 // go.mau.fi/whatsmeow (reverse-engineered WhatsApp Web multi-device
 // client).
@@ -27,27 +29,9 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
-// DefaultReplyHeader is prepended to every outbound reply so the sender
-// is obvious on the phone side. WhatsApp renders `*text*` in bold.
-const DefaultReplyHeader = "💎 *Rousseau Agent*\n\n"
-
-// Config configures the WhatsApp transport.
-type Config struct {
-	// StoreDSN is the SQLite DSN whatsmeow will use for device
-	// credentials. Kept separate from the agent's session store so a
-	// device relink does not touch conversation history.
-	StoreDSN string
-	// LogLevel is passed to whatsmeow's logger ("DEBUG", "INFO", "WARN").
-	// Empty defaults to "WARN".
-	LogLevel string
-	// ReplyHeader is prepended to every outbound reply. Empty uses
-	// DefaultReplyHeader; explicitly setting a single space " " disables
-	// the prefix.
-	ReplyHeader string
-	// Transcriber optionally handles voice-note messages. When nil,
-	// audio messages are logged and skipped.
-	Transcriber Transcriber
-}
+// Config and DefaultReplyHeader are defined in types.go (tag-free) so
+// cli/whatsapp.go compiles under both the default whatsmeow build and
+// the no_whatsmeow lite variant.
 
 // Client is a transport.Transport backed by whatsmeow.
 //

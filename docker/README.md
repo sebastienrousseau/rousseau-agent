@@ -25,16 +25,19 @@ via the distroless base.
 provider, or need the smaller footprint for edge / mobile-server /
 constrained-flash deployments.
 
-## `ghcr.io/sebastienrousseau/rousseau-agent:lite` *(planned)*
+## `ghcr.io/sebastienrousseau/rousseau-agent:lite`
 
-**Base:** distroless static
-**Size target:** ~25 MB compressed
+**Base:** `gcr.io/distroless/static-debian12:nonroot`
+**Size:** ~46 MB compressed (~14% smaller than `:distroless`)
 **Excludes:** the whatsmeow-backed WhatsApp transport (compiled out
-behind a `no_whatsmeow` build tag).
-**Pick this when:** you don't need WhatsApp and want the smallest
-possible footprint. Ships in a follow-up commit once the build-tag
-surgery in `internal/transport/whatsapp/` lands (§3 of
-`docs/IMPLEMENTATION_PLAN_2026_07_16.md`).
+behind `//go:build no_whatsmeow`); every other transport (signal,
+telegram, matrix, slack, discord, sms, imessage, email) is included.
+**Pick this when:** you don't need WhatsApp. All CLI-visible surface
+survives — `rousseau whatsapp` still exists, but its `Start`,
+`Deliver`, and `Transcribe` methods return an "unavailable" error at
+runtime rather than silently doing nothing. That way, an operator
+who enables the whatsapp transport in a `:lite` build sees exactly
+why it doesn't work instead of debugging a silent no-op.
 
 ## How to build locally
 
@@ -44,6 +47,9 @@ podman build -f docker/Dockerfile -t rousseau-agent:latest .
 
 # :distroless
 podman build -f docker/Dockerfile.distroless -t rousseau-agent:distroless .
+
+# :lite (no whatsmeow)
+podman build -f docker/Dockerfile.lite -t rousseau-agent:lite .
 ```
 
 Verify the resulting binary is reproducible:

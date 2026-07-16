@@ -1,3 +1,5 @@
+//go:build !no_whatsmeow
+
 package whatsapp
 
 import (
@@ -31,15 +33,8 @@ type DownloadableAudio interface {
 	GetSeconds() uint32
 }
 
-// Transcriber converts an audio payload into text. Implementations are
-// free to shell out (whisper.cpp), call a remote service, or return
-// early — nil transcribers skip audio messages entirely.
-type Transcriber interface {
-	// Transcribe returns the plain-text transcription. mimetype is
-	// informational; implementations may use it to pick a decoder or
-	// hint the model.
-	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
-}
+// Transcriber lives in types.go so the no_whatsmeow build can still
+// export the interface without pulling whatsmeow imports.
 
 // DispatchInput bundles every dependency Dispatch touches. Explicit
 // parameters, no globals — this is the seam that makes the transport
