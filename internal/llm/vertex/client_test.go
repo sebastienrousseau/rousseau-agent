@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -190,4 +191,46 @@ func TestMapStop(t *testing.T) {
 func TestTruncate(t *testing.T) {
 	assert.Equal(t, "hi", truncate("hi", 10))
 	assert.True(t, strings.HasSuffix(truncate("hello world", 5), "…"))
+}
+
+// TestNew_CredentialsFileMissingErrors exercises the read-file branch
+// when CredentialsFile is set but points at a non-existent path.
+func TestNew_CredentialsFileMissingErrors(t *testing.T) {
+	_, err := New(context.Background(), Config{
+		Project: "p", Region: "r", Model: "m",
+		CredentialsFile: "/nonexistent/no-such-file.json",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read credentials")
+}
+
+// TestNew_CredentialsFileMalformedErrors exercises the JSON parse
+// branch when the file exists but does not contain valid ADC JSON.
+func TestNew_CredentialsFileMalformedErrors(t *testing.T) {
+	tmp, err := os.CreateTemp(t.TempDir(), "creds-*.json")
+	require.NoError(t, err)
+	_, _ = tmp.WriteString("not-valid-json") //nolint:errcheck // test fixture
+	_ = tmp.Close()                          //nolint:errcheck // test fixture
+
+	_, err = New(context.Background(), Config{
+		Project: "p", Region: "r", Model: "m",
+		CredentialsFile: tmp.Name(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credentials")
+}
+
+// TestReadAllFile_ReadsBytes calls the tiny indirection directly.
+func TestReadAllFile_ReadsBytes(t *testing.T) {
+	tmp, err := os.CreateTemp(t.TempDir(), "rf-*.txt")
+	require.NoError(t, err)
+	_, _ = tmp.WriteString("hello vertex") //nolint:errcheck // test fixture
+	_ = tmp.Close()                        //nolint:errcheck // test fixture
+
+	b, err := readAllFile(tmp.Name())
+	require.NoError(t, err)
+	assert.Equal(t, "hello vertex", string(b))
+
+	_, err = readAllFile("/no/such/path")
+	assert.Error(t, err)
 }
