@@ -66,7 +66,7 @@ func newSlackCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("slack.starting", "allowlist", len(allow))
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("slack", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&appToken, "app-token", "", "xapp-* app-level token")

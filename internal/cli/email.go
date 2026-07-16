@@ -93,7 +93,7 @@ func newEmailCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("email.starting", "imap", im, "smtp", sm)
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("email", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&imapAddr, "imap-addr", "", "imap.example.com:993")

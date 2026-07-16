@@ -68,7 +68,7 @@ func newIMessageCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("imessage.starting", "base", base)
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("imessage", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "BlueBubbles server URL, e.g. http://localhost:1234")

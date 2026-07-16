@@ -64,7 +64,7 @@ func newSMSCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("sms.starting", "provider", prov)
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("sms", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&provider, "provider", "", "twilio | vonage")

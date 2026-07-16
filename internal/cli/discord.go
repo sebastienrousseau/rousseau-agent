@@ -59,7 +59,7 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("discord.starting", "allowlist", len(allow))
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("discord", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&token, "token", "", "bot token")

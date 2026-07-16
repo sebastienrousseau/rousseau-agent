@@ -77,7 +77,7 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("whatsapp", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&storePath, "store", "", "path to whatsmeow device store (default: $XDG_DATA_HOME/rousseau/whatsapp.db)")

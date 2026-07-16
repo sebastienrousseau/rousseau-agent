@@ -63,7 +63,7 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("signal.starting", "account", acct, "allowlist", len(allow))
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("signal", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&account, "account", "", "E.164 phone number the daemon runs as")

@@ -61,7 +61,7 @@ func newTelegramCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("telegram.starting", "allowlist", len(allow))
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("telegram", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&token, "token", "", "bot token (falls back to telegram.token in config)")

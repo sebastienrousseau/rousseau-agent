@@ -66,7 +66,7 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			opts.Logger.Info("matrix.starting", "homeserver", hs, "allowlist", len(allow))
-			return client.Start(ctx, wiring.Router)
+			return client.Start(ctx, wiring.TransportHandler("matrix", opts.Logger))
 		},
 	}
 	cmd.Flags().StringVar(&homeserver, "homeserver", "", "homeserver base URL (e.g. https://matrix.org)")
