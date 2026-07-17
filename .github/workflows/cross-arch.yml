@@ -55,10 +55,14 @@ jobs:
           GOARM: ${{ matrix.goarm }}
         run: |
           out="rousseau-${GOOS}-${GOARCH}${GOARM:+v$GOARM}"
-          [ "${{ matrix.tags }}" = "no_whatsmeow" ] && out="${out}-lite"
-          tags=${{ matrix.tags && format('-tags {0}', matrix.tags) || '' }}
-          echo "Building $out (tags=${{ matrix.tags }})"
-          go build $tags -trimpath -ldflags "-s -w" -o "/tmp/$out" ./cmd/rousseau
+          tags_flag=""
+          if [ -n "${{ matrix.tags }}" ]; then
+            out="${out}-${{ matrix.tags }}"
+            tags_flag="-tags=${{ matrix.tags }}"
+          fi
+          echo "Building $out (tags='${{ matrix.tags }}')"
+          # shellcheck disable=SC2086 # tags_flag is empty or a single -tags=X
+          go build $tags_flag -trimpath -ldflags "-s -w" -o "/tmp/$out" ./cmd/rousseau
           size=$(stat -c%s "/tmp/$out")
           mb=$((size / 1024 / 1024))
           echo "::notice title=$out::${mb} MB"
