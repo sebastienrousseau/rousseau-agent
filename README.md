@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  Nine chat transports · five LLM providers · MCP server · cron scheduler · agentskills.io-style skills loader · SLSA-3 provenance · SBOM · cosign-signed releases · rootless Podman with dropped capabilities.
+  Nine chat transports · five LLM providers · <strong>26 native tool integrations + Composio (1000+)</strong> · <strong>sub-agent parallelism</strong> · <strong>vector recall</strong> · MCP server · cron scheduler · skills loader · <strong>OAuth broker with AEAD vault</strong> · SLSA-3 provenance · SBOM · cosign-signed releases · rootless Podman with dropped capabilities · <strong>5-arch cross-compile (amd64, arm64, armv6, armv7, riscv64)</strong>.
 </p>
 
 <p align="center">
@@ -70,15 +70,21 @@ There is no SaaS control plane, no telemetry endpoint, no license server, no ven
 
 | Layer | What's shipped |
 |---|---|
-| **Agent loop** | Multi-turn planner with structured tool-use, streaming responses, per-session context, LLM-backed session compression, FTS5-backed cross-session recall. |
-| **Tool registry** | Concurrency-safe registry with `read`, `write`, `edit`, `grep`, `bash`. Strict JSON-schema inputs; the `edit` tool enforces a unique-string constraint to prevent accidental mass-replacement. Add your own tools without touching the agent core. |
+| **Agent loop** | Multi-turn planner with structured tool-use, streaming responses, per-session context, LLM-backed session compression, FTS5-backed cross-session recall + **hybrid vector recall** (`internal/recall`, sqlite blob + cosine + weighted-blend rerank). |
+| **Sub-agent parallelism** | `internal/agent/subagent.Spawn(ctx, parent, provider, tasks, policy)` runs N detached-copy tasks with bounded concurrency, per-task timeout, and aggregate token budget. Two aggregators (human-readable + JSON) ship. |
+| **Tool registry** | Concurrency-safe registry with `read`, `write`, `edit`, `grep`, `bash` **plus 26 native integrations** across GitHub / Slack / Google Workspace (Gmail + Calendar + Drive) / Linear / Stripe + the **Composio adapter** (opt-in, 1000+ apps behind one auth). |
+| **OAuth broker + vault** | `internal/auth/oauth` — provider-agnostic broker with XChaCha20-Poly1305 vault, master key from `$ROUSSEAU_TOKEN_KEY` / OS keyring / mode-0600 file. Callback server on `127.0.0.1:8765`. Rotate-key preserves plaintext. |
+| **Rate limiting + resilience** | Per-JID token bucket (`internal/ratelimit`), panic-recovery middleware, circuit breakers on every provider (`internal/resilience`, sony/gobreaker/v2). |
 | **Approval policies** | `allow_all`, `deny_all`, or `pattern` mode with per-tool allow / deny regex rules and a configurable default. Unattended daemons pick sensible defaults automatically. |
 | **Session store** | Durable SQLite (`modernc.org/sqlite`, embedded, no libc coupling) with WAL journaling, `busy_timeout=15s`, WAL checkpoints on `Close`. |
 | **MCP server** | JSON-RPC 2.0 over stdio, spec revision 2024-11-05. Exposes rousseau's tools + sessions to any MCP-compatible client (Claude Desktop, IDE extensions, other agents). |
 | **Cron scheduler** | robfig/cron/v3 goroutine with durable job storage; sends scheduled messages through any registered transport. |
 | **Skills loader** | agentskills.io-compatible Markdown + YAML frontmatter format. Skills are discovered from `skills.dir`, composed into the system prompt, and version-tracked. |
+| **Multimodal input** | Every provider adapter (Anthropic, Bedrock, Vertex, OpenAI, claudecli) maps `ContentImage` to native wire shape. `internal/media` policy: 10 MiB / image, 40 MiB / turn, MIME sniffed from first 512 bytes. |
+| **Observability** | Prometheus registry with 12 `rousseau_*` metrics (provider latency, panics recovered, circuit state, rate-limit denies, sub-agent spawns, …). OpenTelemetry OTLP-HTTP tracer. Redacting slog handler with default rules for every credential shape rousseau touches. |
 | **TUI** | Bubble Tea client with viewport, scrollback, streaming indicator, and typing feedback for chat transports. |
-| **Container runtime** | Rootless Podman + systemd Quadlet unit. Read-only rootfs, all capabilities dropped, `NoNewPrivileges`, seccomp filter, non-root user, `keep-id` UID mapping. |
+| **Container runtime** | Three tags (`:latest` 530 MB with claude CLI, `:distroless` 54 MB, `:lite` 47 MB with WhatsApp compiled out). Rootless Podman + systemd Quadlet unit. Read-only rootfs, all capabilities dropped, `NoNewPrivileges`, seccomp filter, non-root user, `keep-id` UID mapping. |
+| **Cross-arch** | Compile-verified on every push: linux/{amd64, arm64, armv6, armv7, riscv64} × {default, lite} + darwin/amd64/arm64 + windows/amd64. |
 
 ## Supported transports
 
@@ -122,7 +128,12 @@ The provider abstraction is `agent.Provider` and `agent.StreamingProvider`. Addi
 | Runtime hardening | Read-only rootfs, `DropCapability=all`, `NoNewPrivileges=true`, default seccomp profile, non-root UID 1000, `keep-id` user namespace mapping. |
 | No inbound HTTP surface | Every transport that requires incoming messages uses outbound WebSocket (Slack Socket Mode, Discord Gateway) or polling. There is no HTTP server to expose. |
 | Race-condition testing | `go test -race -count=1 -covermode=atomic ./...` on Linux and macOS matrices. |
-| Fuzz corpus | Every parser has a Fuzz function; `make fuzz` runs the full battery. |
+| Fuzz corpus | 6 fuzz targets (slack, discord, email × 2, whatsapp, mcp); `make fuzz` runs the full battery. |
+| Property tests | Every load-bearing parser has a `testing/quick`-based property (500 random inputs each). |
+| Wall-clock soak | `test/integration/soak` — synthetic workload with 5 leak invariants (goroutines, alloc, FDs, GC pressure < 5%, heap-in-use ≤ 2×). Runs on push (10 min), PR (30 min), nightly (24 h). |
+| Cross-arch build gate | 12 arch/tag combos verified on every push including RISC-V. |
+| Image-size gate | `:distroless` ≤ 70 MB, `:lite` ≤ 60 MB — regressions fail the PR. |
+| Coverage | Overall package-avg **88.7%**; every campaign-shipped package has runnable godoc `Example*` and benchmarks. |
 
 Reachable trust roots: GitHub Actions OIDC (SLSA), Sigstore public transparency log (cosign), and pkg.go.dev (Go module checksum database).
 
@@ -204,11 +215,20 @@ The reference production deployment is a rootless Podman container managed by a 
 
 ### Build the image
 
+Three flavours are shipped; pick by size / feature reach:
+
 ```bash
+# :latest — includes the claude CLI (node:22-alpine base, ~530 MB)
 podman build -t rousseau-agent:local -f docker/Dockerfile .
+
+# :distroless — no claude CLI, all transports (distroless static, ~54 MB)
+podman build -t rousseau-agent:distroless -f docker/Dockerfile.distroless .
+
+# :lite — no claude CLI, no WhatsApp (distroless static, ~47 MB)
+podman build -t rousseau-agent:lite -f docker/Dockerfile.lite .
 ```
 
-Multi-stage build: `golang:1.26-alpine` builder → `node:22-alpine` runtime with the `claude` CLI. The runtime image is ~550 MB and ships no interpreter runtimes for the agent itself; the Node layer only exists so the optional `claude` CLI subprocess has a home.
+See [`docker/README.md`](./docker/README.md) for the full arch × variant size matrix and the "when to pick which" decision table.
 
 ### Install the Quadlet unit
 
@@ -359,29 +379,40 @@ A complete example lives in [`examples/embed-agent`](./examples/embed-agent).
 ## Repository layout
 
 ```
-cmd/rousseau/                 Entry point (signal handling + Execute)
-internal/agent/               Session, Message, Turn, agent loop, Provider interfaces, compression
-internal/cli/                 Cobra command tree (chat, per-transport commands, doctor, status, cron, mcp, skills, init, version)
-internal/config/              Viper-based; flag > env > file > default precedence
-internal/cron/                robfig/cron/v3 scheduler goroutine with durable job storage
-internal/llm/anthropic/       Direct Anthropic API provider with cache markers
-internal/llm/bedrock/         AWS Bedrock provider
-internal/llm/claudecli/       Subprocess provider (claude CLI + JSON parser)
-internal/llm/openai/          OpenAI-compatible provider (OpenAI, OpenRouter, Ollama, others)
-internal/llm/vertex/          Google Vertex AI provider
-internal/mcp/                 MCP server (JSON-RPC 2.0 over stdio, spec 2024-11-05)
-internal/skills/              agentskills.io-style skill loader + composition
-internal/state/               Store interface + Summary type
-internal/state/sqlite/        SQLite implementation (WAL, JIDMap, claude cache, FTS5 recall, cron table)
-internal/tools/               Tool interface + concurrency-safe Registry
-internal/tools/builtin/       read, write, edit, grep, bash
-internal/transport/           Transport interface + Router (per-JID session, allowlist, dispatch)
-internal/transport/{whatsapp,signal,telegram,matrix,slack,discord,sms,imessage,email}/
-                              Nine transport adapters
-internal/tui/                 Bubble Tea model (viewport, textarea, spinner, streaming)
-docker/                       Dockerfile, Podman Quadlet unit, example nftables rules
-docs/                         Roadmap, gap analysis, competitor deep-dive
-examples/embed-agent/         Minimal library-embedding example
+cmd/rousseau/                    Entry point (signal handling + Execute)
+internal/agent/                  Session, Message, Turn, agent loop, Provider interfaces, compression, image content
+internal/agent/subagent/         Spawn N detached-copy tasks, aggregators, budget policy
+internal/auth/oauth/             OAuth2 broker + XChaCha20-Poly1305 vault
+internal/cli/                    Cobra command tree
+internal/config/                 Viper-based; flag > env > file > default precedence
+internal/cron/                   robfig/cron/v3 scheduler goroutine
+internal/llm/anthropic/          Direct Anthropic API provider with cache markers
+internal/llm/bedrock/            AWS Bedrock provider
+internal/llm/claudecli/          Subprocess provider (claude CLI + JSON parser + image temp-files)
+internal/llm/openai/             OpenAI-compatible provider (OpenAI, OpenRouter, Ollama, others)
+internal/llm/vertex/             Google Vertex AI provider
+internal/mcp/                    MCP server (JSON-RPC 2.0 over stdio, spec 2024-11-05)
+internal/media/                  Image size/MIME policy consumed by every transport
+internal/observability/          Prometheus registry (12 metrics) + OTel tracer
+internal/observability/redact/   Redacting slog handler with default credential rules
+internal/ratelimit/              Per-JID token bucket + KeyedLimiter
+internal/recall/                 Hybrid vector + keyword recall (Voyage / OpenAI / Ollama / noop embedders)
+internal/resilience/             Panic recover + circuit breaker (sony/gobreaker/v2)
+internal/skills/                 agentskills.io-style skill loader
+internal/state/                  Store interface + Summary type
+internal/state/sqlite/           SQLite: WAL, JIDMap, claude cache, FTS5 recall, cron, oauth_tokens, recall_vectors
+internal/tools/                  Tool interface + concurrency-safe Registry
+internal/tools/builtin/          read, write, edit, grep, bash
+internal/tools/integrations/     Native tool suites — github, slack, google, linear, stripe, composio
+internal/transport/              Transport interface + Router (per-JID session, allowlist, dispatch)
+internal/transport/whatsapp/     Whatsmeow-backed transport (compile-out behind //go:build no_whatsmeow)
+internal/transport/{signal,telegram,matrix,slack,discord,sms,imessage,email}/
+                                 Eight always-in transport adapters
+internal/tui/                    Bubble Tea model (viewport, textarea, spinner, streaming)
+docker/                          Dockerfile × 3 flavours, Podman Quadlet unit, egress-allowlist example, size table
+docs/                            Competitor deep-dive, 3 WHY_NOT_* comparisons, implementation plan, release notes
+examples/embed-agent/            Minimal library-embedding example
+test/integration/soak/           Wall-clock soak harness with 5 leak invariants
 ```
 
 The layered boundary is load-bearing. `agent` depends only on interfaces exposed by `tools`, on its own `Provider` types, and on the standard library. Concrete providers, stores, and transports depend on `agent` — never the reverse.
@@ -393,11 +424,15 @@ Every commit runs, in CI:
 - `go vet ./...`
 - `golangci-lint run` (18 linters: bodyclose, copyloopvar, errcheck, errorlint, forbidigo, gocritic, govet, ineffassign, misspell, nilerr, nolintlint, revive, staticcheck, unconvert, unparam, unused, usestdlibvars, whitespace + gofmt & goimports formatters)
 - `go test -race -count=1 -covermode=atomic ./...` on `ubuntu-latest` and `macos-latest`
-- Coverage floor check (currently 75% total; core packages sit 85–100%)
+- Coverage floor check (currently **88.7% avg per-package**; 15 packages at ≥ 90%)
 - `govulncheck ./...`
-- CodeQL static analysis (Go)
-- Reproducible build verification
+- CodeQL default-setup scan (Go + actions, weekly + on-push)
+- Reproducible build verification (bit-identical output on two consecutive builds)
 - SLSA-3 provenance generation on tagged releases
+- **Wall-clock soak** — 10-min synthetic workload with 5 leak invariants (push) / 30 min (PR) / 24 h (nightly)
+- **Cross-arch matrix** — 12 combos verified per-push including RISC-V
+- **Image-size budgets** — `:distroless` ≤ 70 MB, `:lite` ≤ 60 MB fail-on-regression
+- **`-tags no_whatsmeow`** verified via a second `golangci-lint --build-tags=no_whatsmeow` pass
 
 Local development mirrors CI via `make check`. Dependabot opens PRs for both `gomod` and `github-actions` groups.
 
@@ -412,7 +447,7 @@ See [SECURITY.md](./SECURITY.md).
 
 ## Comparison
 
-See [`docs/COMPETITORS_2026_07_12.md`](./docs/COMPETITORS_2026_07_12.md) for the full landscape audit with real data collected from Hermes Agent, OpenClaw, TrustClaw, ZeroClaw, Claude Code, Aider, Cursor, Devin, and OpenHands.
+See [`docs/COMPETITORS_2026_07_12.md`](./docs/COMPETITORS_2026_07_12.md) for the full landscape audit and three head-to-head comparisons — [`WHY_NOT_TRUSTCLAW.md`](./docs/WHY_NOT_TRUSTCLAW.md), [`WHY_NOT_OPENCLAW.md`](./docs/WHY_NOT_OPENCLAW.md), [`WHY_NOT_ZEROCLAW.md`](./docs/WHY_NOT_ZEROCLAW.md).
 
 Short version of where rousseau wins on a self-hosted-enterprise checklist:
 
@@ -423,7 +458,10 @@ Short version of where rousseau wins on a self-hosted-enterprise checklist:
 | SLSA-3 provenance + cosign + SBOM | ✅ | varies |
 | Multiple LLM providers behind one binary | ✅ | rarely |
 | Nine chat transports, no broker required | ✅ | 0–3 typical |
+| 26 native tool integrations + Composio (1000+) | ✅ | 0–5 typical |
 | MCP server (tools + sessions exposed) | ✅ | some |
+| Sub-agent parallelism + vector recall | ✅ | some |
+| Cross-arch (armv6/armv7/arm64/riscv64) | ✅ | ❌ (typically amd64/arm64 only) |
 | Rootless container with dropped capabilities | ✅ | rarely documented |
 
 ## Contributing

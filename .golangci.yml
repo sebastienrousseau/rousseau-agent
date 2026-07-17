@@ -55,6 +55,11 @@ linters:
       - path: cmd/rousseau/main\.go
         linters:
           - forbidigo
+      - path: ^examples/.+\.go$
+        linters:
+          - forbidigo
+          - gocritic
+          - errcheck
 
 formatters:
   enable:
