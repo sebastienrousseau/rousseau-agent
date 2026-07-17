@@ -1,0 +1,67 @@
+name: cross-arch
+
+# Compile-only matrix that guarantees rousseau keeps building on
+# every arch we ship. Runs on push + PR. Cheap — no test execution,
+# just `go build` per (OS, arch, tag) triple.
+#
+# Closes Row 7 (Deployment) of the scorecard: the ZeroClaw
+# "runs on RISC-V edge devices" story is answered by a real
+# green build here, not just a claim in docs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }} tags=${{ matrix.tags }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux — every arch, both tag variants.
+          - {goos: linux,   goarch: amd64,   tags: ""}
+          - {goos: linux,   goarch: amd64,   tags: "no_whatsmeow"}
+          - {goos: linux,   goarch: arm64,   tags: ""}
+          - {goos: linux,   goarch: arm64,   tags: "no_whatsmeow"}
+          - {goos: linux,   goarch: arm,     goarm: "6", tags: ""}
+          - {goos: linux,   goarch: arm,     goarm: "7", tags: ""}
+          - {goos: linux,   goarch: arm,     goarm: "7", tags: "no_whatsmeow"}
+          - {goos: linux,   goarch: riscv64, tags: ""}
+          - {goos: linux,   goarch: riscv64, tags: "no_whatsmeow"}
+          # macOS + Windows — full build only (no lite variant).
+          - {goos: darwin,  goarch: amd64,   tags: ""}
+          - {goos: darwin,  goarch: arm64,   tags: ""}
+          - {goos: windows, goarch: amd64,   tags: ""}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          out="rousseau-${GOOS}-${GOARCH}${GOARM:+v$GOARM}"
+          [ "${{ matrix.tags }}" = "no_whatsmeow" ] && out="${out}-lite"
+          tags=${{ matrix.tags && format('-tags {0}', matrix.tags) || '' }}
+          echo "Building $out (tags=${{ matrix.tags }})"
+          go build $tags -trimpath -ldflags "-s -w" -o "/tmp/$out" ./cmd/rousseau
+          size=$(stat -c%s "/tmp/$out")
+          mb=$((size / 1024 / 1024))
+          echo "::notice title=$out::${mb} MB"
+
+      - name: Emit summary
+        run: echo "cross-arch build ok for ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('v{0}', matrix.goarm) || '' }}"

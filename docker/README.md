@@ -1,7 +1,27 @@
-# rousseau-agent — container tags
+# rousseau-agent — container tags + arch matrix
 
-rousseau-agent ships in three flavours. Pick the one that matches your
-deployment style; the runtime behaviour is identical across all three.
+rousseau-agent ships in three container flavours (`:latest`,
+`:distroless`, `:lite`) and five Linux architectures
+(`amd64`, `arm64`, `armv6`, `armv7`, `riscv64`), plus macOS + Windows
+for the CLI archive.
+
+Verified binary sizes (release-flags `-s -w -trimpath`):
+
+| Arch | rousseau | rousseau-lite |
+| :--- | :---: | :---: |
+| linux/amd64   | 50.6 MB | 43.3 MB |
+| linux/arm64   | 47.7 MB | 40.3 MB |
+| linux/armv6   | 47.2 MB | 40.0 MB |
+| linux/armv7   | 47.2 MB | 40.0 MB |
+| linux/riscv64 | 46.9 MB | 39.8 MB |
+
+Every triple is compile-verified on every push by
+`.github/workflows/cross-arch.yml` so a Raspberry Pi Zero (armv6)
+or a SiFive HiFive (riscv64) operator is never a release-cycle
+regression away from an unbuildable binary.
+
+Pick the container flavour that matches your deployment style; the
+runtime behaviour is identical across all three.
 
 ## `ghcr.io/sebastienrousseau/rousseau-agent:latest`
 

@@ -20,9 +20,24 @@ builds:
     goarch:
       - amd64
       - arm64
+      - arm
+      - riscv64
+    goarm:
+      - "6"
+      - "7"
     ignore:
+      # Windows-on-ARM only ships amd64; skip the ARM variants there.
       - goos: windows
         goarch: arm64
+      - goos: windows
+        goarch: arm
+      - goos: windows
+        goarch: riscv64
+      # macOS only ships amd64 + arm64; drop the Linux-specific arches.
+      - goos: darwin
+        goarch: arm
+      - goos: darwin
+        goarch: riscv64
     flags:
       - -trimpath
     ldflags:
@@ -31,13 +46,49 @@ builds:
       - -X github.com/sebastienrousseau/rousseau-agent/internal/cli.commit={{.Commit}}
       - -X github.com/sebastienrousseau/rousseau-agent/internal/cli.buildDate={{.Date}}
 
+  # `rousseau-lite` — same source built with -tags no_whatsmeow.
+  # ~14% smaller binary for operators who don't need WhatsApp.
+  - id: rousseau-lite
+    main: ./cmd/rousseau
+    binary: rousseau
+    env:
+      - CGO_ENABLED=0
+    tags:
+      - no_whatsmeow
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+      - riscv64
+    goarm:
+      - "6"
+      - "7"
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/sebastienrousseau/rousseau-agent/internal/cli.version={{.Version}}-lite
+      - -X github.com/sebastienrousseau/rousseau-agent/internal/cli.commit={{.Commit}}
+      - -X github.com/sebastienrousseau/rousseau-agent/internal/cli.buildDate={{.Date}}
+
 archives:
   - id: default
+    builds: [rousseau]
     formats: [tar.gz]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     format_overrides:
       - goos: windows
         formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - SECURITY.md
+  - id: lite
+    builds: [rousseau-lite]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}-lite_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     files:
       - LICENSE
       - README.md

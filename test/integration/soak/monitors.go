@@ -25,6 +25,11 @@ type Sample struct {
 	SysBytes   uint64
 	HeapInUse  uint64
 	FDs        int
+	// GCPauseTotalNS is total STW pause time as of this sample. A
+	// sudden slope change flags GC-pressure regressions.
+	GCPauseTotalNS uint64
+	// NumGC is the cumulative GC cycle count.
+	NumGC uint32
 }
 
 // Monitor records runtime samples on a tick until Stop is called.
@@ -83,12 +88,14 @@ func take() Sample {
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
 	return Sample{
-		At:         time.Now().UTC(),
-		Goroutines: runtime.NumGoroutine(),
-		AllocBytes: ms.Alloc,
-		SysBytes:   ms.Sys,
-		HeapInUse:  ms.HeapInuse,
-		FDs:        countFDs(),
+		At:             time.Now().UTC(),
+		Goroutines:     runtime.NumGoroutine(),
+		AllocBytes:     ms.Alloc,
+		SysBytes:       ms.Sys,
+		HeapInUse:      ms.HeapInuse,
+		FDs:            countFDs(),
+		GCPauseTotalNS: ms.PauseTotalNs,
+		NumGC:          ms.NumGC,
 	}
 }
 
@@ -155,6 +162,38 @@ func CheckInvariants(samples []Sample, baselineAfter time.Duration) []Invariant 
 			Name:    "fd-count",
 			Passed:  final.FDs <= fdLimit,
 			Message: fmt.Sprintf("baseline=%d final=%d limit=%d", baseline.FDs, final.FDs, fdLimit),
+		})
+	}
+
+	// GC pressure invariant: total pause time between baseline and
+	// final should scale roughly with elapsed time. A 10× ratio means
+	// GC is running hot — likely a leak or over-allocating hot path.
+	if baseline.NumGC > 0 && final.NumGC > baseline.NumGC {
+		elapsed := final.At.Sub(baseline.At).Nanoseconds()
+		gcDelta := int64(final.GCPauseTotalNS - baseline.GCPauseTotalNS) //nolint:gosec // pause values are bounded by wall time
+		var ratio float64
+		if elapsed > 0 {
+			ratio = float64(gcDelta) / float64(elapsed)
+		}
+		// Threshold 5% — GC should not consume more than 5% of elapsed
+		// wall time on a healthy daemon.
+		gcHealthy := ratio < 0.05
+		out = append(out, Invariant{
+			Name:    "gc-pressure",
+			Passed:  gcHealthy,
+			Message: fmt.Sprintf("gc_pause_ratio=%.3f threshold=0.050 (gc_delta=%dns elapsed=%dns)", ratio, gcDelta, elapsed),
+		})
+	}
+
+	// Session-cache growth: HeapInUse should not grow more than 2×
+	// baseline. This is stricter than AllocBytes because it excludes
+	// transient allocations.
+	if baseline.HeapInUse > 0 {
+		heapLimit := baseline.HeapInUse * 2
+		out = append(out, Invariant{
+			Name:    "heap-inuse",
+			Passed:  final.HeapInUse <= heapLimit,
+			Message: fmt.Sprintf("baseline=%d final=%d limit=%d", baseline.HeapInUse, final.HeapInUse, heapLimit),
 		})
 	}
 
