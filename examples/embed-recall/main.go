@@ -1,5 +1,5 @@
 // Package main demonstrates the hybrid recall primitive
-// (internal/recall). Ingests a handful of messages, embeds them with
+// (pkg/recall). Ingests a handful of messages, embeds them with
 // the Noop embedder (real deployments swap in Voyage / OpenAI /
 // Ollama), and runs a semantic-plus-keyword query.
 //
@@ -14,8 +14,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/recall"
-	sqlitestate "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
+	"github.com/sebastienrousseau/rousseau-agent/pkg/recall"
+	sqlitestate "github.com/sebastienrousseau/rousseau-agent/pkg/state/sqlite"
 )
 
 func main() {

@@ -14,8 +14,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
-	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations"
+	"github.com/sebastienrousseau/rousseau-agent/pkg/tools"
+	"github.com/sebastienrousseau/rousseau-agent/pkg/tools/integrations"
 )
 
 func main() {

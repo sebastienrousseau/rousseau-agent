@@ -1,5 +1,5 @@
 // Package main demonstrates the sub-agent parallelism primitive
-// (internal/agent/subagent). Three independent research tasks run
+// (pkg/agent/subagent). Three independent research tasks run
 // concurrently against a shared parent session with bounded
 // concurrency + per-task timeout + total-token budget, then the
 // aggregator condenses the results into a single content block the
@@ -21,9 +21,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
-	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
+	"github.com/sebastienrousseau/rousseau-agent/pkg/agent"
+	"github.com/sebastienrousseau/rousseau-agent/pkg/agent/subagent"
+	"github.com/sebastienrousseau/rousseau-agent/pkg/llm/claudecli"
 )
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 
 	tasks := []subagent.Task{
 		{
-			Prompt:   "Summarise every open PR on rousseau-agent that touches internal/agent/.",
+			Prompt:   "Summarise every open PR on rousseau-agent that touches pkg/agent/.",
 			Timeout:  90 * time.Second,
 			MaxTurns: 6,
 		},

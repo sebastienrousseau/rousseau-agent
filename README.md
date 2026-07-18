@@ -343,10 +343,10 @@ import (
     "log/slog"
     "os"
 
-    "github.com/sebastienrousseau/rousseau-agent/internal/agent"
-    "github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
-    "github.com/sebastienrousseau/rousseau-agent/internal/tools"
-    "github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
+    "github.com/sebastienrousseau/rousseau-agent/pkg/agent"
+    "github.com/sebastienrousseau/rousseau-agent/pkg/llm/claudecli"
+    "github.com/sebastienrousseau/rousseau-agent/pkg/tools"
+    "github.com/sebastienrousseau/rousseau-agent/pkg/tools/builtin"
 )
 
 func main() {

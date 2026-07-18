@@ -15,4 +15,4 @@ Run any example with:
 go run ./examples/<name>
 ```
 
-Examples import from `github.com/sebastienrousseau/rousseau-agent/internal/...`. Rousseau's `internal/` packages are intentionally not part of a stable public API — the examples show the shape you would replicate if you wanted to build on top of the library. If you need long-term stability, vendor the pieces you care about.
+Examples import from `github.com/sebastienrousseau/rousseau-agent/pkg/...` — the public library façade over the `internal/` implementation. External consumers can import `pkg/` verbatim; the `internal/` packages remain the source of truth but are not part of the stable API surface.
