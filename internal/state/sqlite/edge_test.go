@@ -37,8 +37,8 @@ func TestClaudeSessionCache_RememberAndKnown(t *testing.T) {
 func TestSearch_EmptyQueryHandled(t *testing.T) {
 	s, err := Open(context.Background(), ":memory:")
 	require.NoError(t, err)
-	defer func() { _ = s.db.Close() }() //nolint:errcheck // test cleanup
-	_, _ = s.Search(context.Background(), "", SearchOptions{}) //nolint:errcheck // any outcome exercises the code path
+	defer func() { _ = s.db.Close() }()                                      //nolint:errcheck // test cleanup
+	_, _ = s.Search(context.Background(), "", SearchOptions{})               //nolint:errcheck // any outcome exercises the code path
 	_, _ = s.Search(context.Background(), "hello", SearchOptions{Limit: 10}) //nolint:errcheck // exercise the non-empty path too
 }
 
