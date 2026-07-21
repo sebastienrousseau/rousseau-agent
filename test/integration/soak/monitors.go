@@ -86,6 +86,9 @@ func (m *Monitor) loop() {
 // take reads current runtime + FD counts into a Sample.
 func take() Sample {
 	var ms runtime.MemStats
+	// Soak invariants compare retained live memory, not transient heap
+	// waiting for the next scheduled GC cycle.
+	runtime.GC()
 	runtime.ReadMemStats(&ms)
 	return Sample{
 		At:             time.Now().UTC(),
