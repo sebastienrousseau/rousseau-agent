@@ -22,8 +22,14 @@ const (
 	// SkipGroup indicates the event was a group message.
 	SkipGroup SkipReason = "group"
 	// SkipOwnDevice indicates the event was our own outbound message
-	// echoing back — loop prevention.
+	// echoing back — a reply this linked device just sent. Loop
+	// prevention.
 	SkipOwnDevice SkipReason = "own_device"
+	// SkipOwnOutbound indicates the event was the account holder
+	// messaging a third party from another linked device (e.g. their
+	// primary phone). Must not be treated as inbound to the agent —
+	// otherwise the reply would land in the third-party's chat.
+	SkipOwnOutbound SkipReason = "own_outbound"
 	// SkipEmptyText indicates the message carried no text content.
 	SkipEmptyText SkipReason = "empty_text"
 )
@@ -77,14 +83,33 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 	//  1. Strip the multi-device address suffix so allowlists written
 	//     as the plain user JID match regardless of which linked
 	//     device sent the message.
-	//  2. When the account holder is the sender (IsFromMe), WhatsApp
-	//     reports the sender as the account's LID (a privacy hash),
-	//     not the phone JID. Substitute our own account JID so
-	//     operators can allowlist "<phone>@s.whatsapp.net" and have
-	//     self-chat testing route correctly.
+	//  2. When the account holder is the sender (IsFromMe) *and the
+	//     conversation is the self-chat*, WhatsApp reports the sender
+	//     as the account's LID (a privacy hash), not the phone JID.
+	//     Substitute our own account JID so operators can allowlist
+	//     "<phone>@s.whatsapp.net" and have self-chat testing route
+	//     correctly. If IsFromMe is set but Chat is *not* self-chat,
+	//     this is the account holder messaging a third party from
+	//     another linked device — the message must not pass the
+	//     allowlist and the agent must not reply into that chat.
 	from := evt.Info.Sender.ToNonAD()
 	if evt.Info.IsFromMe && ownID != nil {
-		from = ownID.ToNonAD()
+		ownJID := ownID.ToNonAD()
+		chatJID := evt.Info.Chat.ToNonAD()
+		senderJID := evt.Info.Sender.ToNonAD()
+		// Self-chat detection covers two representations WhatsApp uses:
+		//   1. Chat equals our stored account JID (typically the PN
+		//      form, e.g. "447…@s.whatsapp.net").
+		//   2. Chat equals Sender — happens when both are reported as
+		//      our own LID (newer WhatsApp behaviour).
+		// If neither holds, this is an outbound message to a third
+		// party echoed via another linked device; the agent must not
+		// answer it.
+		isSelfChat := chatJID == ownJID || chatJID == senderJID
+		if !isSelfChat {
+			return Resolved{Skip: SkipOwnOutbound}
+		}
+		from = ownJID
 	}
 
 	return Resolved{

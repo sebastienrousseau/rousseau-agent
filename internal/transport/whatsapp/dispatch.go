@@ -94,6 +94,16 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 		return
 	}
 
+	if res.Skip == SkipOwnOutbound {
+		// Visible at INFO because this is the safety-critical case: an
+		// outbound-from-us echo that the agent must not answer. Logging
+		// Chat and Sender lets an operator confirm the guard is firing
+		// on the right shape of event.
+		log.Info("whatsapp.skipped_own_outbound",
+			slog.String("chat", in.Event.Info.Chat.String()),
+			slog.String("sender", in.Event.Info.Sender.String()))
+		return
+	}
 	if res.Skip != SkipEmptyText {
 		log.Debug("whatsapp.skipped", slog.String("reason", string(res.Skip)))
 	}
