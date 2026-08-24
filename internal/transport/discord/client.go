@@ -37,6 +37,14 @@ const (
 	intentMessageContent = 1 << 15
 )
 
+// Transcriber turns an audio blob (voice message / audio attachment)
+// into text. Empty return means "give up silently" — the transport
+// then just drops the message rather than replying with a stub. Wired
+// from media.audio.backend via the CLI. Nil disables audio handling.
+type Transcriber interface {
+	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
+}
+
 // Config configures the Discord transport.
 type Config struct {
 	// Token is the bot token (from the developer portal). Required.
@@ -53,6 +61,13 @@ type Config struct {
 	HTTPClient *http.Client
 	// DialWebSocket overrides the WebSocket dialer for tests.
 	DialWebSocket func(ctx context.Context, url string) (WSConn, error)
+	// Transcriber is invoked when a message has no text but carries an
+	// audio attachment (content_type starts with "audio/"). Nil means
+	// audio attachments are silently ignored.
+	Transcriber Transcriber
+	// MaxAudioBytes caps per-attachment downloads to protect the
+	// process from a maliciously large file. Zero uses 32 MiB.
+	MaxAudioBytes int64
 }
 
 // WSConn is the narrow subset of the WebSocket API the transport uses.
@@ -246,12 +261,16 @@ func (c *Client) dispatch(ctx context.Context, frame gatewayFrame, handler trans
 		if selfID != "" && m.Author.ID == selfID {
 			return nil // shouldn't happen (bot=true above) but belt+braces
 		}
-		if m.Content == "" {
+		body := m.Content
+		if body == "" {
+			body = c.transcribeAudio(ctx, &m)
+		}
+		if body == "" {
 			return nil
 		}
 		msg := transport.IncomingMessage{
 			From: m.Author.ID,
-			Body: m.Content,
+			Body: body,
 			At:   time.Now().UTC(),
 		}
 		c.logger.Info("discord.incoming",
@@ -346,11 +365,23 @@ type readyPayload struct {
 }
 
 type discordMessage struct {
-	ID        string      `json:"id"`
-	ChannelID string      `json:"channel_id"`
-	GuildID   string      `json:"guild_id,omitempty"`
-	Author    discordUser `json:"author"`
-	Content   string      `json:"content"`
+	ID          string               `json:"id"`
+	ChannelID   string               `json:"channel_id"`
+	GuildID     string               `json:"guild_id,omitempty"`
+	Author      discordUser          `json:"author"`
+	Content     string               `json:"content"`
+	Attachments []discordAttachment  `json:"attachments,omitempty"`
+}
+
+// discordAttachment is the subset of Discord's attachment object we
+// need for audio transcription (id, url, content_type, size).
+type discordAttachment struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename"`
+	Size        int    `json:"size"`
+	URL         string `json:"url"`
+	ProxyURL    string `json:"proxy_url"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 type discordUser struct {
@@ -364,6 +395,64 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// transcribeAudio picks the first audio attachment on the message,
+// downloads it, and hands it to Config.Transcriber. Returns "" on
+// any failure — the caller drops the message rather than replying
+// with a stub. Nil-Transcriber → "" without touching the network.
+func (c *Client) transcribeAudio(ctx context.Context, m *discordMessage) string {
+	if c.cfg.Transcriber == nil || len(m.Attachments) == 0 {
+		return ""
+	}
+	var att *discordAttachment
+	for i := range m.Attachments {
+		ct := m.Attachments[i].ContentType
+		if len(ct) >= 6 && ct[:6] == "audio/" {
+			att = &m.Attachments[i]
+			break
+		}
+	}
+	if att == nil {
+		return ""
+	}
+	blob, err := c.downloadAttachment(ctx, att.URL)
+	if err != nil {
+		c.logger.Warn("discord.audio.download_failed",
+			slog.String("url", att.URL),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	transcript, err := c.cfg.Transcriber.Transcribe(ctx, blob, att.ContentType)
+	if err != nil {
+		c.logger.Warn("discord.audio.transcribe_failed",
+			slog.String("err", err.Error()))
+		return ""
+	}
+	return transcript
+}
+
+// downloadAttachment GETs the attachment URL — Discord CDN URLs are
+// signed and don't need the bot token. Capped at Config.MaxAudioBytes
+// (or 32 MiB) via io.LimitReader.
+func (c *Client) downloadAttachment(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("discord attachment: HTTP %d", resp.StatusCode)
+	}
+	maxBytes := c.cfg.MaxAudioBytes
+	if maxBytes <= 0 {
+		maxBytes = 32 << 20
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 }
 
 // Compile-time interface satisfaction check.

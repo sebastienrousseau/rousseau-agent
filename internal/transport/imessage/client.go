@@ -25,6 +25,17 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
+// Transcriber turns an audio blob (voice note / audio attachment) into
+// text. Wired from media.audio.backend via the CLI. Nil disables audio
+// handling.
+//
+// TODO(v0.0.3): route BlueBubbles message attachments (audio/*) through
+// this. Attachments are exposed via GET /api/v1/attachment/{guid} and
+// carry a mimeType field on the message envelope.
+type Transcriber interface {
+	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
+}
+
 // Config configures the BlueBubbles-backed iMessage transport.
 type Config struct {
 	// BaseURL is the BlueBubbles server URL, e.g.
@@ -42,6 +53,9 @@ type Config struct {
 	PageSize int
 	// HTTPClient overrides the transport. Zero uses 30s timeout.
 	HTTPClient *http.Client
+	// Transcriber, when non-nil, will be invoked for audio attachments
+	// once per-transport routing lands (see Transcriber godoc TODO).
+	Transcriber Transcriber
 }
 
 // Client is a transport.Transport backed by BlueBubbles.

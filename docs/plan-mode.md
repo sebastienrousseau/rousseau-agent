@@ -1,7 +1,10 @@
 # Plan mode with checkpoints (W4.2)
 
-**Status:** [`internal/agent/plan`](../internal/agent/plan) package
-skeleton shipped in `v0.0.1`; runtime is a follow-up.
+**Status:** runtime shipped in `v0.0.2`. [`internal/agent/plan`](../internal/agent/plan)
+now offers `New(Options{Runner, Checkpoints, Approve, OnStepComplete})`
+→ `Executor.Run` / `Rewind(n)` / `Resume`, plus a
+`MemoryCheckpointStore` implementation. SQLite-backed checkpoint
+persistence + the `/plan` chat command are follow-ups.
 
 ## Why
 

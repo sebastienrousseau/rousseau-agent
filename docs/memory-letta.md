@@ -1,7 +1,12 @@
 # Letta-style self-editing memory (W4.1)
 
-**Status:** [`internal/memory/letta`](../internal/memory/letta)
-package skeleton shipped in `v0.0.1`; runtime is a follow-up.
+**Status:** in-memory runtime shipped in `v0.0.2` — the
+[`internal/memory/letta`](../internal/memory/letta) package provides a
+process-local `Store` (via `NewMemoryStore`) with byte-budget
+enforcement that auto-demotes the oldest facts into archival memory
+on `WriteCore`, plus substring-ranked `SearchArchival`. Persistent
+SQLite backend + real embedding-based vector search still land in a
+follow-up (`NewSQLiteStore` returns `ErrScaffold`).
 
 ## Why
 

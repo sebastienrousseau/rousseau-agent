@@ -1,7 +1,13 @@
 # Multi-tenant mode (W4.3)
 
-**Status:** [`internal/tenant`](../internal/tenant) package skeleton
-shipped in `v0.0.1`; runtime is a follow-up.
+**Status:** resolver runtime shipped in `v0.0.2`.
+[`internal/tenant`](../internal/tenant) now offers
+`NewMapResolver([]Config)` → `Registry` with three allowlist match
+shapes (exact `<transport>:<sender>`, transport-agnostic `<sender>`,
+catch-all `*`), plus `ConfigFor(id)` / `All()` accessors for
+downstream per-tenant credentials + approver rules. State-table
+migrations (adding `tenant_id`) and per-tenant vault wiring are
+follow-ups that layer on top of this surface.
 
 ## Why
 

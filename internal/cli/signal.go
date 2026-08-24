@@ -44,11 +44,23 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
 
+			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
+			if tErr != nil {
+				opts.Logger.Warn("media.audio.build_failed",
+					"backend", opts.Config.Media.Audio.Backend,
+					"err", tErr.Error())
+			}
+			var sigTranscriber signal.Transcriber
+			if transcriber != nil {
+				sigTranscriber = transcriber
+			}
+
 			client, err := signal.New(signal.Config{
 				Binary:      firstNonEmpty(binary, cfg.Signal.Binary),
 				Account:     acct,
 				ExtraArgs:   cfg.Signal.ExtraArgs,
 				ReplyHeader: cfg.Signal.ReplyHeader,
+				Transcriber: sigTranscriber,
 			}, opts.Logger)
 			if err != nil {
 				return err

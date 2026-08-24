@@ -1,6 +1,9 @@
 # Agent-to-Agent (A2A) protocol
 
-**Status: scaffold shipped in `v0.0.1`, runtime is a follow-up.**
+**Status: runtime shipped in `v0.0.2` — HTTP/JSON server + SSE
+streaming + client. See `examples/embed-a2a` for a self-contained
+demo and `internal/a2a/a2a_integration_test.go` for the wire-level
+contract.**
 
 The [`internal/a2a`](../internal/a2a) package defines the payload
 types and interfaces rousseau-agent will use to speak the

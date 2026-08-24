@@ -40,7 +40,11 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 
 - **Voice-note transcription** (`internal/media/audio`) — Whisper.cpp
   local backend + OpenAI Whisper API fallback + Noop for tests.
-  Transport-adapter wiring in a follow-up.
+  Wired end-to-end into WhatsApp (baseline), Telegram, and Discord —
+  audio-only messages route through the transcriber and are delivered
+  to the handler as normal text. Signal / iMessage / Matrix carry the
+  same `Transcriber` config surface (uniform operator knob) with
+  per-protocol audio-detection landing in v0.0.3.
 - **Identity resolver** (`internal/identity` +
   `internal/state/sqlite/identity.go`) — maps
   `<transport>:<sender>` pairs to a stable identity so a
@@ -79,21 +83,37 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
   `docs/security/sandbox.md`) — `none` backend fully shipped;
   `gvisor` / `nsjail` scaffolds wire the argv but need runtime
   binaries on PATH; `firecracker` scaffold-only.
-- **A2A protocol scaffold** (`internal/a2a`, `docs/a2a.md`) — types
-  + interfaces for agent-to-agent conversation; HTTP transport is a
-  follow-up.
+- **A2A protocol runtime** (`internal/a2a`, `internal/a2a/server`,
+  `internal/a2a/client`, `docs/a2a.md`, `examples/embed-a2a`) —
+  HTTP/JSON server with SSE task streaming
+  (`GET /.well-known/agent-capabilities`, `POST /tasks`,
+  `GET /tasks/{id}`, `GET /tasks/{id}/events`,
+  `POST /tasks/{id}/cancel`), bearer-token auth allowlist, in-memory
+  task store with bounded history-replay so late SSE subscribers
+  don't lose events, plus a matching client that `SubmitTask` →
+  drains updates on a channel until terminal Status.
 
 ### Added — Wave 4 (moonshot scaffolds)
 
-- **Letta-style memory scaffold** (`internal/memory/letta` +
-  `docs/memory-letta.md`) — Store interface for two-tier memory;
-  runtime is a follow-up.
-- **DAG plan scaffold** (`internal/agent/plan` +
-  `docs/plan-mode.md`) — Plan / Step / Checkpoint types; runtime is
-  a follow-up.
-- **Multi-tenant scaffold** (`internal/tenant` +
-  `docs/multi-tenant.md`) — Resolver interface + ctx-carried
-  tenant ID; per-table filtering + config is a follow-up.
+- **Letta-style memory runtime** (`internal/memory/letta` +
+  `docs/memory-letta.md`) — in-memory `Store` (`NewMemoryStore`)
+  implementing byte-budgeted core memory with auto-demotion of the
+  oldest facts into substring-ranked archival memory on `WriteCore`.
+  Persistent SQLite/vector backend still deferred (`NewSQLiteStore`
+  returns `ErrScaffold`).
+- **Plan-mode runtime** (`internal/agent/plan` +
+  `docs/plan-mode.md`) — `Executor.Run` / `Rewind(n)` / `Resume`
+  driving a Plan step-by-step with per-step approval gates and
+  checkpoint recording. `MemoryCheckpointStore` ships as the
+  default backend; SQLite persistence + the `/plan` chat command
+  are follow-ups.
+- **Multi-tenant resolver runtime** (`internal/tenant` +
+  `docs/multi-tenant.md`) — `NewMapResolver([]Config)` →
+  `Registry` with three allowlist patterns (exact
+  `<transport>:<sender>`, transport-agnostic `<sender>`, catch-all
+  `*`) + `ConfigFor(id)` / `All()` accessors for downstream
+  per-tenant credentials + approver rules. State-table `tenant_id`
+  migrations + per-tenant vault wiring are follow-ups.
 
 ### Coverage
 

@@ -24,6 +24,17 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
+// Transcriber turns an audio blob (m.audio event) into text. Wired
+// from media.audio.backend via the CLI. Nil disables audio handling.
+//
+// TODO(v0.0.3): route `m.audio` msgtype events through this. The
+// `url` field is an mxc:// URI that needs converting via
+// `/_matrix/media/v3/download/<server>/<mediaID>` before the body can
+// be handed off.
+type Transcriber interface {
+	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
+}
+
 // Config configures the Matrix transport.
 type Config struct {
 	// HomeserverURL is the base URL, e.g. "https://matrix.org".
@@ -41,6 +52,9 @@ type Config struct {
 	// HTTPClient overrides the transport. Zero uses a 60s-timeout
 	// client. Tests inject httptest-backed clients here.
 	HTTPClient *http.Client
+	// Transcriber, when non-nil, will be invoked for audio attachments
+	// once per-transport routing lands (see Transcriber godoc TODO).
+	Transcriber Transcriber
 }
 
 // Client is a transport.Transport backed by the Matrix client-server
