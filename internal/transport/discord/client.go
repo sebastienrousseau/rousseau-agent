@@ -444,7 +444,7 @@ func (c *Client) downloadAttachment(ctx context.Context, url string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("discord attachment: HTTP %d", resp.StatusCode)
 	}

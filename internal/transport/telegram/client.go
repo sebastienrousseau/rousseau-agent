@@ -252,7 +252,7 @@ func (c *Client) downloadFile(ctx context.Context, fileID string) ([]byte, strin
 	if err != nil {
 		return nil, "", fmt.Errorf("download: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort cleanup
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return nil, "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}

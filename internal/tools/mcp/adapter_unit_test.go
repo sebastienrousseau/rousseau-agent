@@ -86,14 +86,6 @@ func TestRenderContent_EmptyReturnsEmpty(t *testing.T) {
 	assert.Equal(t, "", renderContent([]mcpwire.Content{}))
 }
 
-// -- Execute error paths, using an in-process fake client that
-//
-//	lets us drive tools/call responses without a subprocess.
-type fakeCaller struct {
-	result mcpwire.ToolsCallResult
-	err    error
-}
-
 // Test-only: swap the *client.Client dependency with a callable
 // interface via a private helper. Since Adapter references a
 // concrete *client.Client, we test the Execute error-shape by

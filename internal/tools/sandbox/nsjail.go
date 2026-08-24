@@ -19,8 +19,11 @@ type NSJail struct {
 
 func newNSJail() Backend { return &NSJail{} }
 
+// Kind returns "nsjail".
 func (*NSJail) Kind() string { return "nsjail" }
 
+// Run executes cmd inside an nsjail sandbox, or returns
+// ErrUnavailable when the nsjail binary isn't on PATH.
 func (n *NSJail) Run(ctx context.Context, cmd Command) (Result, error) {
 	bin := n.Binary
 	if bin == "" {

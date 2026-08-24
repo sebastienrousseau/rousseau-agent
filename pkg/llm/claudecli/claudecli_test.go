@@ -33,7 +33,7 @@ func TestConfig_TypeAlias_Assignable(t *testing.T) {
 	// Composite-literal Config via pkg alias — verifies alias is
 	// transparent so external callers can construct Config values
 	// directly.
-	var cfg pkgcli.Config = pkgcli.Config{Binary: "x", Model: "y"}
+	cfg := pkgcli.Config{Binary: "x", Model: "y"}
 	assert.Equal(t, "x", cfg.Binary)
 	assert.Equal(t, "y", cfg.Model)
 }

@@ -56,12 +56,13 @@ func TestSpawn_RunsAllTasks(t *testing.T) {
 
 func TestTypeAliases_Assignable(t *testing.T) {
 	// Composite-literal Task via the pkg alias must work — verifies
-	// the alias is transparent.
-	var (
-		task   pkgsub.Task   = pkgsub.Task{Prompt: "x"}
-		policy pkgsub.Policy = pkgsub.Policy{MaxConcurrent: 3}
-		result pkgsub.Result = pkgsub.Result{FinalText: "y"}
-	)
+	// the alias is transparent. Using the pkgsub-prefixed constructor
+	// is what actually exercises the alias; the `var` declarations
+	// were pinned to the alias type but staticcheck flags that as
+	// redundant, so use `:=` and let inference do it.
+	task := pkgsub.Task{Prompt: "x"}
+	policy := pkgsub.Policy{MaxConcurrent: 3}
+	result := pkgsub.Result{FinalText: "y"}
 	assert.Equal(t, "x", task.Prompt)
 	assert.Equal(t, 3, policy.MaxConcurrent)
 	assert.Equal(t, "y", result.FinalText)

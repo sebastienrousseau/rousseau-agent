@@ -21,6 +21,7 @@ type Firecracker struct{}
 
 func newFirecracker() Backend { return &Firecracker{} }
 
+// Kind returns "firecracker".
 func (*Firecracker) Kind() string { return "firecracker" }
 
 // Run returns ErrUnavailable — the pooled-microVM runtime is a
