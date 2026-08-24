@@ -136,8 +136,10 @@ func TestExecutor_Rewind_ZeroReturnsCurrentCount(t *testing.T) {
 		return plan.StepResult{}, nil
 	})
 	cps := plan.NewMemoryCheckpointStore()
-	e, _ := plan.New(plan.Options{Runner: runner, Checkpoints: cps})
-	_, _ = e.Run(context.Background(), newPlan())
+	e, err := plan.New(plan.Options{Runner: runner, Checkpoints: cps})
+	require.NoError(t, err)
+	_, err = e.Run(context.Background(), newPlan())
+	require.NoError(t, err)
 	n, err := e.Rewind(context.Background(), "p-1", 0)
 	require.NoError(t, err)
 	assert.Equal(t, 3, n)

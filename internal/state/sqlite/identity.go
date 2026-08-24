@@ -127,7 +127,7 @@ func (r *IdentityStore) Unlink(ctx context.Context, transport, sender string) er
 	if err != nil {
 		return fmt.Errorf("sqlite: unlink: %w", err)
 	}
-	n, _ := res.RowsAffected()
+	n, _ := res.RowsAffected() //nolint:errcheck // sqlite RowsAffected can't fail here
 	if n == 0 {
 		return identity.ErrNotLinked
 	}
@@ -148,7 +148,7 @@ func (r *IdentityStore) Get(ctx context.Context, id identity.ID) (identity.Ident
 	if err != nil {
 		return identity.Identity{}, fmt.Errorf("sqlite: get identity: %w", err)
 	}
-	createdAt, _ := time.Parse("2006-01-02T15:04:05.000Z", created)
+	createdAt, _ := time.Parse("2006-01-02T15:04:05.000Z", created) //nolint:errcheck // malformed timestamp → zero value is fine for display
 
 	handles, err := r.HandlesFor(ctx, id)
 	if err != nil {
@@ -178,7 +178,7 @@ func (r *IdentityStore) HandlesFor(ctx context.Context, id identity.ID) ([]ident
 		if err := rows.Scan(&h.Transport, &h.Sender, &verified); err != nil {
 			return nil, fmt.Errorf("sqlite: scan handle: %w", err)
 		}
-		h.VerifiedAt, _ = time.Parse("2006-01-02T15:04:05.000Z", verified)
+		h.VerifiedAt, _ = time.Parse("2006-01-02T15:04:05.000Z", verified) //nolint:errcheck // malformed timestamp → zero value is fine for display
 		out = append(out, h)
 	}
 	if err := rows.Err(); err != nil {

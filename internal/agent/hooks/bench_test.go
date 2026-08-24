@@ -20,7 +20,7 @@ func BenchmarkRun_NoHooks(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = s.Run(ctx, hooks.EventPreToolUse, payload)
+		_, _ = s.Run(ctx, hooks.EventPreToolUse, payload) //nolint:errcheck // bench measures fast-path cost
 	}
 }
 
@@ -32,6 +32,6 @@ func BenchmarkMarshalPreToolUse(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = hooks.MarshalPreToolUse("session-id-123", "bash", input)
+		_, _ = hooks.MarshalPreToolUse("session-id-123", "bash", input) //nolint:errcheck // bench measures marshal cost
 	}
 }

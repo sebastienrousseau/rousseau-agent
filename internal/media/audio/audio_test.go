@@ -77,10 +77,11 @@ func TestOpenAIAPI_SuccessRoundtrip(t *testing.T) {
 		assert.True(t, strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data"))
 		_ = r.ParseMultipartForm(1 << 20) //nolint:errcheck // best-effort test parse
 
-		body, _ := json.Marshal(map[string]string{
+		body, err := json.Marshal(map[string]string{
 			"text":     "hello world",
 			"language": "en",
 		})
+		require.NoError(t, err)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(body) //nolint:errcheck // test response write
 	}))

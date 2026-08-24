@@ -38,7 +38,7 @@ func BenchmarkComplete_ShortMessageMatch(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = r.Complete(context.Background(), req)
+		_, _ = r.Complete(context.Background(), req) //nolint:errcheck // bench measures dispatch cost, not error paths
 	}
 }
 
@@ -63,6 +63,6 @@ func BenchmarkComplete_DefaultFallthrough(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = r.Complete(context.Background(), req)
+		_, _ = r.Complete(context.Background(), req) //nolint:errcheck // bench measures dispatch cost, not error paths
 	}
 }
