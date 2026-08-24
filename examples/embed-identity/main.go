@@ -22,7 +22,7 @@ func main() {
 
 	base, err := sqlitestore.Open(ctx, ":memory:")
 	must(err)
-	defer func() { _ = base.Close() }() //nolint:errcheck // example cleanup
+	defer func() { _ = base.Close() }()
 
 	ids, err := sqlitestore.NewIdentityStore(ctx, base)
 	must(err)

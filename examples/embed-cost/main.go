@@ -23,7 +23,7 @@ func main() {
 
 	base, err := sqlitestore.Open(ctx, ":memory:")
 	must(err)
-	defer func() { _ = base.Close() }() //nolint:errcheck // example cleanup
+	defer func() { _ = base.Close() }()
 
 	costs, err := sqlitestore.NewSessionCostStore(ctx, base)
 	must(err)

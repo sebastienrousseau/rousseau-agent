@@ -200,7 +200,7 @@ func (c *Client) Close() error {
 	c.closeMu.Unlock()
 
 	// Best-effort graceful shutdown, then kill.
-	_ = c.stdin.Close() //nolint:errcheck // may already be closed
+	_ = c.stdin.Close()
 	if c.cmd.Process != nil {
 		// Give the process ~1s to exit on stdin EOF before killing.
 		exited := make(chan struct{})

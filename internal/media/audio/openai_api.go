@@ -119,7 +119,7 @@ func (o *OpenAIAPI) Transcribe(ctx context.Context, audio []byte, mimetype strin
 	if err != nil {
 		return Result{}, fmt.Errorf("audio/openai: do: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort cleanup
+	defer func() { _ = resp.Body.Close() }()
 	elapsed := time.Since(start)
 
 	if resp.StatusCode >= 500 {

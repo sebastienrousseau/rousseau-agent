@@ -84,7 +84,7 @@ func (c *Client) FetchCard(ctx context.Context) (a2a.CapabilityCard, error) {
 	if err != nil {
 		return a2a.CapabilityCard{}, err
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return a2a.CapabilityCard{}, unexpectedStatus(resp)
 	}
@@ -122,7 +122,7 @@ func (c *Client) SubmitTask(ctx context.Context, task a2a.Task) (<-chan a2a.Task
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusAccepted {
-		defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close
+		defer func() { _ = resp.Body.Close() }()
 		return nil, unexpectedStatus(resp)
 	}
 	var ack struct {
@@ -130,10 +130,10 @@ func (c *Client) SubmitTask(ctx context.Context, task a2a.Task) (<-chan a2a.Task
 		Status string `json:"status"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&ack); err != nil {
-		_ = resp.Body.Close() //nolint:errcheck // best-effort close
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("a2a/client: decode task ack: %w", err)
 	}
-	_ = resp.Body.Close() //nolint:errcheck // best-effort close
+	_ = resp.Body.Close()
 	if ack.TaskID == "" {
 		return nil, errors.New("a2a/client: server did not return task_id")
 	}
@@ -150,7 +150,7 @@ func (c *Client) SubmitTask(ctx context.Context, task a2a.Task) (<-chan a2a.Task
 		return nil, err
 	}
 	if streamResp.StatusCode != http.StatusOK {
-		defer func() { _ = streamResp.Body.Close() }() //nolint:errcheck // best-effort close
+		defer func() { _ = streamResp.Body.Close() }()
 		return nil, unexpectedStatus(streamResp)
 	}
 
@@ -158,7 +158,7 @@ func (c *Client) SubmitTask(ctx context.Context, task a2a.Task) (<-chan a2a.Task
 	out := make(chan a2a.TaskUpdate, 16)
 	go func() {
 		defer close(out)
-		defer func() { _ = streamResp.Body.Close() }() //nolint:errcheck // best-effort close
+		defer func() { _ = streamResp.Body.Close() }()
 		scanner := bufio.NewScanner(streamResp.Body)
 		scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 		for scanner.Scan() {
@@ -201,7 +201,7 @@ func (c *Client) Cancel(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusOK {
 		return unexpectedStatus(resp)
 	}

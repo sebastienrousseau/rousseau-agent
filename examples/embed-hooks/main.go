@@ -42,7 +42,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	defer func() { _ = os.RemoveAll(tmp) }() //nolint:errcheck // example cleanup
+	defer func() { _ = os.RemoveAll(tmp) }()
 
 	allow := writeScript(tmp, "allow.sh", allowScript)
 	deny := writeScript(tmp, "deny.sh", denyScript)

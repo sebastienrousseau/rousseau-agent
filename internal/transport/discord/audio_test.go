@@ -167,7 +167,8 @@ func TestDispatch_AudioReplacesEmptyContent(t *testing.T) {
 			{URL: srv.URL + "/att.ogg", ContentType: "audio/ogg"},
 		},
 	}
-	raw, _ := json.Marshal(payload)
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
 	frame := gatewayFrame{T: "MESSAGE_CREATE", D: raw}
 	require.NoError(t, c.dispatch(context.Background(), frame, handler))
 	assert.Equal(t, "hello via voice", got)

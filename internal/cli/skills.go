@@ -99,9 +99,14 @@ func loadSkillsFromResolutionChain(opts *Options) ([]skills.Skill, error) {
 	if err != nil {
 		return nil, err
 	}
-	system, err := skills.Load(systemSkillsDir)
-	if err != nil {
-		return primary, nil // fallback failure is not fatal
+	system, sysErr := skills.Load(systemSkillsDir)
+	if sysErr != nil {
+		// System skills dir missing / unreadable is not fatal — the
+		// user's own skills are enough.
+		if opts != nil && opts.Logger != nil {
+			opts.Logger.Debug("skills.system_load_skipped", "err", sysErr.Error())
+		}
+		return primary, nil
 	}
 	if len(system) == 0 {
 		return primary, nil
