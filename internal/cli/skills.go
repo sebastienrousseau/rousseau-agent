@@ -31,7 +31,7 @@ func newSkillsListCmd(opts *Options) *cobra.Command {
 		Short: "List available skills",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			all, err := skills.Load(resolveSkillsDir(opts))
+			all, err := loadSkillsFromResolutionChain(opts)
 			if err != nil {
 				return err
 			}
@@ -55,7 +55,7 @@ func newSkillsShowCmd(opts *Options) *cobra.Command {
 		Short: "Print the full body of a skill",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			all, err := skills.Load(resolveSkillsDir(opts))
+			all, err := loadSkillsFromResolutionChain(opts)
 			if err != nil {
 				return err
 			}
@@ -70,6 +70,11 @@ func newSkillsShowCmd(opts *Options) *cobra.Command {
 	}
 }
 
+// resolveSkillsDir returns the primary skills-dir chosen from
+// config or the default user location. It is retained for callers
+// that want the "first" location; loadSkillsFromResolutionChain
+// prefers this dir AND overlays the system-wide fallback bundle
+// at /etc/rousseau/skills/.
 func resolveSkillsDir(opts *Options) string {
 	if opts.Config != nil && opts.Config.Agent.SkillsDir != "" {
 		return opts.Config.Agent.SkillsDir
@@ -79,4 +84,38 @@ func resolveSkillsDir(opts *Options) string {
 		return ""
 	}
 	return filepath.Join(home, ".local", "share", "rousseau", "skills")
+}
+
+// systemSkillsDir is the fallback location the container image
+// populates with the bundled starter skills (see skills/README.md).
+const systemSkillsDir = "/etc/rousseau/skills"
+
+// loadSkillsFromResolutionChain returns skills from the primary
+// user location first, then overlays the system bundle. User skills
+// shadow system skills with the same Name — Load deduplicates by
+// path but not by name, so we do the name-dedupe here.
+func loadSkillsFromResolutionChain(opts *Options) ([]skills.Skill, error) {
+	primary, err := skills.Load(resolveSkillsDir(opts))
+	if err != nil {
+		return nil, err
+	}
+	system, err := skills.Load(systemSkillsDir)
+	if err != nil {
+		return primary, nil // fallback failure is not fatal
+	}
+	if len(system) == 0 {
+		return primary, nil
+	}
+	seen := make(map[string]struct{}, len(primary))
+	for _, s := range primary {
+		seen[s.Name] = struct{}{}
+	}
+	out := append([]skills.Skill(nil), primary...)
+	for _, s := range system {
+		if _, dup := seen[s.Name]; dup {
+			continue // user override wins
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }

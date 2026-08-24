@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
@@ -47,6 +48,8 @@ func newChatCmd(opts *Options) *cobra.Command {
 			registry.MustRegister(builtin.NewEditTool())
 			registry.MustRegister(builtin.NewGrepTool(0, 0))
 			registry.MustRegister(builtin.NewBashTool(60 * time.Second))
+			// spawn_subagent — see daemon.go for the policy rationale.
+			registry.MustRegister(builtin.NewSpawnSubagentTool(subagent.Policy{}))
 
 			approver, err := buildApprover(cfg.Agent.Approver)
 			if err != nil {

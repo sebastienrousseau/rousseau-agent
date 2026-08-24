@@ -30,11 +30,16 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 		Messages:  msgs,
 	}
 	if req.System != "" {
-		params.System = []sdk.TextBlockParam{{Text: req.System}}
+		sys := sdk.TextBlockParam{Text: req.System}
+		if req.CacheableMessages > 0 {
+			sys.CacheControl = cacheEphemeral1h
+		}
+		params.System = []sdk.TextBlockParam{sys}
 	}
 	if len(req.Tools) > 0 {
-		params.Tools = toSDKTools(req.Tools)
+		params.Tools = toSDKTools(req.Tools, req.CacheableMessages > 0)
 	}
+	applyCacheMarkers(params.Messages, req.CacheableMessages)
 
 	stream := p.client.Messages.NewStreaming(ctx, params)
 

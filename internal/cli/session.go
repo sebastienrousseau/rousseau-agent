@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,7 +21,106 @@ func newSessionCmd(opts *Options) *cobra.Command {
 	cmd.AddCommand(newSessionSearchCmd(opts))
 	cmd.AddCommand(newSessionShowCmd(opts))
 	cmd.AddCommand(newSessionDeleteCmd(opts))
+	cmd.AddCommand(newSessionCostCmd(opts))
 	return cmd
+}
+
+// newSessionCostCmd renders the per-session cost telemetry accumulated
+// by [sqlitestore.CostRecorder] over the last `--since` window.
+func newSessionCostCmd(opts *Options) *cobra.Command {
+	var (
+		since   time.Duration
+		limit   int
+		asJSON  bool
+		summary bool
+	)
+	c := &cobra.Command{
+		Use:   "cost [session-id]",
+		Short: "Show LLM cost + token counts per session",
+		Long: "With a session-id argument, summarise cost for that one session.\n" +
+			"Without arguments, list the top-N sessions by cost over the last\n" +
+			"--since window (default 7d).",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			base, err := openSessionStore(cmd.Context(), opts)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = base.Close() }() //nolint:errcheck // best-effort cleanup
+
+			costStore, err := sqlitestore.NewSessionCostStore(cmd.Context(), base)
+			if err != nil {
+				return err
+			}
+
+			w := cmd.OutOrStdout()
+			enc := json.NewEncoder(w)
+			enc.SetIndent("", "  ")
+
+			if len(args) == 1 && !summary {
+				sum, err := costStore.SumBySession(cmd.Context(), args[0], since)
+				if err != nil {
+					return err
+				}
+				if asJSON {
+					return enc.Encode(map[string]any{
+						"session_id":            args[0],
+						"since":                 since.String(),
+						"completions":           sum.CompletionCount,
+						"input_tokens":          sum.InputTokens,
+						"output_tokens":         sum.OutputTokens,
+						"cache_read_tokens":     sum.CacheReadTokens,
+						"cache_creation_tokens": sum.CacheCreationTokens,
+						"cost_usd":              sum.CostUSD,
+					})
+				}
+				_, _ = fmt.Fprintf(w, "session: %s\n", args[0])                             //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "window:  %s\n", displayWindow(since))                 //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "count:   %d completions\n", sum.CompletionCount)      //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "input:   %d\n", sum.InputTokens)                       //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "output:  %d\n", sum.OutputTokens)                      //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "cache-r: %d\n", sum.CacheReadTokens)                   //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "cache-c: %d\n", sum.CacheCreationTokens)               //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "cost:    $%.4f\n", sum.CostUSD)                        //nolint:errcheck // CLI output
+				return nil
+			}
+
+			top, err := costStore.TopSessions(cmd.Context(), since, limit)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				return enc.Encode(map[string]any{
+					"since":    since.String(),
+					"limit":    limit,
+					"sessions": top,
+				})
+			}
+			if len(top) == 0 {
+				_, _ = fmt.Fprintln(w, "(no cost data in window)") //nolint:errcheck // CLI output
+				return nil
+			}
+			_, _ = fmt.Fprintf(w, "top %d sessions by cost (window: %s)\n", len(top), displayWindow(since)) //nolint:errcheck // CLI output
+			_, _ = fmt.Fprintf(w, "%-10s %10s %8s %8s %8s\n", "session", "cost", "in", "out", "n")            //nolint:errcheck // CLI output
+			for _, r := range top {
+				_, _ = fmt.Fprintf(w, "%-10s $%9.4f %8d %8d %8d\n", //nolint:errcheck // CLI output
+					shortID(r.SessionID), r.CostUSD, r.InputTokens, r.OutputTokens, r.CompletionCount)
+			}
+			return nil
+		},
+	}
+	c.Flags().DurationVar(&since, "since", 7*24*time.Hour, "aggregate window (0 = all history)")
+	c.Flags().IntVar(&limit, "limit", 25, "top-N sessions to list (ignored when a session id is passed)")
+	c.Flags().BoolVar(&asJSON, "json", false, "emit machine-readable JSON instead of a table")
+	c.Flags().BoolVar(&summary, "summary", false, "with a session-id arg, force the top-N view (ignore the arg)")
+	return c
+}
+
+func displayWindow(d time.Duration) string {
+	if d <= 0 {
+		return "all"
+	}
+	return d.String()
 }
 
 func newSessionListCmd(opts *Options) *cobra.Command {
