@@ -104,8 +104,8 @@ type TaskUpdate struct {
 // http(s) URL, a data: URI for small inline blobs, or an A2A-native
 // artifact:// reference (see docs/a2a.md).
 type Artifact struct {
-	URI      string `json:"uri"`
-	MimeType string `json:"mime_type,omitempty"`
-	Name     string `json:"name,omitempty"`
-	SizeBytes int64 `json:"size_bytes,omitempty"`
+	URI       string `json:"uri"`
+	MimeType  string `json:"mime_type,omitempty"`
+	Name      string `json:"name,omitempty"`
+	SizeBytes int64  `json:"size_bytes,omitempty"`
 }

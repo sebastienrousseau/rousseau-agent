@@ -126,12 +126,12 @@ type spawnOutput struct {
 }
 
 type spawnSummary struct {
-	Total       int `json:"total"`
-	Succeeded   int `json:"succeeded"`
-	Failed      int `json:"failed"`
-	TokensIn    int `json:"tokens_in"`
-	TokensOut   int `json:"tokens_out"`
-	DurationMs  int `json:"duration_ms"`
+	Total      int `json:"total"`
+	Succeeded  int `json:"succeeded"`
+	Failed     int `json:"failed"`
+	TokensIn   int `json:"tokens_in"`
+	TokensOut  int `json:"tokens_out"`
+	DurationMs int `json:"duration_ms"`
 }
 
 type spawnTaskOutcome struct {

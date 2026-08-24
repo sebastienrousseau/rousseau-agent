@@ -112,7 +112,7 @@ type Runner interface {
 // Set is the default [Runner] implementation. It holds a per-event
 // list of hooks and evaluates them in declaration order.
 type Set struct {
-	logger *slog.Logger
+	logger  *slog.Logger
 	byEvent map[Event][]Config
 }
 

@@ -67,8 +67,10 @@ func TestLinkAttachesAdditionalHandle(t *testing.T) {
 
 	require.NoError(t, r.Link(ctx, id, "slack", "U01234"))
 	// Both handles resolve to the same identity.
-	got1, _ := r.Resolve(ctx, "whatsapp", "+123")
-	got2, _ := r.Resolve(ctx, "slack", "U01234")
+	got1, err := r.Resolve(ctx, "whatsapp", "+123")
+	require.NoError(t, err)
+	got2, err := r.Resolve(ctx, "slack", "U01234")
+	require.NoError(t, err)
 	assert.Equal(t, id, got1)
 	assert.Equal(t, id, got2)
 

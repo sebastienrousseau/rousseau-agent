@@ -113,4 +113,3 @@ func closeMCPClients(clients []*mcpclient.Client, logger *slog.Logger) {
 		}
 	}
 }
-

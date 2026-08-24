@@ -17,8 +17,8 @@ import (
 // remain assignable.
 type noopTool struct{}
 
-func (*noopTool) Name() string             { return "noop" }
-func (*noopTool) Description() string      { return "does nothing" }
+func (*noopTool) Name() string                { return "noop" }
+func (*noopTool) Description() string         { return "does nothing" }
 func (*noopTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
 func (*noopTool) Execute(_ context.Context, _ json.RawMessage) (string, error) {
 	return "ok", nil

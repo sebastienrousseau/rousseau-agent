@@ -365,12 +365,12 @@ type readyPayload struct {
 }
 
 type discordMessage struct {
-	ID          string               `json:"id"`
-	ChannelID   string               `json:"channel_id"`
-	GuildID     string               `json:"guild_id,omitempty"`
-	Author      discordUser          `json:"author"`
-	Content     string               `json:"content"`
-	Attachments []discordAttachment  `json:"attachments,omitempty"`
+	ID          string              `json:"id"`
+	ChannelID   string              `json:"channel_id"`
+	GuildID     string              `json:"guild_id,omitempty"`
+	Author      discordUser         `json:"author"`
+	Content     string              `json:"content"`
+	Attachments []discordAttachment `json:"attachments,omitempty"`
 }
 
 // discordAttachment is the subset of Discord's attachment object we

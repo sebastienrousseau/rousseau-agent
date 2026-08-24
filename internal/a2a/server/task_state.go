@@ -28,10 +28,10 @@ const maxHistoryUpdates = 256
 
 // snapshot returns the most recent known state — safe to serialise.
 type snapshot struct {
-	TaskID     string          `json:"task_id"`
-	Status     a2a.TaskStatus  `json:"status"`
-	Last       a2a.TaskUpdate  `json:"last,omitempty"`
-	NumUpdates int             `json:"num_updates"`
+	TaskID     string         `json:"task_id"`
+	Status     a2a.TaskStatus `json:"status"`
+	Last       a2a.TaskUpdate `json:"last,omitempty"`
+	NumUpdates int            `json:"num_updates"`
 }
 
 func (t *taskState) snapshot() snapshot {

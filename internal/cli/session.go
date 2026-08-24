@@ -74,14 +74,14 @@ func newSessionCostCmd(opts *Options) *cobra.Command {
 						"cost_usd":              sum.CostUSD,
 					})
 				}
-				_, _ = fmt.Fprintf(w, "session: %s\n", args[0])                             //nolint:errcheck // CLI output
-				_, _ = fmt.Fprintf(w, "window:  %s\n", displayWindow(since))                 //nolint:errcheck // CLI output
-				_, _ = fmt.Fprintf(w, "count:   %d completions\n", sum.CompletionCount)      //nolint:errcheck // CLI output
-				_, _ = fmt.Fprintf(w, "input:   %d\n", sum.InputTokens)                       //nolint:errcheck // CLI output
-				_, _ = fmt.Fprintf(w, "output:  %d\n", sum.OutputTokens)                      //nolint:errcheck // CLI output
-				_, _ = fmt.Fprintf(w, "cache-r: %d\n", sum.CacheReadTokens)                   //nolint:errcheck // CLI output
-				_, _ = fmt.Fprintf(w, "cache-c: %d\n", sum.CacheCreationTokens)               //nolint:errcheck // CLI output
-				_, _ = fmt.Fprintf(w, "cost:    $%.4f\n", sum.CostUSD)                        //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "session: %s\n", args[0])                         //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "window:  %s\n", displayWindow(since))            //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "count:   %d completions\n", sum.CompletionCount) //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "input:   %d\n", sum.InputTokens)                 //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "output:  %d\n", sum.OutputTokens)                //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "cache-r: %d\n", sum.CacheReadTokens)             //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "cache-c: %d\n", sum.CacheCreationTokens)         //nolint:errcheck // CLI output
+				_, _ = fmt.Fprintf(w, "cost:    $%.4f\n", sum.CostUSD)                  //nolint:errcheck // CLI output
 				return nil
 			}
 
@@ -101,7 +101,7 @@ func newSessionCostCmd(opts *Options) *cobra.Command {
 				return nil
 			}
 			_, _ = fmt.Fprintf(w, "top %d sessions by cost (window: %s)\n", len(top), displayWindow(since)) //nolint:errcheck // CLI output
-			_, _ = fmt.Fprintf(w, "%-10s %10s %8s %8s %8s\n", "session", "cost", "in", "out", "n")            //nolint:errcheck // CLI output
+			_, _ = fmt.Fprintf(w, "%-10s %10s %8s %8s %8s\n", "session", "cost", "in", "out", "n")          //nolint:errcheck // CLI output
 			for _, r := range top {
 				_, _ = fmt.Fprintf(w, "%-10s $%9.4f %8d %8d %8d\n", //nolint:errcheck // CLI output
 					shortID(r.SessionID), r.CostUSD, r.InputTokens, r.OutputTokens, r.CompletionCount)

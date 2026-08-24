@@ -27,12 +27,12 @@
 //
 //   - None:        trust the agent implicitly. Zero isolation.
 //   - nsjail:      protect the host from accidental writes; not
-//                  proof against a kernel exploit chain.
+//     proof against a kernel exploit chain.
 //   - gvisor:      protect against kernel-exploit-carrying commands
-//                  at the cost of syscall overhead. Modal/Northflank
-//                  tier.
+//     at the cost of syscall overhead. Modal/Northflank
+//     tier.
 //   - firecracker: microVM per invocation. Cold-start ~200ms,
-//                  strongest isolation short of a dedicated machine.
+//     strongest isolation short of a dedicated machine.
 package sandbox
 
 import (

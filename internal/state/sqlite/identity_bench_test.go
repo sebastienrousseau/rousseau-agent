@@ -27,7 +27,7 @@ func BenchmarkResolve_HitHot(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = r.Resolve(ctx, "whatsapp", "+123")
+		_, _ = r.Resolve(ctx, "whatsapp", "+123") //nolint:errcheck // bench measures resolve cost
 	}
 }
 
@@ -47,6 +47,6 @@ func BenchmarkResolve_Miss(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = r.Resolve(ctx, "whatsapp", "+never-linked")
+		_, _ = r.Resolve(ctx, "whatsapp", "+never-linked") //nolint:errcheck // bench measures resolve cost
 	}
 }

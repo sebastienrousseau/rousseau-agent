@@ -103,9 +103,9 @@ func (w *WhisperCPP) Transcribe(ctx context.Context, audio []byte, mimetype stri
 	args := []string{
 		"-m", w.ModelFile,
 		"-f", tmp.Name(),
-		"-otxt",     // text output only (no timestamps)
-		"-nt",       // no timestamps in output
-		"-np",       // no progress output
+		"-otxt", // text output only (no timestamps)
+		"-nt",   // no timestamps in output
+		"-np",   // no progress output
 	}
 	if w.Language != "" {
 		args = append(args, "-l", w.Language)
@@ -119,7 +119,7 @@ func (w *WhisperCPP) Transcribe(ctx context.Context, audio []byte, mimetype stri
 
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		return Result{}, fmt.Errorf("audio/whisper-cpp: %v: %s", err, strings.TrimSpace(stderr.String()))
+		return Result{}, fmt.Errorf("audio/whisper-cpp: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	elapsed := time.Since(start)
 

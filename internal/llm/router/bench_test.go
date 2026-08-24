@@ -31,7 +31,7 @@ func BenchmarkComplete_ShortMessageMatch(b *testing.B) {
 	}
 	req := agent.Request{
 		Messages: []agent.Message{{
-			Role: agent.RoleUser,
+			Role:    agent.RoleUser,
 			Content: []agent.Content{{Kind: agent.ContentText, Text: "hi"}},
 		}},
 	}

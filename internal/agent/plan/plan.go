@@ -151,11 +151,11 @@ func New(opts Options) (*Executor, error) {
 // Result is what Run returns once the plan finishes (or the first
 // non-nil error / rejection).
 type Result struct {
-	Plan            Plan
-	CompletedSteps  int
-	LastOutput      string
-	Rejected        bool
-	RejectedAtStep  int
+	Plan           Plan
+	CompletedSteps int
+	LastOutput     string
+	Rejected       bool
+	RejectedAtStep int
 }
 
 // ErrRejected is returned when an approval gate rejects a step. Sits

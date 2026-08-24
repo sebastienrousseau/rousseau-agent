@@ -78,9 +78,9 @@ var DefaultTable = Table{
 	},
 
 	// -- OpenAI (Aug 2026 pricing page) --
-	"gpt-5":       {InputPerMTok: 5.00, OutputPerMTok: 20.00},
-	"gpt-5-mini":  {InputPerMTok: 0.50, OutputPerMTok: 2.00},
-	"gpt-5-nano":  {InputPerMTok: 0.10, OutputPerMTok: 0.40},
+	"gpt-5":      {InputPerMTok: 5.00, OutputPerMTok: 20.00},
+	"gpt-5-mini": {InputPerMTok: 0.50, OutputPerMTok: 2.00},
+	"gpt-5-nano": {InputPerMTok: 0.10, OutputPerMTok: 0.40},
 
 	// -- Google Vertex (Aug 2026) --
 	"gemini-2.5-pro":   {InputPerMTok: 3.50, OutputPerMTok: 10.50},

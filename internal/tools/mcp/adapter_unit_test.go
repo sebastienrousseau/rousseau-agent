@@ -87,7 +87,8 @@ func TestRenderContent_EmptyReturnsEmpty(t *testing.T) {
 }
 
 // -- Execute error paths, using an in-process fake client that
-//    lets us drive tools/call responses without a subprocess.
+//
+//	lets us drive tools/call responses without a subprocess.
 type fakeCaller struct {
 	result mcpwire.ToolsCallResult
 	err    error
@@ -108,7 +109,7 @@ func TestAdapter_ExecuteWithNilClientPanics(t *testing.T) {
 			t.Error("expected panic from nil-client Adapter.Execute")
 		}
 	}()
-	_, _ = a.Execute(context.Background(), json.RawMessage(`{}`))
+	_, _ = a.Execute(context.Background(), json.RawMessage(`{}`)) //nolint:errcheck // expects panic before return
 }
 
 // Guard against accidental import loops — this test only uses types

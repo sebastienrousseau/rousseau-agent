@@ -169,7 +169,7 @@ func (v *SSHKeygenVerifier) Verify(ctx context.Context, path string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%w: ssh-keygen: %v: %s", ErrBadSignature, err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("%w: ssh-keygen: %w: %s", ErrBadSignature, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }

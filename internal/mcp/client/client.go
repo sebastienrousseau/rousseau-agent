@@ -464,9 +464,9 @@ func splitEnv(kv string) (key, value string, ok bool) {
 // a subprocess's tail-of-stderr in error reports without letting the
 // subprocess accumulate unbounded memory.
 type boundedBuffer struct {
-	mu   sync.Mutex
-	buf  []byte
-	max  int
+	mu  sync.Mutex
+	buf []byte
+	max int
 }
 
 func newBoundedBuffer(max int) *boundedBuffer {

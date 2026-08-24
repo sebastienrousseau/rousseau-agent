@@ -19,11 +19,11 @@ import (
 // fakeTranscriber records the (audio, mimetype) it was called with
 // so the test can assert both.
 type fakeTranscriber struct {
-	got        []byte
-	mimetype   string
-	reply      string
-	err        error
-	called     int
+	got      []byte
+	mimetype string
+	reply    string
+	err      error
+	called   int
 }
 
 func (f *fakeTranscriber) Transcribe(_ context.Context, audio []byte, mimetype string) (string, error) {
@@ -44,8 +44,8 @@ func telegramTestServer(t *testing.T, filePath string, body []byte) *httptest.Se
 		if strings.HasSuffix(r.URL.Path, "/getFile") {
 			w.Header().Set("Content-Type", "application/json")
 			resp := map[string]any{"result": map[string]any{"file_path": filePath}}
-			blob, _ := json.Marshal(resp)
-			_, _ = w.Write(blob) //nolint:errcheck // test writer
+			blob, _ := json.Marshal(resp) //nolint:errcheck // static test payload
+			_, _ = w.Write(blob)          //nolint:errcheck // test writer
 			return
 		}
 		if strings.Contains(r.URL.Path, "/file/bot") && strings.HasSuffix(r.URL.Path, "/"+filePath) {
@@ -168,12 +168,12 @@ func TestTranscribeAudio_DefaultsToOggMimeWhenUnset(t *testing.T) {
 	// explicitly clearing it — httptest otherwise sniffs the body.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/getFile") {
-			blob, _ := json.Marshal(map[string]any{"result": map[string]any{"file_path": "voice/z.oga"}})
-			_, _ = w.Write(blob) //nolint:errcheck // test writer
+			blob, _ := json.Marshal(map[string]any{"result": map[string]any{"file_path": "voice/z.oga"}}) //nolint:errcheck // static test payload
+			_, _ = w.Write(blob)                                                                          //nolint:errcheck // test writer
 			return
 		}
 		w.Header()["Content-Type"] = nil // explicit: emit no CT header
-		_, _ = w.Write([]byte("data")) //nolint:errcheck // test writer
+		_, _ = w.Write([]byte("data"))   //nolint:errcheck // test writer
 	}))
 	defer srv.Close()
 
@@ -214,8 +214,8 @@ func TestDownloadFile_UsesFileEndpoint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.URL.Path)
 		if strings.HasSuffix(r.URL.Path, "/getFile") {
-			blob, _ := json.Marshal(map[string]any{"result": map[string]any{"file_path": "documents/x.bin"}})
-			_, _ = w.Write(blob) //nolint:errcheck // test writer
+			blob, _ := json.Marshal(map[string]any{"result": map[string]any{"file_path": "documents/x.bin"}}) //nolint:errcheck // static test payload
+			_, _ = w.Write(blob)                                                                              //nolint:errcheck // test writer
 			return
 		}
 		_, _ = w.Write([]byte("body")) //nolint:errcheck // test writer
