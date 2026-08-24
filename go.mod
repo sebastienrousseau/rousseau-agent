@@ -5,7 +5,7 @@ go 1.26
 toolchain go1.26.6
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.63.1
+	github.com/anthropics/anthropic-sdk-go v1.66.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.37
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.57.4
 	github.com/charmbracelet/bubbles v1.0.0
