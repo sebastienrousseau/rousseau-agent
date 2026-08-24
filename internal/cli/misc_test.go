@@ -40,8 +40,8 @@ func TestCloseMCPClients_NilAndEmptyAreNoOps(t *testing.T) {
 func TestBuildTranscriber_NilWhenAudioDisabled(t *testing.T) {
 	opts := &Options{
 		Config: &config.Config{
-			Media:    config.MediaConfig{Audio: config.MediaAudioConfig{}},   // Backend=""
-			WhatsApp: config.WhatsAppConfig{Voice: config.VoiceConfig{}},     // Enabled=false
+			Media:    config.MediaConfig{Audio: config.MediaAudioConfig{}}, // Backend=""
+			WhatsApp: config.WhatsAppConfig{Voice: config.VoiceConfig{}},   // Enabled=false
 		},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}

@@ -39,7 +39,7 @@ func TestCleanup_ReturnsSessionsCloseErrorOnDoubleClose(t *testing.T) {
 	// (typically nil since Close is idempotent — the important thing
 	// is that Cleanup doesn't panic on repeated calls).
 	require.NoError(t, wiring.Cleanup())
-	_ = wiring.Cleanup() // second call must not crash
+	_ = wiring.Cleanup() //nolint:errcheck // asserts no panic on repeated shutdown
 }
 
 func TestTransportHandler_WithoutRateLimiterAppliesRecoverOnly(t *testing.T) {
@@ -48,7 +48,7 @@ func TestTransportHandler_WithoutRateLimiterAppliesRecoverOnly(t *testing.T) {
 	opts.Config.Anthropic = config.AnthropicConfig{APIKey: "sk-test", Model: "claude"}
 	wiring, err := assembleDaemon(context.Background(), opts, nil)
 	require.NoError(t, err)
-	defer func() { _ = wiring.Cleanup() }()
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup
 
 	h := wiring.TransportHandler("whatsapp", silentLogger())
 	require.NotNil(t, h)
@@ -69,7 +69,7 @@ func TestTransportHandler_WithRateLimiterAppliesFullChain(t *testing.T) {
 	}
 	wiring, err := assembleDaemon(context.Background(), opts, nil)
 	require.NoError(t, err)
-	defer func() { _ = wiring.Cleanup() }()
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup
 
 	h := wiring.TransportHandler("whatsapp", silentLogger())
 	assert.NotNil(t, h)
