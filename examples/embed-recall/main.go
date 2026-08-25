@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -18,20 +19,28 @@ import (
 	sqlitestate "github.com/sebastienrousseau/rousseau-agent/pkg/state/sqlite"
 )
 
-func main() {
-	ctx := context.Background()
+func main() { os.Exit(run(context.Background(), os.Stdout, os.Stderr)) }
 
+// run executes the demo and returns the process exit code. main does
+// nothing but call os.Exit so that tests can drive run directly.
+func run(ctx context.Context, out, errOut io.Writer) int {
+	if err := demo(ctx, out); err != nil {
+		fmt.Fprintln(errOut, "embed-recall:", err)
+		return 1
+	}
+	return 0
+}
+
+func demo(ctx context.Context, out io.Writer) error {
 	store, err := sqlitestate.Open(ctx, ":memory:")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "open: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("open: %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
 	inner, err := sqlitestate.NewRecallVectors(ctx, store)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "recall_vectors: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("recall_vectors: %w", err)
 	}
 
 	// Real deployments substitute VoyageEmbedder / OpenAIEmbedder;
@@ -50,8 +59,11 @@ func main() {
 		{4, "matrix homeserver URL + access token wire into the room stream"},
 	}
 	for _, row := range corpus {
-		vecs, _ := embedder.Embed(ctx, []string{row.msg})
-		_ = rstore.Put(ctx, recall.Row{
+		vecs, err := embedder.Embed(ctx, []string{row.msg})
+		if err != nil {
+			return fmt.Errorf("embed %d: %w", row.id, err)
+		}
+		if err := rstore.Put(ctx, recall.Row{
 			SessionID:  "s1",
 			MessageID:  row.id,
 			ChunkIndex: 0,
@@ -60,17 +72,19 @@ func main() {
 			Embedding:  vecs[0],
 			CreatedAt:  time.Now().UTC(),
 			Embedder:   embedder.Name(),
-		})
+		}); err != nil {
+			return fmt.Errorf("put %d: %w", row.id, err)
+		}
 	}
 
 	// Hybrid retrieve — 70% vector, 30% keyword, top-2.
 	retriever := recall.NewRetriever(rstore, embedder, recall.SimpleKeywordScorer, 0.7)
 	hits, err := retriever.Recall(ctx, "how do I pair signal", 2)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "recall: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("recall: %w", err)
 	}
 	for _, h := range hits {
-		fmt.Printf("[%.3f] %s\n", h.Score, h.Text)
+		fmt.Fprintf(out, "[%.3f] %s\n", h.Score, h.Text)
 	}
+	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -36,11 +37,22 @@ else
 fi
 `
 
-func main() {
+func main() { os.Exit(run(context.Background(), os.Stdout, os.Stderr)) }
+
+// run executes the demo and returns the process exit code. main does
+// nothing but call os.Exit so that tests can drive run directly.
+func run(ctx context.Context, out, errOut io.Writer) int {
+	if err := demo(ctx, out); err != nil {
+		fmt.Fprintln(errOut, "embed-hooks:", err)
+		return 1
+	}
+	return 0
+}
+
+func demo(ctx context.Context, out io.Writer) error {
 	tmp, err := os.MkdirTemp("", "rousseau-hooks-example-")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return fmt.Errorf("temp dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 
@@ -52,14 +64,15 @@ func main() {
 			{Name: "audit-only", Command: allow},
 			{Name: "no-rm-rf", Command: deny},
 		},
-	}, slog.New(slog.NewTextHandler(os.Stdout, nil)))
+	}, slog.New(slog.NewTextHandler(out, nil)))
 
 	// Two tool calls: one benign, one destructive.
 	for _, cmd := range []string{"ls -la", "rm -rf /tmp/example"} {
 		payload, _ := hooks.MarshalPreToolUse("s1", "bash", json.RawMessage(`{"command":"`+cmd+`"}`))
-		v, _ := set.Run(context.Background(), hooks.EventPreToolUse, payload)
-		fmt.Printf("bash %-25s → %-6s reason=%q\n", cmd, v.Decision, v.Reason)
+		v, _ := set.Run(ctx, hooks.EventPreToolUse, payload)
+		fmt.Fprintf(out, "bash %-25s → %-6s reason=%q\n", cmd, v.Decision, v.Reason)
 	}
+	return nil
 }
 
 func writeScript(dir, name, body string) string {
