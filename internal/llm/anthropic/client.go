@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -72,14 +73,15 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 	if req.System != "" {
 		sys := sdk.TextBlockParam{Text: req.System}
 		if req.CacheableMessages > 0 {
-			// The system prompt survives every turn — always cache it
-			// when the caller is opting into caching at all.
-			sys.CacheControl = sdk.NewCacheControlEphemeralParam()
+			// System prompt is stable across every turn of the daemon's
+			// lifetime — 1-hour TTL amortises the cache-creation cost
+			// over many completions.
+			sys.CacheControl = cacheEphemeral1h
 		}
 		params.System = []sdk.TextBlockParam{sys}
 	}
 	if len(req.Tools) > 0 {
-		params.Tools = toSDKTools(req.Tools)
+		params.Tools = toSDKTools(req.Tools, req.CacheableMessages > 0)
 	}
 
 	resp, err := p.client.Messages.New(ctx, params)
@@ -92,13 +94,32 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 		return agent.Response{}, err
 	}
 
+	usage := agent.Usage{
+		InputTokens:              int(resp.Usage.InputTokens),
+		OutputTokens:             int(resp.Usage.OutputTokens),
+		CacheCreationInputTokens: int(resp.Usage.CacheCreationInputTokens),
+		CacheReadInputTokens:     int(resp.Usage.CacheReadInputTokens),
+	}
+	// Per-TTL cache-creation breakdown (only populated when the API
+	// returned a CacheCreation subobject — old models / prompts w/o
+	// caching leave it zero, so we conditionally read).
+	usage.CacheCreationEphemeral1h = int(resp.Usage.CacheCreation.Ephemeral1hInputTokens)
+	usage.CacheCreationEphemeral5m = int(resp.Usage.CacheCreation.Ephemeral5mInputTokens)
+
+	// Emit prompt-cache telemetry so operators can chart hit ratio
+	// per model. No-op when nothing was cached (all values zero).
+	observability.ObservePromptCache(p.Name(), p.cfg.Model,
+		usage.CacheReadInputTokens,
+		usage.CacheCreationInputTokens,
+		usage.CacheCreationEphemeral1h,
+		usage.CacheCreationEphemeral5m,
+	)
+
 	return agent.Response{
 		Message:    assistant,
 		StopReason: mapStopReason(string(resp.StopReason)),
-		Usage: agent.Usage{
-			InputTokens:  int(resp.Usage.InputTokens),
-			OutputTokens: int(resp.Usage.OutputTokens),
-		},
+		Usage:      usage,
+		Model:      p.cfg.Model,
 	}, nil
 }
 
@@ -152,18 +173,26 @@ func toSDKContent(in []agent.Content) ([]sdk.ContentBlockParamUnion, error) {
 	return out, nil
 }
 
-func toSDKTools(in []tools.Definition) []sdk.ToolUnionParam {
+// toSDKTools converts the internal tool definitions to the SDK's
+// wire shape. When cacheTools is true, the LAST tool in the list
+// gets a 1-hour-TTL cache_control breakpoint — the API caches the
+// prefix up to and including that block, which effectively means the
+// whole tools array (and everything before it: the system prompt).
+// Tools rarely change turn-to-turn so a long TTL amortises well.
+func toSDKTools(in []tools.Definition, cacheTools bool) []sdk.ToolUnionParam {
 	out := make([]sdk.ToolUnionParam, 0, len(in))
-	for _, t := range in {
-		out = append(out, sdk.ToolUnionParam{
-			OfTool: &sdk.ToolParam{
-				Name:        t.Name,
-				Description: sdk.String(t.Description),
-				InputSchema: sdk.ToolInputSchemaParam{
-					Properties: t.InputSchema["properties"],
-				},
+	for i, t := range in {
+		toolParam := &sdk.ToolParam{
+			Name:        t.Name,
+			Description: sdk.String(t.Description),
+			InputSchema: sdk.ToolInputSchemaParam{
+				Properties: t.InputSchema["properties"],
 			},
-		})
+		}
+		if cacheTools && i == len(in)-1 {
+			toolParam.CacheControl = cacheEphemeral1h
+		}
+		out = append(out, sdk.ToolUnionParam{OfTool: toolParam})
 	}
 	return out
 }

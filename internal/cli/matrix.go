@@ -47,11 +47,23 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
 
+			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
+			if tErr != nil {
+				opts.Logger.Warn("media.audio.build_failed",
+					"backend", opts.Config.Media.Audio.Backend,
+					"err", tErr.Error())
+			}
+			var mxTranscriber matrix.Transcriber
+			if transcriber != nil {
+				mxTranscriber = transcriber
+			}
+
 			client, err := matrix.New(matrix.Config{
 				HomeserverURL: hs,
 				AccessToken:   tok,
 				UserID:        uid,
 				ReplyHeader:   cfg.Matrix.ReplyHeader,
+				Transcriber:   mxTranscriber,
 			}, opts.Logger)
 			if err != nil {
 				return err

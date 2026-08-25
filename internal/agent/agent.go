@@ -2,12 +2,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/hooks"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
+	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -34,6 +37,35 @@ type Options struct {
 	// RecallProvider is asked for a system-prompt appendix drawn from
 	// prior sessions. Nil disables the feature.
 	RecallProvider RecallProvider
+	// CostRecorder receives one entry per successful provider.Complete
+	// call so cost can be aggregated per session and reported via
+	// `rousseau session cost`. Nil disables cost telemetry entirely.
+	CostRecorder CostRecorder
+	// Hooks is the lifecycle-hook runner. When non-nil the agent
+	// loop consults it at pre_tool_use before each tool call.
+	// A Deny verdict blocks the tool and surfaces the reason to the
+	// model as a synthetic tool-result error. Nil disables hooks
+	// entirely.
+	Hooks hooks.Runner
+}
+
+// CostRecorder is the seam the agent loop uses to persist per-call
+// cost telemetry. Implementations must be safe for concurrent use.
+// Errors returned from Record are logged at Warn but never abort the
+// agent loop — cost telemetry is best-effort observability, not a
+// correctness dependency.
+type CostRecorder interface {
+	Record(ctx context.Context, r CostEvent) error
+}
+
+// CostEvent is what the agent loop hands to a CostRecorder after
+// every completion. Provider + Model may be empty for older provider
+// implementations that don't populate them.
+type CostEvent struct {
+	SessionID string
+	Provider  string
+	Model     string
+	Usage     Usage
 }
 
 // SkillsProvider returns text spliced into the system prompt for a
@@ -114,6 +146,22 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 			return Message{}, fmt.Errorf("provider: %w", err)
 		}
 
+		// Record cost telemetry — best effort. Nil recorder disables.
+		if a.opts.CostRecorder != nil {
+			evt := CostEvent{
+				SessionID: s.ID,
+				Provider:  a.provider.Name(),
+				Model:     resp.Model,
+				Usage:     resp.Usage,
+			}
+			if rerr := a.opts.CostRecorder.Record(ctx, evt); rerr != nil {
+				a.logger.Warn("agent.cost_record_failed",
+					slog.String("session_id", s.ID),
+					slog.String("err", rerr.Error()),
+				)
+			}
+		}
+
 		s.Append(resp.Message)
 
 		if resp.StopReason == StopEndTurn {
@@ -124,7 +172,15 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 			return resp.Message, nil
 		}
 
-		results, err := a.runTools(ctx, resp.Message, s.ID)
+		// Inject per-turn state that stateful tools (e.g. spawn_subagent)
+		// may need. Stateless tools ignore these values.
+		toolCtx := toolcontext.WithLogger(
+			toolcontext.WithProvider(
+				toolcontext.WithSession(ctx, s),
+				a.provider),
+			a.logger)
+
+		results, err := a.runTools(toolCtx, resp.Message, s.ID)
 		if err != nil {
 			return Message{}, err
 		}
@@ -193,6 +249,45 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 				IsError:   true,
 			}})
 			continue
+		}
+		// PreToolUse hook — fires AFTER the Approver so operators can
+		// layer policy-as-code on top of the pattern-based allow list.
+		if a.opts.Hooks != nil {
+			payload, mErr := hooks.MarshalPreToolUse(sessionID, use.Name, use.Input)
+			if mErr != nil {
+				// Should be impossible for well-formed input, but fail
+				// open (log) rather than block the whole loop.
+				a.logger.Warn("hook.marshal_failed", slog.String("event", string(hooks.EventPreToolUse)), slog.String("err", mErr.Error()))
+			} else {
+				verdict, hErr := a.opts.Hooks.Run(ctx, hooks.EventPreToolUse, payload)
+				if hErr != nil {
+					a.logger.Warn("hook.run_failed", slog.String("event", string(hooks.EventPreToolUse)), slog.String("err", hErr.Error()))
+				}
+				if verdict.Decision == hooks.DecisionDeny {
+					observability.ToolCalls.WithLabelValues(use.Name, "hook_deny").Inc()
+					reason := verdict.Reason
+					if reason == "" {
+						reason = "denied by hook"
+					}
+					a.logger.Warn("tool.hook_denied", slog.String("name", use.Name), slog.String("reason", reason))
+					results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
+						ToolUseID: use.ID,
+						Output:    "tool call blocked by hook: " + reason,
+						IsError:   true,
+					}})
+					continue
+				}
+				if verdict.Decision == hooks.DecisionModify && len(verdict.Modified) > 0 {
+					// A hook that wants to rewrite the input surfaces
+					// the new input on `modified`; validate it parses
+					// as JSON, otherwise leave the original untouched.
+					var probe map[string]any
+					if json.Unmarshal(verdict.Modified, &probe) == nil {
+						use.Input = verdict.Modified
+						a.logger.Info("tool.hook_modified", slog.String("name", use.Name))
+					}
+				}
+			}
 		}
 		observability.ToolCalls.WithLabelValues(use.Name, "allow").Inc()
 

@@ -144,6 +144,16 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 		// Cold-start miss: claude has state from a previous rousseau run.
 		p.rememberSession(req.SessionID)
 		resp, err = p.invoke(ctx, "--resume", req, prompt, imagePaths)
+	} else if err != nil && sessionFlag == "--resume" && strings.Contains(err.Error(), "No conversation found") {
+		// Symmetric miss: our SessionCache says we've seen this ID before,
+		// but claude's on-disk store (~/.claude/projects/<slug>/…) no
+		// longer has it. Happens when claude state is reset independently
+		// of the rousseau state.db — e.g. when an operator swaps the
+		// container's ~/.claude bind-mount for a fresh dir to cut cold-
+		// start latency, or when claude's projects/ is manually cleared.
+		// Retry with --session-id (same UUID, creates fresh) so the two
+		// stores re-converge without a manual cache clear.
+		resp, err = p.invoke(ctx, "--session-id", req, prompt, imagePaths)
 	}
 	if err != nil {
 		return agent.Response{}, err
@@ -202,14 +212,17 @@ type cliResult struct {
 }
 
 func parseResult(raw []byte) (agent.Response, error) {
-	// `claude -p` sometimes emits a leading log line before the JSON.
-	// Locate the first '{' and parse from there.
+	// `claude -p` may emit banner lines before AND after the JSON
+	// object (e.g. "Claude configuration file not found…" on a
+	// mis-configured install). Locate the first '{' and use a
+	// json.Decoder so trailing non-JSON content is tolerated.
 	i := bytes.IndexByte(raw, '{')
 	if i < 0 {
 		return agent.Response{}, fmt.Errorf("claudecli: no JSON in output: %s", truncate(string(raw), 200))
 	}
 	var res cliResult
-	if err := json.Unmarshal(raw[i:], &res); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw[i:]))
+	if err := dec.Decode(&res); err != nil {
 		return agent.Response{}, fmt.Errorf("claudecli: parse JSON: %w", err)
 	}
 	if res.IsError {

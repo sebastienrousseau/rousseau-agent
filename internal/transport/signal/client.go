@@ -25,6 +25,19 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
+// Transcriber turns an audio blob (voice note / audio attachment) into
+// text. Wired from media.audio.backend via the CLI. Nil disables audio
+// handling.
+//
+// TODO(v0.0.3): route signal-cli's `dataMessage.attachments[]` items
+// with `contentType` starting "audio/" through this. Attachment bodies
+// are downloaded by signal-cli to its
+// `~/.local/share/signal-cli/attachments/` cache and referenced by
+// numeric ID — the runtime just needs to read the cached file.
+type Transcriber interface {
+	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
+}
+
 // Config configures the Signal transport.
 type Config struct {
 	// Binary is the signal-cli executable to invoke. Empty defaults to
@@ -39,6 +52,9 @@ type Config struct {
 	// ReplyHeader is prepended to every outbound reply. Empty leaves
 	// the message body unmodified.
 	ReplyHeader string
+	// Transcriber, when non-nil, will be invoked for audio attachments
+	// once per-transport routing lands (see Transcriber godoc TODO).
+	Transcriber Transcriber
 }
 
 // Client is a transport.Transport backed by signal-cli.

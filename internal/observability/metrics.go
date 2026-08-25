@@ -135,6 +135,31 @@ var (
 		Name: "rousseau_subagent_spawned_total",
 		Help: "Sub-agent Task invocations dispatched by Spawn, by provider.",
 	}, []string{"provider"})
+
+	// RouterDecisions counts routing decisions made by the
+	// [router.Router] provider: which rule matched, which key was
+	// selected, and which underlying provider executed. The default
+	// fallback is reported with rule="default".
+	RouterDecisions = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "rousseau_router_decisions_total",
+		Help: "Multi-model routing decisions, by matched rule name, chosen provider key, and underlying provider identifier.",
+	}, []string{"rule", "chosen_key", "chosen_provider"})
+
+	// PromptCacheTokens accumulates prompt-cache input tokens across
+	// completions, split by type (read=hit, creation=miss) and by TTL
+	// bucket (5m / 1h / unspecified). Operators can derive the cache
+	// hit ratio as
+	//
+	//     rate(rousseau_prompt_cache_tokens_total{type="read"}[5m])
+	//   / rate(rousseau_prompt_cache_tokens_total[5m])
+	//
+	// A hit ratio > 0.7 on a steady-state daemon means the system-
+	// prompt cache breakpoint is set correctly and the cache is
+	// paying for itself.
+	PromptCacheTokens = factory.NewCounterVec(prometheus.CounterOpts{
+		Name: "rousseau_prompt_cache_tokens_total",
+		Help: "Prompt-cache input tokens, by type (read=hit, creation=miss) and TTL bucket (5m|1h|unspecified).",
+	}, []string{"provider", "model", "type", "ttl"})
 )
 
 func init() {
@@ -149,6 +174,35 @@ func init() {
 // begin the call.
 func ObserveProviderLatency(provider, operation string, start time.Time) {
 	ProviderLatency.WithLabelValues(provider, operation).Observe(time.Since(start).Seconds())
+}
+
+// ObservePromptCache emits [PromptCacheTokens] samples for one
+// completion's usage counters. Provider adapters call this immediately
+// after they successfully build an [agent.Response].
+//
+// The cache-creation number is split between the 1h and 5m TTL buckets
+// when the provider populated the per-TTL fields; the residual (any
+// creation tokens not attributed to either bucket) goes into the
+// "unspecified" ttl label so no tokens are silently dropped.
+func ObservePromptCache(provider, model string,
+	read int, creation int,
+	creation1h int, creation5m int,
+) {
+	if read > 0 {
+		PromptCacheTokens.WithLabelValues(provider, model, "read", "unspecified").Add(float64(read))
+	}
+	if creation1h > 0 {
+		PromptCacheTokens.WithLabelValues(provider, model, "creation", "1h").Add(float64(creation1h))
+	}
+	if creation5m > 0 {
+		PromptCacheTokens.WithLabelValues(provider, model, "creation", "5m").Add(float64(creation5m))
+	}
+	// Residual: creation tokens the provider didn't attribute to
+	// either TTL bucket. Zero on Anthropic when the response includes
+	// a CacheCreation subobject; non-zero for older payloads.
+	if residual := creation - creation1h - creation5m; residual > 0 {
+		PromptCacheTokens.WithLabelValues(provider, model, "creation", "unspecified").Add(float64(residual))
+	}
 }
 
 // StartMetricsServer runs an HTTP server exposing the metrics on

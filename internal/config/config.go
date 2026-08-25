@@ -44,6 +44,168 @@ type Config struct {
 	Resilience    ResilienceConfig    `mapstructure:"resilience"`
 	Recall        RecallConfig        `mapstructure:"recall"`
 	Integrations  IntegrationsConfig  `mapstructure:"integrations"`
+	MCP           MCPConfig           `mapstructure:"mcp"`
+	Router        RouterConfig        `mapstructure:"router"`
+	Hooks         HooksConfig         `mapstructure:"hooks"`
+	Media         MediaConfig         `mapstructure:"media"`
+}
+
+// MediaConfig configures inbound media handling. Today only
+// [MediaAudio] is populated; future work will add image / video.
+type MediaConfig struct {
+	Audio MediaAudioConfig `mapstructure:"audio"`
+}
+
+// MediaAudioConfig configures voice-note transcription. Absent /
+// empty leaves transcription disabled — inbound audio messages are
+// then ignored by every transport (matches the "no transcriber
+// configured" branch each transport's Dispatch already has).
+//
+// Backend picks the implementation:
+//   - `whisper-cpp` — shells out to a local whisper.cpp binary. Best
+//     for compliance-constrained deployments; requires ModelFile to
+//     be a readable ggml-*.bin.
+//   - `openai-api` — calls OpenAI's /v1/audio/transcriptions.
+//     Requires APIKey. Highest quality on accented/noisy audio.
+type MediaAudioConfig struct {
+	Backend        string `mapstructure:"backend"` // whisper-cpp | openai-api | ""
+	ModelFile      string `mapstructure:"model_file"`
+	Binary         string `mapstructure:"binary"`
+	APIKey         string `mapstructure:"api_key"`
+	BaseURL        string `mapstructure:"base_url"`
+	Model          string `mapstructure:"model"`
+	Language       string `mapstructure:"language"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
+	MaxBytes       int    `mapstructure:"max_bytes"`
+}
+
+// HooksConfig configures lifecycle-hook scripts. Each event name maps
+// to an ordered list of hook specs; hooks fire in declaration order
+// and the first Deny verdict wins. See [internal/agent/hooks] for
+// the payload/verdict JSON shapes.
+//
+// Example:
+//
+//	hooks:
+//	  pre_tool_use:
+//	    - name: no-secrets
+//	      command: /etc/rousseau/hooks/no-secrets.sh
+//	      timeout_seconds: 5
+type HooksConfig struct {
+	PreToolUse  []HookConfig `mapstructure:"pre_tool_use"`
+	PostToolUse []HookConfig `mapstructure:"post_tool_use"`
+	PreTurn     []HookConfig `mapstructure:"pre_turn"`
+	PostTurn    []HookConfig `mapstructure:"post_turn"`
+	OnError     []HookConfig `mapstructure:"on_error"`
+}
+
+// HookConfig is one hook attached to one event.
+type HookConfig struct {
+	Name           string            `mapstructure:"name"`
+	Command        string            `mapstructure:"command"`
+	Args           []string          `mapstructure:"args"`
+	Env            map[string]string `mapstructure:"env"`
+	TimeoutSeconds int               `mapstructure:"timeout_seconds"`
+}
+
+// RouterConfig configures the multi-model routing provider (Provider =
+// "router"). Named children under Providers are themselves any of the
+// supported provider kinds; Rules pick a child per request. See
+// [internal/llm/router] for evaluation semantics.
+//
+// Example:
+//
+//	provider: router
+//	router:
+//	  default: sonnet
+//	  rules:
+//	    - if:  { message_len_max: 200, tool_use_count_max: 0 }
+//	      use: haiku
+//	    - if:  { tool_use_count_min: 3 }
+//	      use: opus
+//	  providers:
+//	    haiku:  { kind: anthropic, api_key: ${ANTHROPIC_API_KEY}, model: claude-haiku-4-5 }
+//	    sonnet: { kind: anthropic, api_key: ${ANTHROPIC_API_KEY}, model: claude-sonnet-4-6 }
+//	    opus:   { kind: anthropic, api_key: ${ANTHROPIC_API_KEY}, model: claude-opus-4-6 }
+type RouterConfig struct {
+	// Default names the provider key used when no rule matches.
+	Default string `mapstructure:"default"`
+	// Rules is the ordered list of routing decisions (first match wins).
+	Rules []RouterRuleConfig `mapstructure:"rules"`
+	// Providers maps a key (referenced by Rules.Use and Default) to
+	// its concrete child-provider config.
+	Providers map[string]RouterChildConfig `mapstructure:"providers"`
+}
+
+// RouterRuleConfig is one routing rule. Empty match fields disable the
+// corresponding filter; all set filters are AND'd.
+type RouterRuleConfig struct {
+	Name            string `mapstructure:"name"`
+	MessageLenMax   int    `mapstructure:"message_len_max"`
+	MessageLenMin   int    `mapstructure:"message_len_min"`
+	ToolUseCountMax int    `mapstructure:"tool_use_count_max"`
+	ToolUseCountMin int    `mapstructure:"tool_use_count_min"`
+	SessionIDPrefix string `mapstructure:"session_id_prefix"`
+	Use             string `mapstructure:"use"`
+}
+
+// RouterChildConfig configures one child provider under
+// router.providers. Fields are a union across the supported provider
+// kinds — only the ones relevant to Kind are consulted.
+type RouterChildConfig struct {
+	Kind      string `mapstructure:"kind"` // anthropic | openai | openrouter | ollama | bedrock | vertex
+	APIKey    string `mapstructure:"api_key"`
+	BaseURL   string `mapstructure:"base_url"`
+	Model     string `mapstructure:"model"`
+	MaxTokens int64  `mapstructure:"max_tokens"`
+	// bedrock-specific
+	Region  string `mapstructure:"region"`
+	Profile string `mapstructure:"profile"`
+	// vertex-specific
+	Project         string `mapstructure:"project"`
+	CredentialsFile string `mapstructure:"credentials_file"`
+}
+
+// MCPConfig configures external MCP servers the agent should consume.
+// Each entry under Clients spawns a subprocess at daemon start, walks
+// its tools/list, and registers every discovered tool with the agent's
+// [tools.Registry] under the name "mcp:<name>:<tool>".
+//
+// Example config.yaml:
+//
+//	mcp:
+//	  clients:
+//	    github:
+//	      command: npx
+//	      args: ['-y', '@modelcontextprotocol/server-github']
+//	      env:
+//	        GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+//	    playwright:
+//	      command: npx
+//	      args: ['-y', '@modelcontextprotocol/server-playwright']
+type MCPConfig struct {
+	// Clients maps a server name (used as the tool-name prefix) to its
+	// subprocess spec. Empty or absent map means no MCP clients are
+	// started — the agent runs with local tools only.
+	Clients map[string]MCPClientConfig `mapstructure:"clients"`
+}
+
+// MCPClientConfig describes one external MCP server subprocess.
+type MCPClientConfig struct {
+	// Command is the executable to spawn (resolved via $PATH).
+	Command string `mapstructure:"command"`
+	// Args are the command-line arguments passed to Command.
+	Args []string `mapstructure:"args"`
+	// Env are extra environment variables layered on top of the
+	// daemon's own environment. Set an entry to "" to unset a
+	// variable the parent process has.
+	Env map[string]string `mapstructure:"env"`
+	// StartTimeoutSeconds bounds the initialize-handshake window.
+	// Zero uses the client default (30s).
+	StartTimeoutSeconds int `mapstructure:"start_timeout_seconds"`
+	// RequestTimeoutSeconds bounds each tools/list and tools/call
+	// invocation. Zero uses the client default (60s).
+	RequestTimeoutSeconds int `mapstructure:"request_timeout_seconds"`
 }
 
 // IntegrationsConfig groups the native tool-integration suites +
@@ -337,6 +499,14 @@ type ClaudeCLIConfig struct {
 	// (acceptEdits, auto, bypassPermissions, default, dontAsk, plan).
 	// Unattended daemons (whatsapp) generally need "bypassPermissions".
 	PermissionMode string `mapstructure:"permission_mode"`
+	// Bare passes --bare to claude, which skips CLAUDE.md auto-discovery,
+	// hooks, LSP, plugin sync, auto-memory, background prefetches, and
+	// keychain reads. Cuts per-invocation cold-start latency from minutes
+	// (walking a large mounted workspace) to seconds. Trade-off:
+	// authentication becomes strictly ANTHROPIC_API_KEY / apiKeyHelper
+	// (no OAuth / keychain). Recommended for unattended bridge daemons
+	// (whatsapp) where the workspace scan is pure overhead per message.
+	Bare bool `mapstructure:"bare"`
 	// ExtraArgs are appended to every invocation.
 	ExtraArgs []string `mapstructure:"extra_args"`
 }
@@ -445,6 +615,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("anthropic.model", "claude-sonnet-4-6")
 	v.SetDefault("anthropic.max_tokens", 4096)
 	v.SetDefault("claudecli.binary", "claude")
+	// Explicit default so viper.AutomaticEnv picks up ROUSSEAU_CLAUDECLI_BARE
+	// (viper only checks env for keys it knows about via SetDefault/BindEnv).
+	v.SetDefault("claudecli.bare", false)
 	v.SetDefault("openrouter.base_url", "https://openrouter.ai/api/v1")
 	v.SetDefault("ollama.base_url", "http://localhost:11434/v1")
 	v.SetDefault("ollama.api_key", "not-required")

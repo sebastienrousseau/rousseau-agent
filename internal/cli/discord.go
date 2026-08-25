@@ -42,9 +42,21 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
 
+			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
+			if tErr != nil {
+				opts.Logger.Warn("media.audio.build_failed",
+					"backend", opts.Config.Media.Audio.Backend,
+					"err", tErr.Error())
+			}
+			var discTranscriber discord.Transcriber
+			if transcriber != nil {
+				discTranscriber = transcriber
+			}
+
 			client, err := discord.New(discord.Config{
 				Token:       tok,
 				ReplyHeader: cfg.Discord.ReplyHeader,
+				Transcriber: discTranscriber,
 			}, opts.Logger)
 			if err != nil {
 				return err

@@ -89,6 +89,22 @@ func TestParseResult_LeadingGarbageBeforeJSON(t *testing.T) {
 	assert.Equal(t, "ok", resp.Message.Content[0].Text)
 }
 
+func TestParseResult_TrailingGarbageAfterJSON(t *testing.T) {
+	// Real-world case observed in production: the claude CLI emits a
+	// banner ("Claude configuration file not found…") both before and
+	// after the JSON when its config is mis-installed. The parser must
+	// tolerate trailing content.
+	raw := []byte(`Claude configuration file not found at: /home/rousseau/.claude.json
+
+{"type":"result","result":"hello","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}
+
+Claude configuration file not found at: /home/rousseau/.claude.json
+`)
+	resp, err := parseResult(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", resp.Message.Content[0].Text)
+}
+
 func TestParseResult_ModelError(t *testing.T) {
 	raw := []byte(`{"type":"result","is_error":true,"result":"rate limited"}`)
 	_, err := parseResult(raw)

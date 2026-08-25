@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 )
 
 // TurnStream is the streaming twin of Turn. It behaves identically to
@@ -61,7 +63,15 @@ func (a *Agent) TurnStream(ctx context.Context, s *Session, events chan<- Stream
 			return resp.Message, nil
 		}
 
-		results, err := a.runTools(ctx, resp.Message, s.ID)
+		// Match the non-streaming Turn: inject per-turn state for tools
+		// that need it (e.g. spawn_subagent).
+		toolCtx := toolcontext.WithLogger(
+			toolcontext.WithProvider(
+				toolcontext.WithSession(ctx, s),
+				a.provider),
+			a.logger)
+
+		results, err := a.runTools(toolCtx, resp.Message, s.ID)
 		if err != nil {
 			return Message{}, err
 		}

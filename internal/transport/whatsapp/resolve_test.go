@@ -74,6 +74,47 @@ func TestResolveInbound_OtherLinkedDeviceIsProcessed(t *testing.T) {
 	assert.Equal(t, "15551234567@s.whatsapp.net", res.Msg.From)
 }
 
+func TestResolveInbound_IsFromMeToThirdPartyIsSkipped(t *testing.T) {
+	own := jid("15551234567", 21)
+	// The account holder messaged a third party from another linked
+	// device (e.g. their primary phone). WhatsApp echoes it back to
+	// this device with IsFromMe=true, Sender=our own account (possibly
+	// as a LID), Chat=the third-party's JID. This must NOT pass through
+	// as if the account holder were talking to the agent — otherwise
+	// the reply lands in the third-party chat.
+	otherLID := lidJID("268285216030760")
+	sender := jid("15551234567", 3) // account holder, different device from `own`
+	evt := msgEvent(sender, otherLID, true, false, "hey alice")
+	res := ResolveInbound(evt, &own)
+	assert.Equal(t, SkipOwnOutbound, res.Skip,
+		"outbound-to-third-party from another linked device must be skipped")
+}
+
+func TestResolveInbound_IsFromMeToThirdPartyViaLIDSenderIsSkipped(t *testing.T) {
+	own := jid("15551234567", 21)
+	// Same as above but the sender is reported as our own LID (newer
+	// WhatsApp behaviour). The guard must still fire.
+	lid := lidJID("276540210315282")
+	otherPN := jid("447900123456", 0)
+	evt := msgEvent(lid, otherPN.ToNonAD(), true, false, "hey bob")
+	res := ResolveInbound(evt, &own)
+	assert.Equal(t, SkipOwnOutbound, res.Skip,
+		"outbound-to-third-party via LID sender must be skipped")
+}
+
+func TestResolveInbound_SelfChatViaOwnLIDAsChatAndSender(t *testing.T) {
+	// Real-world shape observed in production: WhatsApp reports both
+	// Chat and Sender as the account holder's own LID for self-chat.
+	// Must be treated as self-chat and rewritten to the account JID
+	// so the allowlist matches.
+	own := jid("15551234567", 21)
+	ownLID := lidJID("276540210315282")
+	evt := msgEvent(ownLID, ownLID, true, false, "self via lid")
+	res := ResolveInbound(evt, &own)
+	assert.Equal(t, SkipNone, res.Skip)
+	assert.Equal(t, "15551234567@s.whatsapp.net", res.Msg.From)
+}
+
 func TestResolveInbound_LIDSubstitutedToAccountJID(t *testing.T) {
 	own := jid("15551234567", 21)
 	// Newer WhatsApp reports the account holder's outbound sender as a

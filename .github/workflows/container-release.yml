@@ -1,0 +1,117 @@
+# Build and publish container images to ghcr.io on tag push.
+#
+# Two flavours per tag:
+#   ghcr.io/sebastienrousseau/rousseau-agent:<tag>              (full runtime;
+#                                                                docker/Dockerfile)
+#   ghcr.io/sebastienrousseau/rousseau-agent:distroless-<tag>   (minimal;
+#                                                                docker/Dockerfile.distroless)
+#
+# Both are:
+#   - Multi-arch (linux/amd64, linux/arm64) via buildx QEMU
+#   - Cosign-signed keylessly (GitHub OIDC → Sigstore Fulcio → transparency log)
+#   - Attested with SLSA build provenance
+#
+# Verification:
+#   cosign verify \
+#     --certificate-identity-regexp 'https://github.com/sebastienrousseau/rousseau-agent/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     ghcr.io/sebastienrousseau/rousseau-agent:v0.0.1
+
+name: container release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: write
+  # id-token for cosign keyless + SLSA attestations
+  id-token: write
+  # attestations for SLSA build provenance
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavour: full
+            dockerfile: docker/Dockerfile
+            tag_prefix: ""
+          - flavour: distroless
+            dockerfile: docker/Dockerfile.distroless
+            tag_prefix: "distroless-"
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The tag prefix (distroless- or empty) is baked in via `flavor.prefix`
+          # so users get semantic tags like `distroless-v0.0.1` without us
+          # writing them out by hand.
+          flavor: |
+            prefix=${{ matrix.tag_prefix }}
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=raw,value=${{ matrix.tag_prefix }}latest,enable=${{ github.ref_type == 'tag' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache to shave minutes off subsequent builds
+          cache-from: type=gha,scope=${{ matrix.flavour }}
+          cache-to: type=gha,scope=${{ matrix.flavour }},mode=max
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless)
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
+      - name: Generate SLSA build provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

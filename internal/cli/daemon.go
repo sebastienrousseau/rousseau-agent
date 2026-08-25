@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
 	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
+	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
 	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
@@ -32,11 +34,36 @@ type daemonWiring struct {
 	Concrete    *sqlitestore.Store
 	JIDMap      *sqlitestore.JIDMap
 	ClaudeCache *sqlitestore.ClaudeSessionCache
+	CostStore   *sqlitestore.SessionCostStore
+	// MCPClients holds every started MCP client subprocess. Callers
+	// close them (via wiring.Cleanup) on shutdown so the subprocesses
+	// exit cleanly rather than being reaped when the parent dies.
+	MCPClients []*mcpclient.Client
 	// RateLimiters is a per-transport [ratelimit.KeyedLimiter] map,
 	// populated only when the RateLimit config block is non-empty.
 	// Transports lookup their entry by name and wrap their Router
 	// handler via ratelimit.Wrap before serving.
 	RateLimiters map[string]*ratelimit.KeyedLimiter
+	// Logger is retained so Cleanup can log MCP-client-close errors
+	// on the same logger the daemon used at startup.
+	Logger *slog.Logger
+}
+
+// Cleanup releases every resource held by the wiring: closes the MCP
+// client subprocesses (in reverse start order), then closes the
+// underlying state Store. Safe to defer. Errors from MCP client Close
+// calls are logged but not returned — shutdown is best-effort.
+//
+// Callers that predate this helper still work: they may call
+// wiring.Sessions.Close() directly. The tradeoff is that MCP client
+// subprocesses leak until the parent daemon exits (the OS reaps them
+// then, so the leak is bounded).
+func (w *daemonWiring) Cleanup() error {
+	closeMCPClients(w.MCPClients, w.Logger)
+	if w.Sessions != nil {
+		return w.Sessions.Close()
+	}
+	return nil
 }
 
 // setUnattendedPermissionDefault forces the claudecli provider into a
@@ -84,6 +111,11 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
+	costStore, err := sqlitestore.NewSessionCostStore(ctx, concrete)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
 	if cc, ok := provider.(*claudecli.Provider); ok {
 		cc.WithCache(claudeCache)
 	}
@@ -94,6 +126,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	registry.MustRegister(builtin.NewEditTool())
 	registry.MustRegister(builtin.NewGrepTool(0, 0))
 	registry.MustRegister(builtin.NewBashTool(60 * time.Second))
+	// spawn_subagent exposes the sub-agent parallelism primitive
+	// (subagent.Spawn) to the model. Zero-value Policy uses the
+	// defaults documented on subagent.Policy (MaxConcurrent=4,
+	// PerTaskTimeout=5m, no aggregate token budget). Operators wanting
+	// tighter limits can pass a non-zero Policy here.
+	registry.MustRegister(builtin.NewSpawnSubagentTool(subagent.Policy{}))
 
 	// Register every enabled tool-integration suite. Each suite is
 	// opt-in via the integrations block in the config; a nil
@@ -102,6 +140,23 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	if err := integrations.RegisterAll(registry, intCfg, opts.Logger); err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
+	}
+
+	// Spawn every configured MCP client and register the tools each
+	// server advertises. Fail-soft per client: a broken MCP server
+	// logs a WARN and is skipped rather than taking the daemon down.
+	// Empty mcp.clients config leaves mcpClients nil.
+	mcpClients, mcpToolNames, err := startMCPClients(ctx, cfg.MCP, registry, opts.Logger)
+	if err != nil {
+		closeMCPClients(mcpClients, opts.Logger)
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
+	if len(mcpToolNames) > 0 {
+		opts.Logger.Info("mcp.clients.ready",
+			slog.Int("server_count", len(mcpClients)),
+			slog.Int("tool_count", len(mcpToolNames)),
+		)
 	}
 
 	// Build the per-transport rate-limiter map. Empty ratelimit config
@@ -130,6 +185,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Compressor:     buildCompressor(cfg.Agent.Compression, provider),
 		SkillsProvider: skillsProv,
 		RecallProvider: buildRecallProvider(concrete),
+		CostRecorder:   sqlitestore.NewCostRecorder(costStore, nil),
+		Hooks:          buildHooks(cfg.Hooks, opts.Logger),
 	})
 
 	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, transport.RouterOptions{
@@ -138,6 +195,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
 	if err != nil {
+		closeMCPClients(mcpClients, opts.Logger)
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
@@ -152,7 +210,10 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Concrete:     concrete,
 		JIDMap:       jidMap,
 		ClaudeCache:  claudeCache,
+		CostStore:    costStore,
+		MCPClients:   mcpClients,
 		RateLimiters: rateLimiters,
+		Logger:       opts.Logger,
 	}, nil
 }
 

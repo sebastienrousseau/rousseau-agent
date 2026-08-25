@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -106,8 +107,25 @@ func TestToSDKTools_ProducesToolUnionPerDef(t *testing.T) {
 		},
 		{Name: "two", Description: "d2", InputSchema: map[string]any{"type": "object"}},
 	}
-	got := toSDKTools(defs)
+	got := toSDKTools(defs, false)
 	assert.Len(t, got, 2)
 	assert.NotNil(t, got[0].OfTool)
 	assert.Equal(t, "one", got[0].OfTool.Name)
+	// Without caching enabled, TTL must be zero-value on every tool
+	// (any set TTL implies a cache_control marker was applied).
+	for i, tt := range got {
+		assert.Equal(t, sdk.CacheControlEphemeralTTL(""), tt.OfTool.CacheControl.TTL,
+			"tool %d unexpectedly cached", i)
+	}
+
+	// With caching, only the last tool carries the 1-hour cache-control
+	// marker (Anthropic caches the prefix up to and including this
+	// block, so marking the last tool caches the whole tool array +
+	// everything before it in the request).
+	gotCached := toSDKTools(defs, true)
+	assert.Equal(t, sdk.CacheControlEphemeralTTL(""), gotCached[0].OfTool.CacheControl.TTL,
+		"non-final tool must not carry a cache marker")
+	assert.Equal(t, sdk.CacheControlEphemeralTTLTTL1h,
+		gotCached[len(gotCached)-1].OfTool.CacheControl.TTL,
+		"final tool must carry a 1-hour cache marker")
 }

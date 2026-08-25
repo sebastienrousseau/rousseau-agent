@@ -49,11 +49,23 @@ func newIMessageCmd(opts *Options) *cobra.Command {
 				poll = d
 			}
 
+			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
+			if tErr != nil {
+				opts.Logger.Warn("media.audio.build_failed",
+					"backend", opts.Config.Media.Audio.Backend,
+					"err", tErr.Error())
+			}
+			var imTranscriber imessage.Transcriber
+			if transcriber != nil {
+				imTranscriber = transcriber
+			}
+
 			client, err := imessage.New(imessage.Config{
 				BaseURL:      base,
 				Password:     pass,
 				ReplyHeader:  cfg.IMessage.ReplyHeader,
 				PollInterval: poll,
+				Transcriber:  imTranscriber,
 			}, opts.Logger)
 			if err != nil {
 				return err

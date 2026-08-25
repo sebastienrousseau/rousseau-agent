@@ -330,6 +330,143 @@ email:
   poll_interval: 30s
 ```
 
+### New in v0.0.2
+
+Every knob below is opt-in — omit the section entirely and the daemon behaves exactly as `v0.0.1`.
+
+#### `mcp:` — consume external MCP servers
+
+Rousseau's tool registry can absorb tools published by any external MCP server (github, playwright, postgres, filesystem, …). Servers advertised under `mcp.clients` are spawned at daemon start; each tool they expose is registered as `mcp:<name>:<tool>`.
+
+```yaml
+mcp:
+  clients:
+    github:
+      command: npx
+      args: ['-y', '@modelcontextprotocol/server-github']
+      env:
+        GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_TOKEN}
+    playwright:
+      command: npx
+      args: ['-y', '@modelcontextprotocol/server-playwright']
+      start_timeout_seconds: 30
+      request_timeout_seconds: 60
+```
+
+Fail-soft: a broken server logs a WARN and is skipped; the daemon keeps running with the others.
+
+#### `media.audio:` — voice-note transcription
+
+Voice notes on inbound WhatsApp (Telegram / iMessage / Signal wiring in progress — see `internal/media/audio/README.md`) are transcribed before the model sees them.
+
+```yaml
+media:
+  audio:
+    backend: whisper-cpp             # whisper-cpp | openai-api | "" (disabled)
+    model_file: /models/ggml-base.en.bin
+    language: en                     # empty = auto-detect
+    timeout_seconds: 60
+```
+
+Or against OpenAI:
+
+```yaml
+media:
+  audio:
+    backend: openai-api
+    api_key: ${OPENAI_API_KEY}
+    model: whisper-1
+```
+
+#### `hooks:` — external-script lifecycle gates
+
+Each event fires a list of scripts sequentially; the first `{"decision":"deny","reason":"…"}` short-circuits and surfaces to the model as a synthetic tool error. Fail-open on hook errors — a broken hook script cannot deadlock the daemon.
+
+```yaml
+hooks:
+  pre_tool_use:
+    - name: no-secrets
+      command: /etc/rousseau/hooks/no-secrets.sh
+      timeout_seconds: 5
+  post_turn:
+    - name: cost-audit
+      command: /etc/rousseau/hooks/log-cost.sh
+```
+
+Payload on stdin: `{"event":"pre_tool_use","session_id":"…","tool_name":"bash","input":{…}}`. Verdict on stdout: `{"decision":"allow|deny|modify","reason":"…","modified":{…}}`.
+
+#### `provider: router` — rule-based multi-model routing
+
+Route quick chit-chat to Haiku, tool-heavy turns to Opus, everything else to Sonnet.
+
+```yaml
+provider: router
+router:
+  default: sonnet
+  rules:
+    - name: quick-chat
+      if:  { message_len_max: 200, tool_use_count_max: 0 }
+      use: haiku
+    - name: complex-tools
+      if:  { tool_use_count_min: 3 }
+      use: opus
+  providers:
+    haiku:  { kind: anthropic, api_key: ${ANTHROPIC_API_KEY}, model: claude-haiku-4-5 }
+    sonnet: { kind: anthropic, api_key: ${ANTHROPIC_API_KEY}, model: claude-sonnet-4-6 }
+    opus:   { kind: anthropic, api_key: ${ANTHROPIC_API_KEY}, model: claude-opus-4-6 }
+```
+
+Prometheus label: `rousseau_router_decisions_total{rule, chosen_key, chosen_provider}`.
+
+#### Signed skills
+
+Every skill under `agent.skills_dir` (and the bundled set at `/etc/rousseau/skills/`) can require an SSH-signed `.sig` companion. Signatures are verified via `ssh-keygen -Y verify` against an OpenSSH allowed-signers file — same mechanism git uses for SSH-signed commits.
+
+```yaml
+agent:
+  skills_dir: ~/.local/share/rousseau/skills
+  skills_require_signature: true                 # strict mode: drop unsigned
+  skills_allowed_signers_file: /etc/rousseau/allowed_signers.pub
+  skills_signature_namespace: rousseau-skills    # default; keep this in sync with signer
+```
+
+Sign a skill:
+
+```bash
+ssh-keygen -Y sign -f ~/.ssh/rousseau-skills -n rousseau-skills git-rebase.md
+# produces git-rebase.md.sig
+```
+
+Bundled skills documentation: [`skills/README.md`](./skills/README.md).
+
+#### Cost telemetry
+
+Every completion records provider + model + usage (input / output / cache-read / cache-creation) + estimated USD. Query with the new subcommand:
+
+```bash
+rousseau session cost                    # top 25 sessions by cost last 7d
+rousseau session cost <session-id>       # per-session summary
+rousseau session cost --since 30d --json # machine-readable roll-up
+```
+
+Backing table: `session_costs` in the shared SQLite state.
+
+#### Identity + cross-transport commands
+
+When operators wire an identity resolver into the daemon (see `internal/identity`), messages get keyed on a stable identity ID instead of the raw JID — a conversation can span WhatsApp → Slack → email once handles are linked. Three chat commands surface identity ops without an LLM round-trip:
+
+- `/whoami` — show the caller's identity ID + every linked handle
+- `/link <transport>:<sender>` — attach another handle to the caller's identity
+- `/unlink <transport>:<sender>` — detach a handle
+
+#### Sandbox
+
+The `bash` tool can be wrapped in one of four sandbox backends via `tools.bash.sandbox` (`none` | `nsjail` | `gvisor` | `firecracker`). Full backend documentation: [`docs/security/sandbox.md`](./docs/security/sandbox.md).
+
+#### Agent-to-Agent (A2A)
+
+Scaffold shipped; runtime lands in a subsequent release. Design: [`docs/a2a.md`](./docs/a2a.md).
+
 ## Embedding the agent loop
 
 `rousseau-agent` is a library as well as a daemon. The agent loop, tool registry, and provider abstractions have no CLI dependency; you can compose them into your own binary.

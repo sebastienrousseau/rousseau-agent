@@ -87,12 +87,35 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 
 // buildTranscriber constructs a whisper-backed transcriber from config,
 // or returns nil when voice notes are disabled.
+//
+// Resolution order:
+//  1. media.audio.backend (new, general-purpose — whisper-cpp OR openai-api)
+//  2. whatsapp.voice.enabled (legacy, whisper-cpp only)
+//  3. nil (disabled)
+//
+// The new media.audio surface wins when both are configured — it's
+// the forward path (used by every transport as they gain audio
+// support, not just WhatsApp).
 func buildTranscriber(opts *Options) whatsapp.Transcriber {
+	if t, err := buildTranscriberString(opts.Config.Media.Audio); err != nil {
+		opts.Logger.Warn("media.audio.build_failed",
+			"backend", opts.Config.Media.Audio.Backend,
+			"err", err.Error(),
+			"falling_back_to", "whatsapp.voice")
+	} else if t != nil {
+		opts.Logger.Info("whatsapp.voice_enabled",
+			"source", "media.audio",
+			"backend", opts.Config.Media.Audio.Backend)
+		return t
+	}
+
+	// Legacy path.
 	v := opts.Config.WhatsApp.Voice
 	if !v.Enabled {
 		return nil
 	}
 	opts.Logger.Info("whatsapp.voice_enabled",
+		"source", "whatsapp.voice",
 		"binary", firstNonEmpty(v.Binary, "whisper"),
 		"model", firstNonEmpty(v.Model, v.ModelPath))
 	return whatsapp.NewWhisperTranscriber(whatsapp.WhisperConfig{

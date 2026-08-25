@@ -1,0 +1,113 @@
+# Weekly benchmark bundle: SWE-Bench Verified + Aider Polyglot +
+# Terminal-Bench. Runs Sundays at 02:00 UTC on `main`, uploads the
+# JSON per-benchmark report as a workflow artefact.
+#
+# Costs $30-200/week (see test/benchmarks/README.md cost table) — do
+# not enable this on forks. The `if: github.repository == …` guard
+# below prevents accidental enable-by-fork; unset it if you actually
+# want to publish your own numbers.
+#
+# The runners themselves live at test/benchmarks/{swe-bench,
+# aider-polyglot,terminal-bench}/ behind //go:build bench, so they
+# never run as part of the default `go test ./...`.
+
+name: benchmarks
+
+on:
+  schedule:
+    # Sunday 02:00 UTC — off-peak, and results land before Monday review.
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: 'Cap tasks per benchmark (0 = full corpus)'
+        required: false
+        default: '0'
+      model:
+        description: 'Model to benchmark against'
+        required: false
+        default: 'claude-opus-4-6'
+      benchmark:
+        description: 'Which benchmark to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - swe-bench
+          - aider-polyglot
+          - terminal-bench
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    if: github.repository == 'sebastienrousseau/rousseau-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440 # 24h ceiling; individual `go test -timeout` set below
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Clone benchmark corpora
+        run: |
+          mkdir -p "$HOME/bench-corpora"
+          cd "$HOME/bench-corpora"
+          git clone --depth 1 https://github.com/princeton-nlp/SWE-bench    SWE-bench
+          git clone --depth 1 https://github.com/Aider-AI/polyglot-benchmark polyglot-benchmark
+          git clone --depth 1 https://github.com/laude-institute/terminal-bench terminal-bench
+
+      - name: Build rousseau (so runners exec a real binary)
+        run: go build -o "$RUNNER_TEMP/rousseau" ./cmd/rousseau
+
+      - name: Set benchmark environment
+        run: |
+          echo "ROUSSEAU_BENCH_DIR=$HOME/bench-corpora"          >> "$GITHUB_ENV"
+          echo "ROUSSEAU_BENCH_LIMIT=${{ inputs.limit || 0 }}"    >> "$GITHUB_ENV"
+          echo "ROUSSEAU_BENCH_MODEL=${{ inputs.model || 'claude-opus-4-6' }}" >> "$GITHUB_ENV"
+          echo "PATH=$RUNNER_TEMP:$PATH"                          >> "$GITHUB_ENV"
+
+      - name: Run SWE-Bench Verified
+        if: inputs.benchmark == 'all' || inputs.benchmark == 'swe-bench' || inputs.benchmark == ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_BENCH }}
+        run: go test -tags bench -timeout 6h ./test/benchmarks/swe-bench/...
+
+      - name: Run Aider Polyglot
+        if: inputs.benchmark == 'all' || inputs.benchmark == 'aider-polyglot' || inputs.benchmark == ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_BENCH }}
+        run: go test -tags bench -timeout 6h ./test/benchmarks/aider-polyglot/...
+
+      - name: Run Terminal-Bench
+        if: inputs.benchmark == 'all' || inputs.benchmark == 'terminal-bench' || inputs.benchmark == ''
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_BENCH }}
+        run: go test -tags bench -timeout 6h ./test/benchmarks/terminal-bench/...
+
+      - name: Upload results artefact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: test/benchmarks/results/*.json
+          retention-days: 90
+
+      - name: Post summary to job log
+        if: always()
+        run: |
+          echo "## Benchmark results" >> "$GITHUB_STEP_SUMMARY"
+          for f in test/benchmarks/results/*.json; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f" .json)
+            pass=$(jq -r '.tasks_passed' "$f")
+            total=$(jq -r '.tasks_total' "$f")
+            rate=$(jq -r '.pass_rate * 100 | round' "$f")
+            cost=$(jq -r '.cost_usd' "$f")
+            echo "- **$name**: $pass/$total ($rate%) — \$$cost" >> "$GITHUB_STEP_SUMMARY"
+          done

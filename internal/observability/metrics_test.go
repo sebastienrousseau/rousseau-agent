@@ -24,6 +24,55 @@ func TestObserveProviderLatency_recordsSample(t *testing.T) {
 	assert.Equal(t, 1, testutil.CollectAndCount(ProviderLatency))
 }
 
+func TestObservePromptCache_splitsByTTLBucket(t *testing.T) {
+	PromptCacheTokens.Reset()
+
+	// A response with 15,664 read tokens and 8,339 creation tokens
+	// (all attributed to the 1h bucket — matches the cache_creation
+	// subobject Anthropic returns for a well-cached prompt).
+	ObservePromptCache("anthropic", "claude-sonnet-4-6", 15664, 8339, 8339, 0)
+
+	assert.Equal(t, 15664.0, testutil.ToFloat64(
+		PromptCacheTokens.WithLabelValues("anthropic", "claude-sonnet-4-6", "read", "unspecified"),
+	))
+	assert.Equal(t, 8339.0, testutil.ToFloat64(
+		PromptCacheTokens.WithLabelValues("anthropic", "claude-sonnet-4-6", "creation", "1h"),
+	))
+	// Nothing should have landed in the 5m or unspecified creation buckets.
+	assert.Equal(t, 0.0, testutil.ToFloat64(
+		PromptCacheTokens.WithLabelValues("anthropic", "claude-sonnet-4-6", "creation", "5m"),
+	))
+	assert.Equal(t, 0.0, testutil.ToFloat64(
+		PromptCacheTokens.WithLabelValues("anthropic", "claude-sonnet-4-6", "creation", "unspecified"),
+	))
+}
+
+func TestObservePromptCache_capturesResidualCreation(t *testing.T) {
+	PromptCacheTokens.Reset()
+
+	// Total creation = 1000, but the per-TTL split adds up to 600 —
+	// the residual 400 must go into the "unspecified" TTL bucket so
+	// no tokens are silently dropped.
+	ObservePromptCache("anthropic", "claude-opus-4-6", 0, 1000, 400, 200)
+
+	assert.Equal(t, 400.0, testutil.ToFloat64(
+		PromptCacheTokens.WithLabelValues("anthropic", "claude-opus-4-6", "creation", "1h"),
+	))
+	assert.Equal(t, 200.0, testutil.ToFloat64(
+		PromptCacheTokens.WithLabelValues("anthropic", "claude-opus-4-6", "creation", "5m"),
+	))
+	assert.Equal(t, 400.0, testutil.ToFloat64(
+		PromptCacheTokens.WithLabelValues("anthropic", "claude-opus-4-6", "creation", "unspecified"),
+	))
+}
+
+func TestObservePromptCache_zeroValuesEmitNothing(t *testing.T) {
+	PromptCacheTokens.Reset()
+	ObservePromptCache("anthropic", "test-model", 0, 0, 0, 0)
+	// No labeled series should have been created — CollectAndCount reports 0.
+	assert.Equal(t, 0, testutil.CollectAndCount(PromptCacheTokens))
+}
+
 func TestCounters_incrementCleanly(t *testing.T) {
 	TransportIncoming.Reset()
 	TransportOutgoing.Reset()

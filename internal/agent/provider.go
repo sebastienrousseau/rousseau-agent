@@ -50,12 +50,32 @@ type Response struct {
 	Message    Message
 	StopReason StopReason
 	Usage      Usage
+	// Model is the concrete model identifier the provider used for
+	// this completion. Providers that support multiple models (or that
+	// route internally per-request) set this so callers can attribute
+	// cost + telemetry to the right SKU. Empty means "not reported"
+	// (older provider implementations before this field was added).
+	Model string
 }
 
-// Usage records token counts for a single Response.
+// Usage records token counts for a single Response. Cache fields
+// are populated by providers that support prompt caching (Anthropic
+// today; other providers leave them zero). The cache metrics let
+// callers compute hit-rate as CacheReadInputTokens / (CacheReadInputTokens
+// + CacheCreationInputTokens) — a >70% hit ratio on a steady-state
+// daemon is a good sign the system-prompt cache breakpoints are set
+// correctly.
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	// CacheCreationEphemeral1h and CacheCreationEphemeral5m break the
+	// cache-creation number down by TTL bucket. Sum of the two equals
+	// CacheCreationInputTokens. Zero when the provider does not report
+	// per-TTL creation counts.
+	CacheCreationEphemeral1h int
+	CacheCreationEphemeral5m int
 }
 
 // Provider is the abstract completion contract. Implementations MUST be

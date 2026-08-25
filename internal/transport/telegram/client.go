@@ -40,6 +40,19 @@ type Config struct {
 	// HTTPClient overrides the default *http.Client. Zero uses a
 	// client with a 60s per-request timeout.
 	HTTPClient *http.Client
+	// Transcriber, when non-nil, converts inbound voice / audio
+	// messages to text before the router sees them. Nil skips audio
+	// messages entirely (they don't fall through to the LLM).
+	Transcriber Transcriber
+}
+
+// Transcriber matches the shape used by every rousseau transport that
+// consumes audio; a nil transcriber tells the client to skip audio
+// messages instead of erroring. See internal/media/audio for the
+// backends and internal/media/audio.NewTranscriberString for the
+// adapter that satisfies this interface from a generic audio.Backend.
+type Transcriber interface {
+	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
 }
 
 // Client is a transport.Transport backed by the Telegram Bot API.
@@ -129,12 +142,21 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 	if u.Message == nil {
 		return
 	}
-	if u.Message.Text == "" {
+
+	// Resolve the message text. Prefer the explicit Text field; fall
+	// back to transcribing an inbound voice / audio blob when the
+	// caller wired a Transcriber. Skipping when neither is available.
+	text := u.Message.Text
+	if text == "" {
+		text = c.transcribeAudio(ctx, u.Message)
+	}
+	if text == "" {
 		return
 	}
+
 	msg := transport.IncomingMessage{
 		From: strconv.FormatInt(u.Message.Chat.ID, 10),
-		Body: u.Message.Text,
+		Body: text,
 		At:   time.Unix(u.Message.Date, 0),
 	}
 	c.logger.Info("telegram.incoming", slog.String("from", msg.From))
@@ -149,6 +171,102 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 	if err := c.Deliver(ctx, msg.From, reply); err != nil {
 		c.logger.Error("telegram.send_failed", slog.String("err", err.Error()))
 	}
+}
+
+// transcribeAudio downloads the message's voice or audio blob and
+// returns the transcript, or "" when there's no audio, no transcriber
+// wired, or the download / transcription failed (in which case the
+// error is logged and the message is silently skipped).
+func (c *Client) transcribeAudio(ctx context.Context, m *telegramMessage) string {
+	if c.cfg.Transcriber == nil {
+		return ""
+	}
+	// Voice notes ship as `voice`; music / other audio as `audio`.
+	// Both carry a file_id we can fetch via getFile → downloadFile.
+	var (
+		fileID   string
+		mimeType string
+	)
+	switch {
+	case m.Voice != nil:
+		fileID = m.Voice.FileID
+		mimeType = m.Voice.MimeType
+	case m.Audio != nil:
+		fileID = m.Audio.FileID
+		mimeType = m.Audio.MimeType
+	default:
+		return ""
+	}
+	if fileID == "" {
+		return ""
+	}
+	bytes, actualMime, err := c.downloadFile(ctx, fileID)
+	if err != nil {
+		c.logger.Warn("telegram.audio_download_failed", slog.String("err", err.Error()))
+		return ""
+	}
+	if mimeType == "" {
+		mimeType = actualMime
+	}
+	if mimeType == "" {
+		// Telegram voice notes are Opus in an OGG container.
+		mimeType = "audio/ogg"
+	}
+	text, err := c.cfg.Transcriber.Transcribe(ctx, bytes, mimeType)
+	if err != nil {
+		c.logger.Warn("telegram.transcribe_failed",
+			slog.String("mimetype", mimeType),
+			slog.Int("bytes", len(bytes)),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	c.logger.Info("telegram.audio_transcribed",
+		slog.String("mimetype", mimeType),
+		slog.Int("bytes", len(bytes)),
+		slog.Int("transcript_chars", len(text)))
+	return text
+}
+
+// downloadFile calls getFile to learn the file_path, then GETs it from
+// the /file/bot<token>/<path> endpoint. Returns (bytes, contentType).
+func (c *Client) downloadFile(ctx context.Context, fileID string) ([]byte, string, error) {
+	var out struct {
+		Result struct {
+			FilePath string `json:"file_path"`
+		} `json:"result"`
+	}
+	if err := c.call(ctx, "getFile", map[string]any{"file_id": fileID}, &out); err != nil {
+		return nil, "", fmt.Errorf("getFile: %w", err)
+	}
+	if out.Result.FilePath == "" {
+		return nil, "", fmt.Errorf("getFile: empty file_path")
+	}
+	// The download endpoint differs from the bot API endpoint —
+	// /file/bot<token>/<file_path> instead of /bot<token>/<method>.
+	fileURL := c.cfg.BaseURL + "/file/bot" + url.PathEscape(c.cfg.Token) + "/" + out.Result.FilePath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("build download request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("download: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return nil, "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
+	}
+	// Cap the read to prevent a hostile / misconfigured file server
+	// from streaming gigabytes into the daemon's memory.
+	const maxDownload = 32 * 1024 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxDownload+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("read body: %w", err)
+	}
+	if len(body) > maxDownload {
+		return nil, "", fmt.Errorf("download exceeds %d bytes", maxDownload)
+	}
+	return body, resp.Header.Get("Content-Type"), nil
 }
 
 // getUpdates issues a long-poll getUpdates call.
@@ -220,10 +338,30 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64        `json:"message_id"`
-	Date      int64        `json:"date"`
-	Text      string       `json:"text"`
-	Chat      telegramChat `json:"chat"`
+	MessageID int64          `json:"message_id"`
+	Date      int64          `json:"date"`
+	Text      string         `json:"text"`
+	Chat      telegramChat   `json:"chat"`
+	Voice     *telegramVoice `json:"voice,omitempty"`
+	Audio     *telegramAudio `json:"audio,omitempty"`
+}
+
+// telegramVoice is the Bot API's Voice object — Opus in an OGG
+// container. Duration is documented in seconds.
+type telegramVoice struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration"`
+	MimeType string `json:"mime_type"`
+	FileSize int    `json:"file_size"`
+}
+
+// telegramAudio covers non-voice audio uploads (mp3 / m4a / …).
+type telegramAudio struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration"`
+	MimeType string `json:"mime_type"`
+	FileSize int    `json:"file_size"`
+	Title    string `json:"title"`
 }
 
 type telegramChat struct {

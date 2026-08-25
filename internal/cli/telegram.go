@@ -43,10 +43,22 @@ func newTelegramCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
 
+			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
+			if tErr != nil {
+				opts.Logger.Warn("media.audio.build_failed",
+					"backend", opts.Config.Media.Audio.Backend,
+					"err", tErr.Error())
+			}
+			var telTranscriber telegram.Transcriber
+			if transcriber != nil {
+				telTranscriber = transcriber // interface-shape matches
+			}
+
 			client, err := telegram.New(telegram.Config{
 				Token:       tok,
 				BaseURL:     cfg.Telegram.BaseURL,
 				ReplyHeader: cfg.Telegram.ReplyHeader,
+				Transcriber: telTranscriber,
 			}, opts.Logger)
 			if err != nil {
 				return err
