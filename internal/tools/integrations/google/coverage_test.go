@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,14 +51,16 @@ func TestCalendarCreateEventTool_ValidatesInput(t *testing.T) {
 }
 
 func TestGmailListTool_HandlesEmptyInput(t *testing.T) {
-	c, err := New(Config{AccessToken: "x"})
+	// Empty input JSON is valid — Gmail's q is optional, so the tool
+	// must still issue the request with only the default maxResults.
+	srv, rec := newRecordingServer(t, http.StatusOK, `{"messages":[]}`)
+	tool := NewGmailListTool(newTestClient(t, srv))
+	out, err := tool.Execute(context.Background(), nil)
 	require.NoError(t, err)
-	tool := NewGmailListTool(c)
-	// Empty input JSON is valid — Gmail's q is optional.
-	_, err = tool.Execute(context.Background(), nil)
-	if err != nil {
-		assert.NotContains(t, err.Error(), "bad input")
-	}
+	assert.JSONEq(t, `{"messages":[]}`, out)
+	assert.Equal(t, "/gmail/users/me/messages", rec.Path)
+	assert.False(t, rec.Query.Has("q"))
+	assert.Equal(t, "20", rec.Query.Get("maxResults"))
 }
 
 func TestBuildRFC5322_Roundtrip(t *testing.T) {
