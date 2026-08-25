@@ -124,3 +124,81 @@ cosign verify \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   ghcr.io/sebastienrousseau/rousseau-agent:distroless
 ```
+
+* * *
+
+## The build-environment images
+
+Two images exist alongside the runtime tags above. They are not
+deployment targets — they are the environment agents and CI use to
+build the fleet.
+
+| Image | Dockerfile | Purpose |
+|---|---|---|
+| `agent-base` | `docker/Dockerfile.base` | Ubuntu foundation shared by everything below |
+| `agent-builder` | `docker/Dockerfile.builder` | Polyglot toolchain, sandbox prerequisites, supply-chain tooling |
+
+They exist because the runtime daemon and a build environment want
+opposite things. The daemon holds a WhatsApp session and Claude OAuth
+credentials, so it runs `ReadOnly=true` with every capability dropped.
+A build environment needs a writable filesystem and a large `/tmp`. So
+the estate is split, and the invariant is:
+
+> **No single container is both writable and credentialed.**
+
+`agent-builder` carries no long-lived credentials. Scoped tokens are
+injected per-run via `EnvironmentFile=` in its Quadlet. Do not add
+credential mounts to it, and do not relax `ReadOnly=` on the daemon.
+
+### Building
+
+```bash
+make images              # all five, podman by default
+make image-builder       # base then builder, in order
+make images ENGINE=docker
+```
+
+`ENGINE` defaults to `podman`. Plain builds work under Docker, but the
+Quadlet units, `UserNS=keep-id` and the `pasta` network stack are
+podman features, so `make quadlet-install` refuses to run under
+anything else.
+
+### Running under rootless podman
+
+```bash
+make container-check     # verify the host first
+make quadlet-install     # copy units, daemon-reload
+systemctl --user start rousseau-agent
+systemctl --user start agent-builder
+```
+
+`make container-check` runs `docker/preflight.sh`, which checks the
+things that otherwise fail at `systemctl --user start` with an opaque
+message: a `/etc/subuid` and `/etc/subgid` range for your user,
+unprivileged user namespaces enabled, a `pasta`/`passt` backend, a
+reachable user systemd instance, the Quadlet generator (podman ≥ 4.4),
+`/dev/fuse`, and the seccomp profile both units reference. It exits
+non-zero with the count of failed checks, so it is usable as a CI gate.
+
+### Why Ubuntu and not Alpine or CachyOS
+
+glibc. musl breaks Python manylinux wheels, Node prebuilt native
+modules, cgo-linked binaries and the official Swift toolchain — all of
+which the repo fleet needs.
+
+CachyOS was considered for host parity and rejected on two grounds.
+Arch is a rolling release with no digest-equivalent pin, which would
+regress the Pinned-Dependencies posture the rest of this repo
+maintains; and [swift.org](https://www.swift.org/platform-support/)
+ships official Linux toolchains for Ubuntu, Debian, Fedora, Amazon
+Linux and RHEL UBI — not Arch. Host parity is bought instead through
+chezmoi and mise version pins, which do not require a matching distro.
+
+### Architecture
+
+`agent-base` and `agent-builder` are **amd64 only**. The builder pins
+release binaries that are published for amd64 alone (`yq_linux_amd64`,
+`syft_..._linux_amd64`, `act_Linux_x86_64`). Publishing those under a
+multi-arch manifest would produce a silently broken arm64 image, so
+the manifest declares what it actually is. The runtime tags remain
+multi-arch.
