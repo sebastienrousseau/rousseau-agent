@@ -52,10 +52,13 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 	if err != nil {
 		return nil, nil, err
 	}
-	// Cleanup runs when the caller closes the returned channels via
-	// ctx cancel; the child process finishes reading the image files
-	// well before the JSON stream completes.
-	defer cleanup()
+	// NOTE: cleanup is deliberately NOT deferred here. Stream returns
+	// as soon as the child is started, so a deferred cleanup would
+	// delete the image files while the CLI is still running -- a
+	// use-after-free from the child's point of view, since the images
+	// are handed over by path via --image. It is invoked on each early
+	// error return below, and otherwise by the reader goroutine once
+	// cmd.Wait has returned.
 
 	sessionFlag := "--session-id"
 	if req.SessionID != "" && p.knowsSession(req.SessionID) {
@@ -88,11 +91,13 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cleanup()
 		return nil, nil, fmt.Errorf("claudecli: stdout pipe: %w", err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
+		cleanup()
 		return nil, nil, fmt.Errorf("claudecli: start: %w", err)
 	}
 
@@ -100,6 +105,9 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 	report := make(chan agent.StreamReport, 1)
 
 	go func() {
+		// Registered first so it runs last: the image temp files must
+		// outlive the child process, which reads them by path.
+		defer cleanup()
 		defer close(events)
 		defer close(report)
 		resp, perr := parseStream(stdout, events)
