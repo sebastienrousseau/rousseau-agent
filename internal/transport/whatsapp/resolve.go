@@ -83,7 +83,14 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 	//  1. Strip the multi-device address suffix so allowlists written
 	//     as the plain user JID match regardless of which linked
 	//     device sent the message.
-	//  2. When the account holder is the sender (IsFromMe) *and the
+	//  2. Prefer the phone-number JID over the LID for third-party
+	//     inbound. WhatsApp routes some messages via the sender's
+	//     LID (privacy-hash `<n>@lid`) instead of the PN
+	//     (`<phone>@s.whatsapp.net`). SenderAlt carries the "other"
+	//     form of the same identity — so when Sender is LID and
+	//     SenderAlt is PN, we use PN so operators can keep the
+	//     familiar `<phone>@s.whatsapp.net` in their allowlist.
+	//  3. When the account holder is the sender (IsFromMe) *and the
 	//     conversation is the self-chat*, WhatsApp reports the sender
 	//     as the account's LID (a privacy hash), not the phone JID.
 	//     Substitute our own account JID so operators can allowlist
@@ -92,7 +99,7 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 	//     this is the account holder messaging a third party from
 	//     another linked device — the message must not pass the
 	//     allowlist and the agent must not reply into that chat.
-	from := evt.Info.Sender.ToNonAD()
+	from := preferPN(evt.Info.Sender, evt.Info.SenderAlt).ToNonAD()
 	if evt.Info.IsFromMe && ownID != nil {
 		ownJID := ownID.ToNonAD()
 		chatJID := evt.Info.Chat.ToNonAD()
@@ -133,6 +140,23 @@ func PrependHeader(text, header string) string {
 		header = DefaultReplyHeader
 	}
 	return header + text
+}
+
+// preferPN returns the phone-number-form JID when either primary or
+// alt is one; otherwise returns primary unchanged. Whatsmeow exposes
+// both forms of a user's identity via MessageSource.Sender and
+// MessageSource.SenderAlt — SenderAlt is the counterpart form (PN
+// when Sender is LID, LID when Sender is PN). Using PN when
+// available keeps allowlists, session keys, and identity resolution
+// in the "<phone>@s.whatsapp.net" shape operators expect.
+func preferPN(primary, alt types.JID) types.JID {
+	if primary.Server == types.DefaultUserServer {
+		return primary
+	}
+	if alt.Server == types.DefaultUserServer && alt.User != "" {
+		return alt
+	}
+	return primary
 }
 
 func extractText(m *waProto.Message) string {

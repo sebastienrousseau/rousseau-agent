@@ -37,6 +37,24 @@ func msgEvent(sender types.JID, chat types.JID, isFromMe, isGroup bool, body str
 	}
 }
 
+// msgEventWithAlt constructs an event where Sender arrives as an LID
+// and SenderAlt carries the phone-number form — this is the shape
+// WhatsApp emits when the sender has privacy features enabled.
+func msgEventWithAlt(sender, alt, chat types.JID, isFromMe bool, body string) *events.Message {
+	return &events.Message{
+		Info: types.MessageInfo{
+			MessageSource: types.MessageSource{
+				Sender:    sender,
+				SenderAlt: alt,
+				Chat:      chat,
+				IsFromMe:  isFromMe,
+			},
+			Timestamp: time.Unix(1_700_000_000, 0),
+		},
+		Message: &waProto.Message{Conversation: proto.String(body)},
+	}
+}
+
 func TestResolveInbound_HappyPathFromContact(t *testing.T) {
 	own := jid("15551234567", 21)
 	sender := jid("15551234567", 0)
@@ -188,4 +206,48 @@ func TestPrependHeader_ExplicitOverride(t *testing.T) {
 func TestPrependHeader_SingleSpaceDisables(t *testing.T) {
 	got := PrependHeader("hi", " ")
 	assert.Equal(t, "hi", got)
+}
+
+func TestResolveInbound_LIDSenderWithPNAltUsesPN(t *testing.T) {
+	// This is the shape from the operator's incident report: a
+	// third party messages the daemon, WhatsApp routes the event
+	// via the sender's LID, and the operator's allowlist is in the
+	// familiar PN form. SenderAlt exposes the PN — ResolveInbound
+	// must prefer it so allowlist matching works.
+	own := jid("447000000000", 21)
+	lid := lidJID("268285216030760")
+	pn := jid("447906009073", 0)
+	evt := msgEventWithAlt(lid, pn, lid, false, "hello")
+
+	res := ResolveInbound(evt, &own)
+	assert.Equal(t, SkipNone, res.Skip)
+	assert.Equal(t, "447906009073@s.whatsapp.net", res.Msg.From,
+		"third-party LID sender with PN alt must expose the PN to the router")
+}
+
+func TestResolveInbound_LIDSenderWithoutPNAltFallsBack(t *testing.T) {
+	// When SenderAlt is not populated (older client, LID-only user),
+	// we surface the LID as-is — the operator can allowlist the LID
+	// explicitly.
+	own := jid("447000000000", 21)
+	lid := lidJID("268285216030760")
+	evt := msgEvent(lid, lid, false, false, "hello")
+
+	res := ResolveInbound(evt, &own)
+	assert.Equal(t, SkipNone, res.Skip)
+	assert.Equal(t, "268285216030760@lid", res.Msg.From,
+		"no PN alt → keep the LID so the operator can still allowlist explicitly")
+}
+
+func TestResolveInbound_PNSenderUnchangedWhenAltIsLID(t *testing.T) {
+	// Symmetric case: some clients report Sender=PN and SenderAlt=LID.
+	// PN is preferred either way — Sender is already PN so we keep it.
+	own := jid("447000000000", 21)
+	pn := jid("447906009073", 0)
+	lid := lidJID("268285216030760")
+	evt := msgEventWithAlt(pn, lid, pn, false, "hello")
+
+	res := ResolveInbound(evt, &own)
+	assert.Equal(t, SkipNone, res.Skip)
+	assert.Equal(t, "447906009073@s.whatsapp.net", res.Msg.From)
 }

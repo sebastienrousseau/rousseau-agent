@@ -111,9 +111,10 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 
 // resolveFrom mirrors the sender-normalisation in ResolveInbound. It
 // is used by the audio-transcription branch, which constructs its own
-// Resolved after downloading media.
+// Resolved after downloading media. Must apply the same PN-preference
+// logic so voice notes route through the same allowlist path as text.
 func resolveFrom(evt *events.Message, ownID *types.JID) types.JID {
-	from := evt.Info.Sender.ToNonAD()
+	from := preferPN(evt.Info.Sender, evt.Info.SenderAlt).ToNonAD()
 	if evt.Info.IsFromMe && ownID != nil {
 		from = ownID.ToNonAD()
 	}
