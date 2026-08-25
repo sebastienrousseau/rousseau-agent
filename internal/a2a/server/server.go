@@ -319,9 +319,14 @@ func writeSSE(w io.Writer, upd a2a.TaskUpdate) error {
 	return err
 }
 
+// randRead is crypto/rand.Read behind a var so tests can exercise the
+// entropy-failure fallback in newTaskID, which is otherwise unreachable
+// (crypto/rand.Read never returns an error on supported platforms).
+var randRead = rand.Read
+
 func newTaskID() string {
 	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
+	if _, err := randRead(buf[:]); err != nil {
 		return fmt.Sprintf("task-%d", time.Now().UnixNano())
 	}
 	return "task-" + hex.EncodeToString(buf[:])
