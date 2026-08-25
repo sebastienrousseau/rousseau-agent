@@ -13,6 +13,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"sync"
@@ -52,6 +53,36 @@ type Client struct {
 	stopped    bool
 }
 
+// Start-path test seams. Start's whatsmeow touchpoints — opening the
+// device store, requesting the pairing QR channel, dialling the
+// websocket, and rendering the QR — are held in package-level vars so
+// unit tests can drive the pairing and error branches without a
+// socket. Production values are the real whatsmeow calls; only tests
+// reassign them.
+var (
+	newWMClient = func(ctx context.Context, cfg Config) (*whatsmeow.Client, error) {
+		dbLog := waLog.Stdout("wa-db", cfg.LogLevel, true)
+		container, err := sqlstore.New(ctx, "sqlite", cfg.StoreDSN, dbLog)
+		if err != nil {
+			return nil, fmt.Errorf("whatsapp: open store: %w", err)
+		}
+		device, err := container.GetFirstDevice(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("whatsapp: get device: %w", err)
+		}
+		clientLog := waLog.Stdout("wa", cfg.LogLevel, true)
+		return whatsmeow.NewClient(device, clientLog), nil
+	}
+
+	wmQRChannel = func(ctx context.Context, wm *whatsmeow.Client) (<-chan whatsmeow.QRChannelItem, error) {
+		return wm.GetQRChannel(ctx)
+	}
+
+	wmConnect = func(wm *whatsmeow.Client) error { return wm.Connect() }
+
+	qrOut io.Writer = os.Stdout
+)
+
 // New constructs a Client. Connect is deferred until Start.
 func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if cfg.StoreDSN == "" {
@@ -84,19 +115,10 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 	c.handler = handler
 	c.mu.Unlock()
 
-	dbLog := waLog.Stdout("wa-db", c.cfg.LogLevel, true)
-	container, err := sqlstore.New(ctx, "sqlite", c.cfg.StoreDSN, dbLog)
+	wm, err := newWMClient(ctx, c.cfg)
 	if err != nil {
-		return fmt.Errorf("whatsapp: open store: %w", err)
+		return err
 	}
-
-	device, err := container.GetFirstDevice(ctx)
-	if err != nil {
-		return fmt.Errorf("whatsapp: get device: %w", err)
-	}
-
-	clientLog := waLog.Stdout("wa", c.cfg.LogLevel, true)
-	wm := whatsmeow.NewClient(device, clientLog)
 	wm.AddEventHandler(c.onEvent)
 
 	c.mu.Lock()
@@ -107,25 +129,25 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 	c.mu.Unlock()
 
 	if wm.Store.ID == nil {
-		qrChan, err := wm.GetQRChannel(ctx)
+		qrChan, err := wmQRChannel(ctx, wm)
 		if err != nil {
 			return fmt.Errorf("whatsapp: qr channel: %w", err)
 		}
-		if err := wm.Connect(); err != nil {
+		if err := wmConnect(wm); err != nil {
 			return fmt.Errorf("whatsapp: connect: %w", err)
 		}
 		for evt := range qrChan {
 			switch evt.Event {
 			case "code":
 				c.logger.Info("whatsapp.qr_ready")
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, qrOut)
 			case "success":
 				c.logger.Info("whatsapp.paired")
 			default:
 				c.logger.Warn("whatsapp.qr_event", slog.String("event", evt.Event))
 			}
 		}
-	} else if err := wm.Connect(); err != nil {
+	} else if err := wmConnect(wm); err != nil {
 		return fmt.Errorf("whatsapp: connect: %w", err)
 	}
 
