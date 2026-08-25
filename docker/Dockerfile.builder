@@ -187,6 +187,43 @@ ENV MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=30s \
     RUSTUP_HOME=/home/rousseau/.rustup \
     CARGO_HOME=/home/rousseau/.cargo
 
+# ---------------------------------------------------------------------
+# Container override for the dotfiles-managed mise base layer.
+#
+# ~/.config/mise/conf.d/00-dotfiles.toml pins every build cache under
+# /tmp/builds — GOCACHE, GOTMPDIR, PIP_CACHE_DIR, UV_CACHE_DIR and both
+# ZIG_*_CACHE_DIRs. That is correct on the CachyOS host, where /tmp is
+# backed by real disk. It is actively broken in a container, where /tmp
+# is a small tmpfs: a `go build` of this repo exhausts a 64 MiB /tmp
+# partway through linking and fails with "no space left on device",
+# and the same applies to pip and zig.
+#
+# conf.d files load in lexical order with later files winning, so a
+# 10-prefixed file overrides the 00-prefixed dotfiles base without
+# editing a chezmoi-managed file. Caches move to $HOME, which is
+# writable in this image and backed by the container's overlay.
+#
+# mise's [env] values are applied by the shim at exec time and override
+# process environment, so this cannot be worked around with `export`
+# at call sites — it has to be fixed in config.
+# ---------------------------------------------------------------------
+RUN mkdir -p /home/rousseau/.config/mise/conf.d \
+ && cat > /home/rousseau/.config/mise/conf.d/10-container.toml <<'TOML'
+# Container override — see docker/Dockerfile.builder for rationale.
+# /tmp is a small tmpfs here; build caches must not live there.
+[env]
+GOCACHE = "/home/rousseau/.cache/go-build"
+GOTMPDIR = "/home/rousseau/.cache/go-tmp"
+GOMODCACHE = "/home/rousseau/go/pkg/mod"
+PIP_CACHE_DIR = "/home/rousseau/.cache/pip"
+UV_CACHE_DIR = "/home/rousseau/.cache/uv"
+ZIG_LOCAL_CACHE_DIR = "/home/rousseau/.cache/zig"
+ZIG_GLOBAL_CACHE_DIR = "/home/rousseau/.cache/zig-global"
+TOML
+RUN mkdir -p /home/rousseau/.cache/go-build /home/rousseau/.cache/go-tmp \
+             /home/rousseau/.cache/pip /home/rousseau/.cache/uv \
+             /home/rousseau/go/pkg/mod
+
 RUN set -eu \
  && mise use -g -y \
       node@${MISE_NODE} \
@@ -224,6 +261,13 @@ RUN set -eu; \
     printf '  npm prefix = %s\n' "$(npm config get prefix)"; \
     [ "$(npm config get prefix)" = "/home/rousseau/.node_modules" ] \
       || { echo '  MISSING npm prefix override (B5)'; fail=1; }; \
+    gocache="$(go env GOCACHE)"; gotmp="$(go env GOTMPDIR)"; \
+    printf '  GOCACHE  = %s\n  GOTMPDIR = %s\n' "$gocache" "$gotmp"; \
+    case "$gocache" in /tmp/*) echo '  GOCACHE still on tmpfs (mise 00-dotfiles not overridden)'; fail=1;; esac; \
+    case "$gotmp"   in /tmp/*) echo '  GOTMPDIR still on tmpfs (mise 00-dotfiles not overridden)'; fail=1;; esac; \
+    bwrap --ro-bind / / -- /bin/true \
+      && echo '  ok      bwrap can create a sandbox' \
+      || { echo '  bwrap present but cannot create a sandbox (nested userns?)'; fail=1; }; \
     [ "$fail" -eq 0 ] || { echo 'builder self-test FAILED'; exit 1; }; \
     echo 'builder self-test PASSED'
 

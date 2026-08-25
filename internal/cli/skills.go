@@ -88,7 +88,13 @@ func resolveSkillsDir(opts *Options) string {
 
 // systemSkillsDir is the fallback location the container image
 // populates with the bundled starter skills (see skills/README.md).
-const systemSkillsDir = "/etc/rousseau/skills"
+//
+// It is a var rather than a const so tests can point it at an empty
+// directory. Without that, any test asserting on skill-list output is
+// not hermetic: it passes on a bare workstation and fails inside the
+// container image, which does populate /etc/rousseau/skills. Use
+// withSystemSkillsDir in tests rather than assigning to this directly.
+var systemSkillsDir = "/etc/rousseau/skills"
 
 // loadSkillsFromResolutionChain returns skills from the primary
 // user location first, then overlays the system bundle. User skills
