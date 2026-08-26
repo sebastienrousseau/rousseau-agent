@@ -52,6 +52,8 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   PLATFORMS: linux/amd64
+  # One definition so the PR-path and registry-path scans cannot drift.
+  SEVERITY_CUTOFF: high
 
 jobs:
   # -------------------------------------------------------------------
@@ -266,16 +268,44 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+      # PR path: scan the image right here. `load: true` above already
+      # put it in the runner's daemon, and it is a multi-GB Ubuntu
+      # toolchain image -- shipping that through an artifact to a
+      # separate job would cost minutes and buy nothing. The pushed
+      # path is scanned by the `scan` job against the registry digest.
+      - name: Resolve local tag (pull_request only)
+        id: localref
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          printf 'ref=%s\n' "$(printf '%s\n' "$TAGS" | head -n1)" >> "$GITHUB_OUTPUT"
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+
+      - name: Generate SBOM (pull_request only)
+        if: github.event_name == 'pull_request'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.localref.outputs.ref }}
+          format: spdx-json
+          artifact-name: agent-builder.spdx.json
+
+      - name: Scan for vulnerabilities (pull_request only)
+        if: github.event_name == 'pull_request'
+        uses: anchore/scan-action@v7
+        with:
+          image: ${{ steps.localref.outputs.ref }}
+          severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
+          fail-build: true
+
   # -------------------------------------------------------------------
-  # Supply-chain gate.
+  # Supply-chain gate for PUSHED images, by registry digest.
   #
-  # Scoped to non-PR events because it scans BY REGISTRY REFERENCE, and
-  # PR builds are never pushed -- there is no digest to pull. The
-  # trade-off is real: a PR introducing a High/Critical CVE is caught on
-  # merge to the default branch and on the weekly rebuild, not in the
-  # PR itself. Closing that gap means exporting the PR image as an OCI
-  # archive and scanning the file, which is a larger change than this
-  # one is scoped for.
+  # Pull requests are NOT skipped: they are scanned inside the builder
+  # job, where the image already sits in the runner's daemon. Splitting
+  # it this way keeps the gate on every event without pushing a
+  # multi-GB image through an artifact, and without needing
+  # packages:write on a fork.
   # -------------------------------------------------------------------
   scan:
     name: sbom and vulnerability scan
@@ -295,16 +325,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve the reference to scan
+        id: ref
+        run: |
+          set -euo pipefail
+          echo "ref=${REGISTRY}/${IMAGE_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ needs.builder.outputs.digest }}
+
       - name: Generate SBOM (SPDX)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.builder.outputs.digest }}
+          image: ${{ steps.ref.outputs.ref }}
           format: spdx-json
           artifact-name: agent-builder.spdx.json
 
       - name: Scan for vulnerabilities
         uses: anchore/scan-action@v7
         with:
-          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.builder.outputs.digest }}
-          severity-cutoff: high
+          image: ${{ steps.ref.outputs.ref }}
+          severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
           fail-build: true
