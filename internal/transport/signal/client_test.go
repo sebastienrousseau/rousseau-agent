@@ -37,6 +37,16 @@ func TestNew_KeepsExplicitBinary(t *testing.T) {
 	assert.Equal(t, "/opt/signal-cli", c.cfg.Binary)
 }
 
+// TestNew_DefaultsLoggerWhenNil covers the `logger == nil` fallback,
+// which was otherwise the reason CI hovered at 94.9% on this package —
+// on a runner that skips TestStart_ExecutesConfiguredBinary (no /usr/bin/true
+// or a slow-exec) the missing branch dips coverage under the 95% gate.
+func TestNew_DefaultsLoggerWhenNil(t *testing.T) {
+	c, err := New(Config{Account: "+15551234567"}, nil)
+	require.NoError(t, err)
+	assert.NotNil(t, c.logger, "logger must fall back to slog.Default when nil")
+}
+
 func TestDeliver_NotConnected(t *testing.T) {
 	c, err := New(Config{Account: "+1"}, silentLogger())
 	require.NoError(t, err)
