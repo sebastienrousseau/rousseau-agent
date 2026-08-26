@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,10 +29,6 @@ import (
 // Transcriber turns an audio blob (voice note / audio attachment) into
 // text. Wired from media.audio.backend via the CLI. Nil disables audio
 // handling.
-//
-// TODO(v0.0.3): route BlueBubbles message attachments (audio/*) through
-// this. Attachments are exposed via GET /api/v1/attachment/{guid} and
-// carry a mimeType field on the message envelope.
 type Transcriber interface {
 	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
 }
@@ -53,9 +50,12 @@ type Config struct {
 	PageSize int
 	// HTTPClient overrides the transport. Zero uses 30s timeout.
 	HTTPClient *http.Client
-	// Transcriber, when non-nil, will be invoked for audio attachments
-	// once per-transport routing lands (see Transcriber godoc TODO).
+	// Transcriber, when non-nil, is invoked when a received message
+	// has no text but carries an audio/* attachment.
 	Transcriber Transcriber
+	// MaxAudioBytes caps a single attachment download to protect
+	// against a runaway file. Zero uses 32 MiB.
+	MaxAudioBytes int64
 }
 
 // Client is a transport.Transport backed by BlueBubbles.
@@ -217,6 +217,9 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 		}
 		body := extractText(m)
 		if body == "" {
+			body = c.transcribeAudio(ctx, m.Attachments)
+		}
+		if body == "" {
 			continue
 		}
 		msg := transport.IncomingMessage{
@@ -300,12 +303,23 @@ func truncate(s string, n int) string {
 // -- wire types --------------------------------------------------------
 
 type messageRecord struct {
-	GUID        string       `json:"guid"`
-	Text        string       `json:"text"`
-	IsFromMe    bool         `json:"isFromMe"`
-	DateCreated int64        `json:"dateCreated"` // ms since epoch
-	Handle      handleRecord `json:"handle"`
-	Chats       []chatRecord `json:"chats"`
+	GUID        string             `json:"guid"`
+	Text        string             `json:"text"`
+	IsFromMe    bool               `json:"isFromMe"`
+	DateCreated int64              `json:"dateCreated"` // ms since epoch
+	Handle      handleRecord       `json:"handle"`
+	Chats       []chatRecord       `json:"chats"`
+	Attachments []attachmentRecord `json:"attachments,omitempty"`
+}
+
+// attachmentRecord mirrors the BlueBubbles attachment envelope. Only
+// the fields we route on.
+type attachmentRecord struct {
+	GUID     string `json:"guid"`
+	MimeType string `json:"mimeType"`
+	// TotalBytes is informational — the transcriber-side reader still
+	// caps at MaxAudioBytes.
+	TotalBytes int64 `json:"totalBytes,omitempty"`
 }
 
 type handleRecord struct {
@@ -314,6 +328,67 @@ type handleRecord struct {
 
 type chatRecord struct {
 	GUID string `json:"guid"`
+}
+
+// transcribeAudio walks the message attachments for the first
+// audio/* one, downloads it from BlueBubbles, and hands the bytes to
+// Config.Transcriber. Returns "" on any failure — the caller then
+// drops the message rather than replying with a stub. Nil Transcriber
+// → "" without touching the network.
+func (c *Client) transcribeAudio(ctx context.Context, atts []attachmentRecord) string {
+	if c.cfg.Transcriber == nil || len(atts) == 0 {
+		return ""
+	}
+	var pick *attachmentRecord
+	for i := range atts {
+		if strings.HasPrefix(atts[i].MimeType, "audio/") {
+			pick = &atts[i]
+			break
+		}
+	}
+	if pick == nil || pick.GUID == "" {
+		return ""
+	}
+	blob, err := c.downloadAttachment(ctx, pick.GUID)
+	if err != nil {
+		c.logger.Warn("imessage.audio.download_failed",
+			slog.String("guid", pick.GUID),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	transcript, err := c.cfg.Transcriber.Transcribe(ctx, blob, pick.MimeType)
+	if err != nil {
+		c.logger.Warn("imessage.audio.transcribe_failed",
+			slog.String("err", err.Error()))
+		return ""
+	}
+	return transcript
+}
+
+// downloadAttachment GETs the attachment blob from BlueBubbles's
+// `/api/v1/attachment/{guid}/download` endpoint. Capped at
+// Config.MaxAudioBytes (default 32 MiB).
+func (c *Client) downloadAttachment(ctx context.Context, guid string) ([]byte, error) {
+	q := url.Values{}
+	q.Set("password", c.cfg.Password)
+	u := strings.TrimRight(c.cfg.BaseURL, "/") + "/api/v1/attachment/" + url.PathEscape(guid) + "/download?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("imessage attachment: HTTP %d", resp.StatusCode)
+	}
+	maxBytes := c.cfg.MaxAudioBytes
+	if maxBytes <= 0 {
+		maxBytes = 32 << 20
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 }
 
 // Compile-time interface satisfaction check.

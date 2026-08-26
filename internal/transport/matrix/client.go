@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,11 +27,6 @@ import (
 
 // Transcriber turns an audio blob (m.audio event) into text. Wired
 // from media.audio.backend via the CLI. Nil disables audio handling.
-//
-// TODO(v0.0.3): route `m.audio` msgtype events through this. The
-// `url` field is an mxc:// URI that needs converting via
-// `/_matrix/media/v3/download/<server>/<mediaID>` before the body can
-// be handed off.
 type Transcriber interface {
 	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
 }
@@ -52,9 +48,12 @@ type Config struct {
 	// HTTPClient overrides the transport. Zero uses a 60s-timeout
 	// client. Tests inject httptest-backed clients here.
 	HTTPClient *http.Client
-	// Transcriber, when non-nil, will be invoked for audio attachments
-	// once per-transport routing lands (see Transcriber godoc TODO).
+	// Transcriber, when non-nil, is invoked for m.audio events —
+	// the `url` field (mxc://…) is resolved via the media-download
+	// endpoint and the bytes handed off with the info.mimetype.
 	Transcriber Transcriber
+	// MaxAudioBytes caps a single mxc download. Zero uses 32 MiB.
+	MaxAudioBytes int64
 }
 
 // Client is a transport.Transport backed by the Matrix client-server
@@ -178,6 +177,9 @@ func (c *Client) route(ctx context.Context, resp *syncResponse, handler transpor
 			}
 			body := extractBody(evt.Content)
 			if body == "" {
+				body = c.transcribeAudio(ctx, evt.Content)
+			}
+			if body == "" {
 				continue
 			}
 			msg := transport.IncomingMessage{
@@ -300,6 +302,110 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// transcribeAudio parses an m.room.message content payload for an
+// m.audio event, resolves the mxc:// URL via the homeserver's media
+// download endpoint, and hands the bytes to Config.Transcriber.
+// Returns "" on any failure — caller drops the message rather than
+// replying with a stub. Nil Transcriber → "" without touching the
+// network.
+func (c *Client) transcribeAudio(ctx context.Context, raw json.RawMessage) string {
+	if c.cfg.Transcriber == nil {
+		return ""
+	}
+	var content struct {
+		MsgType string `json:"msgtype"`
+		URL     string `json:"url"` // mxc://server/mediaID
+		Info    struct {
+			Mimetype string `json:"mimetype"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return ""
+	}
+	if content.MsgType != "m.audio" || content.URL == "" {
+		return ""
+	}
+	server, mediaID, ok := parseMXC(content.URL)
+	if !ok {
+		return ""
+	}
+	blob, err := c.downloadMedia(ctx, server, mediaID)
+	if err != nil {
+		c.logger.Warn("matrix.audio.download_failed",
+			slog.String("mxc", content.URL),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	mimetype := content.Info.Mimetype
+	if mimetype == "" {
+		mimetype = "audio/ogg" // Element/Fluffychat default for voice notes
+	}
+	transcript, err := c.cfg.Transcriber.Transcribe(ctx, blob, mimetype)
+	if err != nil {
+		c.logger.Warn("matrix.audio.transcribe_failed",
+			slog.String("err", err.Error()))
+		return ""
+	}
+	return transcript
+}
+
+// parseMXC splits an mxc:// URI into (server, mediaID). Returns ok=false
+// when the URI doesn't match the expected shape.
+func parseMXC(mxc string) (server, mediaID string, ok bool) {
+	const prefix = "mxc://"
+	if !strings.HasPrefix(mxc, prefix) {
+		return "", "", false
+	}
+	rest := mxc[len(prefix):]
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 || slash == len(rest)-1 {
+		return "", "", false
+	}
+	return rest[:slash], rest[slash+1:], true
+}
+
+// downloadMedia fetches the media blob via
+// GET /_matrix/client/v1/media/download/<server>/<mediaID> (the
+// authenticated variant that landed in the spec's v1.11 / MSC3916 —
+// falls back to the unauthenticated v3 path when the server 404s the
+// new one). Capped at Config.MaxAudioBytes (default 32 MiB).
+func (c *Client) downloadMedia(ctx context.Context, server, mediaID string) ([]byte, error) {
+	base := strings.TrimRight(c.cfg.HomeserverURL, "/")
+	server = url.PathEscape(server)
+	mediaID = url.PathEscape(mediaID)
+	for _, path := range []string{
+		"/_matrix/client/v1/media/download/" + server + "/" + mediaID,
+		"/_matrix/media/v3/download/" + server + "/" + mediaID,
+	} {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+		if err != nil {
+			return nil, err
+		}
+		if c.cfg.AccessToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.cfg.AccessToken)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusNotFound {
+			_ = resp.Body.Close()
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("matrix media: HTTP %d on %s", resp.StatusCode, path)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		maxBytes := c.cfg.MaxAudioBytes
+		if maxBytes <= 0 {
+			maxBytes = 32 << 20
+		}
+		return io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	}
+	return nil, fmt.Errorf("matrix media: both v1 and v3 download endpoints returned 404")
 }
 
 // Compile-time interface satisfaction check.

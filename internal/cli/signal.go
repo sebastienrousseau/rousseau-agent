@@ -56,11 +56,12 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := signal.New(signal.Config{
-				Binary:      firstNonEmpty(binary, cfg.Signal.Binary),
-				Account:     acct,
-				ExtraArgs:   cfg.Signal.ExtraArgs,
-				ReplyHeader: cfg.Signal.ReplyHeader,
-				Transcriber: sigTranscriber,
+				Binary:         firstNonEmpty(binary, cfg.Signal.Binary),
+				Account:        acct,
+				ExtraArgs:      cfg.Signal.ExtraArgs,
+				ReplyHeader:    cfg.Signal.ReplyHeader,
+				Transcriber:    sigTranscriber,
+				AttachmentsDir: cfg.Signal.AttachmentsDir,
 			}, opts.Logger)
 			if err != nil {
 				return err
