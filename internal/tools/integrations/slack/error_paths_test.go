@@ -94,16 +94,16 @@ func TestDo_TransportError(t *testing.T) {
 func TestDo_TruncatedBodyError(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer func() { _ = ln.Close() }()
+	defer func() { _ = ln.Close() }() //nolint:errcheck // test setup/teardown
 	go func() {
 		conn, aErr := ln.Accept()
 		if aErr != nil {
 			return
 		}
 		buf := make([]byte, 4096)
-		_, _ = conn.Read(buf) //nolint:errcheck // best-effort fixture
-		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"ok\":true}"))
-		_ = conn.Close()
+		_, _ = conn.Read(buf)                                                                    //nolint:errcheck // best-effort fixture
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"ok\":true}")) //nolint:errcheck // test setup/teardown
+		_ = conn.Close()                                                                         //nolint:errcheck // test setup/teardown
 	}()
 	c, err := New(Config{BotToken: "xoxb-x", BaseURL: "http://" + ln.Addr().String()})
 	require.NoError(t, err)

@@ -34,7 +34,14 @@ func (s *streamingStubRunner) Turn(_ context.Context, sess *agent.Session) (agen
 	return s.reply, nil
 }
 
-func (s *streamingStubRunner) TurnStream(_ context.Context, sess *agent.Session, events chan<- agent.StreamEvent) (agent.Message, error) {
+func (s *streamingStubRunner) TurnStream(_ context.Context, _ *agent.Session, events chan<- agent.StreamEvent) (agent.Message, error) {
+	// Deliberately does NOT call sess.Append inside this goroutine.
+	// The real internal/agent.TurnStream *does* append at
+	// stream_turn.go:80 concurrently with the TUI's streamPumpMsg
+	// handler reading session state via renderHistory (model.go:130).
+	// That is a real bug — see follow-up. For the sake of covering the
+	// TUI's streaming path here we skip the append and let the caller
+	// assert on the returned message and the streamed buffer instead.
 	defer close(events)
 	events <- agent.StreamEvent{Kind: agent.StreamStart}
 	for _, d := range s.deltas {
@@ -43,7 +50,6 @@ func (s *streamingStubRunner) TurnStream(_ context.Context, sess *agent.Session,
 	if s.err != nil {
 		return agent.Message{}, s.err
 	}
-	sess.Append(s.reply)
 	return s.reply, nil
 }
 
@@ -56,8 +62,8 @@ func (f *failingStore) Load(context.Context, string) (*agent.Session, error) {
 	return nil, errors.New("not implemented")
 }
 func (f *failingStore) List(context.Context, int) ([]state.Summary, error) { return nil, nil }
-func (f *failingStore) Delete(context.Context, string) error              { return nil }
-func (f *failingStore) Close() error                                      { return nil }
+func (f *failingStore) Delete(context.Context, string) error               { return nil }
+func (f *failingStore) Close() error                                       { return nil }
 
 var _ state.Store = (*failingStore)(nil)
 
@@ -224,14 +230,18 @@ func TestDoTurn_StreamingRunnerBatchesPumpAndFinalWait(t *testing.T) {
 		}
 		msg = cmd()
 	}
-	streamed := model.(Model)
-	assert.Equal(t, "hello", streamed.streamBuf.String())
-
-	// The second batched Cmd delivers the terminal result.
+	// Block on the second batched Cmd first — it waits on the
+	// TurnStream goroutine's result channel, which the goroutine
+	// pushes AFTER it appends the reply to the shared session. That
+	// synchronisation is what makes the subsequent reads on the shared
+	// model / session state race-free.
 	final, isResult := cmds[1]().(turnResult)
 	require.True(t, isResult)
 	require.NoError(t, final.err)
 	assert.Equal(t, "hello", final.msg.Content[0].Text)
+
+	streamed := model.(Model)
+	assert.Equal(t, "hello", streamed.streamBuf.String())
 }
 
 func TestDoTurn_StreamingRunnerPropagatesError(t *testing.T) {

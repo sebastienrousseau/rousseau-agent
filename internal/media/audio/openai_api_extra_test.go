@@ -48,7 +48,7 @@ func jsonResponse(status int, body string) *http.Response {
 }
 
 func TestOpenAIAPI_DefaultsToOfficialEndpointAndModel(t *testing.T) {
-	rt := &stubRoundTripper{resp: jsonResponse(http.StatusOK, `{"text":"ok"}`)}
+	rt := &stubRoundTripper{resp: jsonResponse(http.StatusOK, `{"text":"ok"}`)} //nolint:bodyclose // response body is closed by o.Transcribe
 
 	o := &audio.OpenAIAPI{APIKey: "k", HTTPClient: &http.Client{Transport: rt}}
 	res, err := o.Transcribe(context.Background(), []byte("aud"), "audio/ogg")
@@ -66,7 +66,7 @@ func TestOpenAIAPI_DefaultsToOfficialEndpointAndModel(t *testing.T) {
 }
 
 func TestOpenAIAPI_SendsLanguageHintAndCustomModel(t *testing.T) {
-	rt := &stubRoundTripper{resp: jsonResponse(http.StatusOK, `{"text":"salut"}`)}
+	rt := &stubRoundTripper{resp: jsonResponse(http.StatusOK, `{"text":"salut"}`)} //nolint:bodyclose // response body is closed by o.Transcribe
 
 	o := &audio.OpenAIAPI{
 		APIKey:     "k",
@@ -88,7 +88,7 @@ func TestOpenAIAPI_SendsLanguageHintAndCustomModel(t *testing.T) {
 }
 
 func TestOpenAIAPI_ResponseLanguageWinsOverHint(t *testing.T) {
-	rt := &stubRoundTripper{resp: jsonResponse(http.StatusOK, `{"text":"hola","language":"es"}`)}
+	rt := &stubRoundTripper{resp: jsonResponse(http.StatusOK, `{"text":"hola","language":"es"}`)} //nolint:bodyclose // response body is closed by o.Transcribe
 	o := &audio.OpenAIAPI{APIKey: "k", Language: "fr", HTTPClient: &http.Client{Transport: rt}}
 	res, err := o.Transcribe(context.Background(), []byte("aud"), "audio/ogg")
 	require.NoError(t, err)

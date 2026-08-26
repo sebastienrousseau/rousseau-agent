@@ -72,7 +72,7 @@ func TestQuery_TransportError(t *testing.T) {
 func TestQuery_TruncatedBodyError(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer func() { _ = ln.Close() }()
+	defer func() { _ = ln.Close() }() //nolint:errcheck // test setup/teardown
 
 	go func() {
 		conn, aErr := ln.Accept()
@@ -80,9 +80,9 @@ func TestQuery_TruncatedBodyError(t *testing.T) {
 			return
 		}
 		buf := make([]byte, 4096)
-		_, _ = conn.Read(buf) //nolint:errcheck // best-effort fixture
-		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"data\":{}}"))
-		_ = conn.Close()
+		_, _ = conn.Read(buf)                                                                    //nolint:errcheck // best-effort fixture
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n{\"data\":{}}")) //nolint:errcheck // test setup/teardown
+		_ = conn.Close()                                                                         //nolint:errcheck // test setup/teardown
 	}()
 
 	c, err := New(Config{APIKey: "k", BaseURL: "http://" + ln.Addr().String()})

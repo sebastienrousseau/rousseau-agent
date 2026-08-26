@@ -31,7 +31,7 @@ func TestBenchDir_UnresolvableHome(t *testing.T) {
 	t.Setenv("ROUSSEAU_BENCH_DIR", "")
 	// os.UserHomeDir reports an error when $HOME is unset on unix.
 	require.NoError(t, os.Unsetenv("HOME"))
-	t.Cleanup(func() { _ = os.Setenv("HOME", t.TempDir()) })
+	t.Cleanup(func() { _ = os.Setenv("HOME", t.TempDir()) }) //nolint:errcheck // test setup/teardown
 
 	got, err := BenchDir()
 	require.Error(t, err)
@@ -84,7 +84,7 @@ func TestCorpusExists_StatFailurePropagates(t *testing.T) {
 func TestCorpusExists_BenchDirFailurePropagates(t *testing.T) {
 	t.Setenv("ROUSSEAU_BENCH_DIR", "")
 	require.NoError(t, os.Unsetenv("HOME"))
-	t.Cleanup(func() { _ = os.Setenv("HOME", t.TempDir()) })
+	t.Cleanup(func() { _ = os.Setenv("HOME", t.TempDir()) }) //nolint:errcheck // test setup/teardown
 
 	ok, path, err := CorpusExists("swe-bench")
 	require.Error(t, err)
@@ -219,8 +219,8 @@ func TestWriteReport_UnwritablePath(t *testing.T) {
 	root := t.TempDir()
 	results := filepath.Join(root, "test", "benchmarks", "results")
 	require.NoError(t, os.MkdirAll(results, 0o755))
-	require.NoError(t, os.Chmod(results, 0o500)) // r-x: MkdirAll succeeds, WriteFile fails
-	t.Cleanup(func() { _ = os.Chmod(results, 0o755) })
+	require.NoError(t, os.Chmod(results, 0o500))       // r-x: MkdirAll succeeds, WriteFile fails
+	t.Cleanup(func() { _ = os.Chmod(results, 0o755) }) //nolint:errcheck // test cleanup
 	t.Chdir(root)
 
 	path, err := WriteReport(Report{Benchmark: "swe-bench", StartedAt: time.Unix(0, 0).UTC()})

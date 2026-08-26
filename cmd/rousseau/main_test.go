@@ -27,8 +27,8 @@ func capture(t *testing.T, fn func()) (stdout, stderr string) {
 
 	outCh := make(chan string, 1)
 	errCh := make(chan string, 1)
-	go func() { b, _ := io.ReadAll(outR); outCh <- string(b) }()
-	go func() { b, _ := io.ReadAll(errR); errCh <- string(b) }()
+	go func() { b, _ := io.ReadAll(outR); outCh <- string(b) }() //nolint:errcheck // test setup
+	go func() { b, _ := io.ReadAll(errR); errCh <- string(b) }() //nolint:errcheck // test setup
 
 	fn()
 

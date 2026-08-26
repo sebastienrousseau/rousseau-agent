@@ -56,12 +56,12 @@ func runFakeWhisper(args []string) int {
 		fmt.Fprintln(os.Stderr, "whisper: failed to load model")
 		return 3
 	case "stdout":
-		fmt.Fprintln(os.Stdout, "  "+text+"  ")
+		fmt.Fprintln(os.Stdout, "  "+text+"  ") //nolint:errcheck // test setup
 		return 0
 	case "empty-txt":
 		// Zero-byte sidecar → the backend must fall back to stdout.
 		_ = os.WriteFile(input+".txt", nil, 0o600) //nolint:errcheck,gosec // test fixture
-		fmt.Fprintln(os.Stdout, text)
+		fmt.Fprintln(os.Stdout, text)              //nolint:errcheck // test setup
 		return 0
 	default:
 		_ = os.WriteFile(input+".txt", []byte("\n  "+text+"  \n"), 0o600) //nolint:errcheck,gosec // test fixture

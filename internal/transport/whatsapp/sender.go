@@ -23,6 +23,23 @@ type Sender interface {
 	SendPresence(ctx context.Context, chat types.JID, state types.ChatPresence) error
 }
 
+// MessageEditor is the OPTIONAL in-place-edit capability. It is a
+// separate interface rather than extra methods on Sender so that
+// existing Sender implementations (and every test fake) keep
+// compiling: a sink type-asserts for it and silently posts new
+// messages when it is absent.
+//
+// WhatsApp allows editing a message for roughly 15 minutes after it
+// was sent; past that the edit fails and the progress reporter falls
+// back to a new message.
+type MessageEditor interface {
+	// SendTextWithID delivers body and returns the server message ID,
+	// which EditText needs later.
+	SendTextWithID(ctx context.Context, chat types.JID, body string) (string, error)
+	// EditText replaces the body of a previously-sent message.
+	EditText(ctx context.Context, chat types.JID, id, body string) error
+}
+
 // wmSender adapts a *whatsmeow.Client to the Sender interface.
 type wmSender struct{ wm *whatsmeow.Client }
 
@@ -40,6 +57,26 @@ func (s *wmSender) SendText(ctx context.Context, chat types.JID, body string) er
 func (s *wmSender) SendPresence(ctx context.Context, chat types.JID, state types.ChatPresence) error {
 	return s.wm.SendChatPresence(ctx, chat, state, types.ChatPresenceMediaText)
 }
+
+// SendTextWithID satisfies MessageEditor.
+func (s *wmSender) SendTextWithID(ctx context.Context, chat types.JID, body string) (string, error) {
+	resp, err := s.wm.SendMessage(ctx, chat, &waProto.Message{
+		Conversation: proto.String(body),
+	})
+	return resp.ID, err
+}
+
+// EditText satisfies MessageEditor.
+func (s *wmSender) EditText(ctx context.Context, chat types.JID, id, body string) error {
+	edit := s.wm.BuildEdit(chat, id, &waProto.Message{
+		Conversation: proto.String(body),
+	})
+	_, err := s.wm.SendMessage(ctx, chat, edit)
+	return err
+}
+
+// Compile-time check: the real client supports in-place edits.
+var _ MessageEditor = (*wmSender)(nil)
 
 // parseJID parses a JID string like "15551234567@s.whatsapp.net" into
 // the whatsmeow types. It rejects empty inputs and surfaces the

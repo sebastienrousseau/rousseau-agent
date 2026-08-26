@@ -370,8 +370,8 @@ func TestResolveMasterKey_GenerateEntropyFailure(t *testing.T) {
 
 func TestResolveMasterKey_CannotCreateKeyDirectory(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.Chmod(dir, 0o500)) // read-only: MkdirAll will fail
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	require.NoError(t, os.Chmod(dir, 0o500))       // read-only: MkdirAll will fail
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:errcheck // test setup/teardown
 	t.Setenv("ROUSSEAU_TOKEN_KEY", "")
 	t.Setenv("XDG_STATE_HOME", dir)
 
@@ -384,8 +384,8 @@ func TestResolveMasterKey_CannotWriteKeyFile(t *testing.T) {
 	dir := t.TempDir()
 	keyDir := filepath.Join(dir, "rousseau")
 	require.NoError(t, os.MkdirAll(keyDir, 0o700))
-	require.NoError(t, os.Chmod(keyDir, 0o500)) // exists but not writable
-	t.Cleanup(func() { _ = os.Chmod(keyDir, 0o700) })
+	require.NoError(t, os.Chmod(keyDir, 0o500))       // exists but not writable
+	t.Cleanup(func() { _ = os.Chmod(keyDir, 0o700) }) //nolint:errcheck // test setup/teardown
 	t.Setenv("ROUSSEAU_TOKEN_KEY", "")
 	t.Setenv("XDG_STATE_HOME", dir)
 

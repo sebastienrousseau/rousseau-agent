@@ -43,7 +43,7 @@ func TestStart_ReturnsWhenStoppedMidLoop(t *testing.T) {
 	var polls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		polls.Add(1)
-		_, _ = w.Write([]byte(`{"data":[]}`)) //nolint:errcheck // fixture
+		_, _ = w.Write([]byte(`{"data":[]}`)) //nolint:errcheck // test setup
 	}))
 	defer srv.Close()
 
@@ -99,10 +99,11 @@ func TestPollOnce_SendFailureIsLoggedAndLoopContinues(t *testing.T) {
 			http.Error(w, "applescript blew up", http.StatusInternalServerError)
 			return
 		}
-		_, _ = w.Write([]byte(`{"data":[ 
+		//nolint:errcheck // test setup
+		_, _ = w.Write([]byte(`{"data":[
 			{"guid":"g2","text":"second","dateCreated":2,"handle":{"address":"+1"},"chats":[{"guid":"c1"}]},
 			{"guid":"g1","text":"first","dateCreated":1,"handle":{"address":"+1"},"chats":[{"guid":"c1"}]}
-		]}`)) //nolint:errcheck // fixture
+		]}`))
 	}))
 	defer srv.Close()
 
@@ -131,14 +132,14 @@ func TestFetchMessages_ErrorPaths(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer func() { _ = conn.Close() }()                                            //nolint:errcheck // fixture
-		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 8192\r\n\r\nshort") //nolint:errcheck // fixture
-		_ = buf.Flush()                                                                //nolint:errcheck // fixture
+		defer func() { _ = conn.Close() }()                                            //nolint:errcheck // test cleanup
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 8192\r\n\r\nshort") //nolint:errcheck // test writer
+		_ = buf.Flush()                                                                //nolint:errcheck // test writer
 	}))
 	defer truncated.Close()
 
 	badJSON := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data": "not-a-list"}`)) //nolint:errcheck // fixture
+		_, _ = w.Write([]byte(`{"data": "not-a-list"}`)) //nolint:errcheck // test setup
 	}))
 	defer badJSON.Close()
 

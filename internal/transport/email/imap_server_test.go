@@ -92,12 +92,12 @@ func startIMAPServer(t *testing.T, raw ...string) (addr string, roots *x509.Cert
 		Caps:   imap.CapSet{imap.CapIMAP4rev1: {}, imap.CapIMAP4rev2: {}},
 		Logger: discardLogger{},
 	})
-	t.Cleanup(func() { _ = srv.Close() })
+	t.Cleanup(func() { _ = srv.Close() }) //nolint:errcheck // test setup/teardown
 
 	tcp, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	ln := tls.NewListener(tcp, tlsConf)
-	go func() { _ = srv.Serve(ln) }()
+	go func() { _ = srv.Serve(ln) }() //nolint:errcheck // test setup/teardown
 
 	return tcp.Addr().String(), pool
 }

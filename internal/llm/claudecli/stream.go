@@ -105,8 +105,10 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 	report := make(chan agent.StreamReport, 1)
 
 	go func() {
-		// Registered first so it runs last: the image temp files must
-		// outlive the child process, which reads them by path.
+		// Defer covers panics but the happy path runs cleanup
+		// explicitly (before we send the report) so a caller that
+		// blocks on <-report has a happens-before edge on the temp
+		// files being gone.
 		defer cleanup()
 		defer close(events)
 		defer close(report)
@@ -120,6 +122,7 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 		if perr == nil && req.SessionID != "" {
 			p.rememberSession(req.SessionID)
 		}
+		cleanup() // now safe: child has exited (cmd.Wait returned)
 		report <- agent.StreamReport{Response: resp, Err: perr}
 	}()
 

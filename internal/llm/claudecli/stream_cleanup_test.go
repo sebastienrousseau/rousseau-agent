@@ -106,7 +106,7 @@ printf '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}\n'
 		}},
 	})
 	require.NoError(t, err)
-	for range events { //nolint:revive // drain
+	for range events {
 	}
 	rep := <-report
 	require.NoError(t, rep.Err)

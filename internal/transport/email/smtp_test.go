@@ -29,7 +29,7 @@ func startFakeSMTP(t *testing.T) *fakeSMTP {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() }) //nolint:errcheck // test setup/teardown
 
 	s := &fakeSMTP{addr: ln.Addr().String()}
 	go func() {
@@ -45,12 +45,12 @@ func startFakeSMTP(t *testing.T) *fakeSMTP {
 }
 
 func (s *fakeSMTP) serve(conn net.Conn) {
-	defer func() { _ = conn.Close() }()
+	defer func() { _ = conn.Close() }() //nolint:errcheck // test setup/teardown
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)
 	say := func(line string) {
-		_, _ = w.WriteString(line + "\r\n")
-		_ = w.Flush()
+		_, _ = w.WriteString(line + "\r\n") //nolint:errcheck // test setup/teardown
+		_ = w.Flush()                       //nolint:errcheck // test setup/teardown
 	}
 	say("220 fake.local ESMTP ready")
 	for {

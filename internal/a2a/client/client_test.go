@@ -54,7 +54,7 @@ func sseHeaders(w http.ResponseWriter) {
 func writeAck(w http.ResponseWriter, taskID string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]string{"task_id": taskID, "status": "running"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"task_id": taskID, "status": "running"}) //nolint:errcheck // test writer
 }
 
 // roundTripFunc adapts a closure to http.RoundTripper.
@@ -133,7 +133,7 @@ func TestFetchCard(t *testing.T) {
 		var gotPath, gotAuth, gotMethod string
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			gotPath, gotAuth, gotMethod = r.URL.Path, r.Header.Get("Authorization"), r.Method
-			_ = json.NewEncoder(w).Encode(a2a.CapabilityCard{
+			_ = json.NewEncoder(w).Encode(a2a.CapabilityCard{ //nolint:errcheck // test writer
 				AgentID: "peer-1",
 				Name:    "peer",
 				Version: "v9",
@@ -157,7 +157,7 @@ func TestFetchCard(t *testing.T) {
 		var seen bool
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, seen = r.Header["Authorization"]
-			_ = json.NewEncoder(w).Encode(a2a.CapabilityCard{})
+			_ = json.NewEncoder(w).Encode(a2a.CapabilityCard{}) //nolint:errcheck // test writer
 		}))
 		defer ts.Close()
 
@@ -169,7 +169,7 @@ func TestFetchCard(t *testing.T) {
 	t.Run("non-200 surfaces status and body", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = io.WriteString(w, `{"error":"invalid bearer token"}`)
+			_, _ = io.WriteString(w, `{"error":"invalid bearer token"}`) //nolint:errcheck // test writer
 		}))
 		defer ts.Close()
 
@@ -181,7 +181,7 @@ func TestFetchCard(t *testing.T) {
 
 	t.Run("malformed card body", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = io.WriteString(w, "not json")
+			_, _ = io.WriteString(w, "not json") //nolint:errcheck // test writer
 		}))
 		defer ts.Close()
 
@@ -214,7 +214,7 @@ func TestFetchCard(t *testing.T) {
 		block := make(chan struct{})
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			<-block
-			_ = json.NewEncoder(w).Encode(a2a.CapabilityCard{})
+			_ = json.NewEncoder(w).Encode(a2a.CapabilityCard{}) //nolint:errcheck // test writer
 		}))
 		t.Cleanup(ts.Close)
 		t.Cleanup(func() { close(block) })
@@ -323,7 +323,7 @@ func TestSubmitTask_PostErrors(t *testing.T) {
 			name: "non-202 response",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusBadRequest)
-				_, _ = io.WriteString(w, `{"error":"task must set prompt or skill_name"}`)
+				_, _ = io.WriteString(w, `{"error":"task must set prompt or skill_name"}`) //nolint:errcheck // test writer
 			},
 			wantErr: "HTTP 400",
 		},
@@ -331,7 +331,7 @@ func TestSubmitTask_PostErrors(t *testing.T) {
 			name: "malformed ack",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusAccepted)
-				_, _ = io.WriteString(w, "{{{")
+				_, _ = io.WriteString(w, "{{{") //nolint:errcheck // test writer
 			},
 			wantErr: "decode task ack",
 		},
@@ -339,7 +339,7 @@ func TestSubmitTask_PostErrors(t *testing.T) {
 			name: "ack without a task_id",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusAccepted)
-				_, _ = io.WriteString(w, `{"status":"running"}`)
+				_, _ = io.WriteString(w, `{"status":"running"}`) //nolint:errcheck // test writer
 			},
 			wantErr: "server did not return task_id",
 		},
@@ -379,7 +379,7 @@ func TestSubmitTask_StreamOpenErrors(t *testing.T) {
 				return
 			}
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":"unknown task_id"}`)
+			_, _ = io.WriteString(w, `{"error":"unknown task_id"}`) //nolint:errcheck // test writer
 		}))
 		defer ts.Close()
 
@@ -434,9 +434,9 @@ func TestSubmitTask_StreamParsing(t *testing.T) {
 		}
 		sseHeaders(w)
 		// Noise the client must ignore.
-		_, _ = io.WriteString(w, ": keep-alive comment\n\n")
-		_, _ = io.WriteString(w, "event: ping\n\n")
-		_, _ = io.WriteString(w, "data: {not-valid-json}\n\n")
+		_, _ = io.WriteString(w, ": keep-alive comment\n\n")   //nolint:errcheck // test writer
+		_, _ = io.WriteString(w, "event: ping\n\n")            //nolint:errcheck // test writer
+		_, _ = io.WriteString(w, "data: {not-valid-json}\n\n") //nolint:errcheck // test writer
 		w.(http.Flusher).Flush()
 		sse(t, w, a2a.TaskUpdate{TaskID: "t1", Status: a2a.TaskStatusRunning, Message: "real"})
 		sse(t, w, a2a.TaskUpdate{TaskID: "t1", Status: a2a.TaskStatusCancelled})
@@ -484,7 +484,7 @@ func TestSubmitTask_ContextCancelStopsTheStream(t *testing.T) {
 		// Emit far more than the 16-slot client buffer so the fan-out
 		// goroutine ends up blocked on a send when ctx is cancelled.
 		for i := 0; i < 64; i++ {
-			blob, _ := json.Marshal(a2a.TaskUpdate{TaskID: "t1", Status: a2a.TaskStatusRunning, Progress: float64(i)})
+			blob, _ := json.Marshal(a2a.TaskUpdate{TaskID: "t1", Status: a2a.TaskStatusRunning, Progress: float64(i)}) //nolint:errcheck // test setup
 			if _, err := fmt.Fprintf(w, "data: %s\n\n", blob); err != nil {
 				return
 			}
@@ -513,7 +513,7 @@ func TestSubmitTask_ContextCancelStopsTheStream(t *testing.T) {
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
-		for range ch { //nolint:revive // drain until closed
+		for range ch {
 		}
 	}()
 	select {
@@ -553,7 +553,7 @@ func TestCancel(t *testing.T) {
 	t.Run("unexpected status", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":"unknown task_id"}`)
+			_, _ = io.WriteString(w, `{"error":"unknown task_id"}`) //nolint:errcheck // test writer
 		}))
 		defer ts.Close()
 
@@ -606,7 +606,7 @@ func TestUnexpectedStatus(t *testing.T) {
 	}
 
 	t.Run("body read failure still reports the status", func(t *testing.T) {
-		resp := &http.Response{StatusCode: 502, Body: io.NopCloser(errReader{})}
+		resp := &http.Response{StatusCode: http.StatusBadGateway, Body: io.NopCloser(errReader{})}
 		assert.Contains(t, unexpectedStatus(resp).Error(), "HTTP 502")
 	})
 }

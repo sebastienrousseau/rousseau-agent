@@ -101,7 +101,7 @@ func TestTaskState_SubscribeFanOutToMultipleSubscribers(t *testing.T) {
 	chans := make([]<-chan a2a.TaskUpdate, 3)
 	for i := range chans {
 		ch, cancel := st.subscribe()
-		defer cancel() //nolint:gocritic // all subscribers live for the test
+		defer cancel()
 		chans[i] = ch
 	}
 

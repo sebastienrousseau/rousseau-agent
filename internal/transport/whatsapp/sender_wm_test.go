@@ -32,7 +32,7 @@ func unpairedDevice(t *testing.T) *store.Device {
 	t.Helper()
 	container, err := sqlstore.New(context.Background(), "sqlite", tempStoreDSN(t), waLog.Noop)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = container.Close() })
+	t.Cleanup(func() { _ = container.Close() }) //nolint:errcheck // test setup/teardown
 	device, err := container.GetFirstDevice(context.Background())
 	require.NoError(t, err)
 	return device

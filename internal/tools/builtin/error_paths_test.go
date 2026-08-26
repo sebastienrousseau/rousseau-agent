@@ -28,7 +28,7 @@ func chmodTemp(t *testing.T, path string, mode os.FileMode) {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.NoError(t, os.Chmod(path, mode))
-	t.Cleanup(func() { _ = os.Chmod(path, info.Mode()) })
+	t.Cleanup(func() { _ = os.Chmod(path, info.Mode()) }) //nolint:errcheck // test setup/teardown
 }
 
 // -- bash --------------------------------------------------------------

@@ -48,7 +48,7 @@ func fireCallback(addr, provider string, q url.Values) {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(target) //nolint:gosec,noctx // loopback test fixture
 		if err == nil {
-			_ = resp.Body.Close() //nolint:errcheck // best-effort close
+			_ = resp.Body.Close()
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -162,7 +162,7 @@ func TestServe_BindFailureIsReported(t *testing.T) {
 	// Hold the port so Serve cannot bind it.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	defer func() { _ = l.Close() }() //nolint:errcheck // best-effort close
+	defer func() { _ = l.Close() }() //nolint:errcheck // test setup
 	b.CallbackAddr = l.Addr().String()
 	b.CallbackTimeout = time.Second
 

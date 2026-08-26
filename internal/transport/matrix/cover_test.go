@@ -240,7 +240,7 @@ func TestStart_RoutesSyncedEventThenStopsCleanly(t *testing.T) {
 	err := c.Start(context.Background(), transport.HandlerFunc(
 		func(_ context.Context, m transport.IncomingMessage) (string, error) {
 			got = append(got, m.From+": "+m.Body)
-			_ = c.Stop() // end the loop on the next iteration
+			_ = c.Stop() //nolint:errcheck // end the loop on the next iteration
 			return "", nil
 		}))
 

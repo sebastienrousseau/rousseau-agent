@@ -34,9 +34,9 @@ func newRecordingServer(t *testing.T, status int, respBody string) (*httptest.Se
 		rec.Escaped = r.URL.EscapedPath()
 		rec.Query = r.URL.Query()
 		rec.Header = r.Header.Clone()
-		rec.Body, _ = io.ReadAll(r.Body) //nolint:errcheck // test fixture
+		rec.Body, _ = io.ReadAll(r.Body) //nolint:errcheck // test setup
 		w.WriteHeader(status)
-		_, _ = w.Write([]byte(respBody)) //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(respBody)) //nolint:errcheck // test handler
 	}))
 	t.Cleanup(srv.Close)
 	return srv, rec
@@ -128,7 +128,7 @@ func TestEveryTool_PropagatesSecondaryRateLimit(t *testing.T) {
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("Retry-After", "60")
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit"}`)) //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{"message":"You have exceeded a secondary rate limit"}`)) //nolint:errcheck // test handler
 	}))
 	defer srv.Close()
 	c := newTestClient(t, srv)
@@ -149,7 +149,7 @@ func TestEveryTool_HandlesEmptyUpstreamPayload(t *testing.T) {
 	for _, tc := range allGitHubTools() {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				_, _ = w.Write([]byte(`[]`)) //nolint:errcheck // test fixture
+				_, _ = w.Write([]byte(`[]`)) //nolint:errcheck // test handler
 			}))
 			defer srv.Close()
 			out, err := tc.build(newTestClient(t, srv)).Execute(context.Background(), json.RawMessage(tc.valid))
@@ -161,7 +161,7 @@ func TestEveryTool_HandlesEmptyUpstreamPayload(t *testing.T) {
 
 func TestEveryTool_SurfacesMalformedUpstreamJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"truncated":`)) //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`{"truncated":`)) //nolint:errcheck // test handler
 	}))
 	defer srv.Close()
 	c := newTestClient(t, srv)
@@ -260,8 +260,8 @@ func TestListReposTool_ParsesPaginatedPage(t *testing.T) {
 	// selected fields and ignores pagination metadata.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Link", `<https://api.github.com/user/repos?page=2>; rel="next"`)
-		_, _ = w.Write([]byte(`[{"full_name":"a/one","private":false,"stargazers_count":3,"language":"Go","ignored":"x"},` +
-			`{"full_name":"a/two","private":true,"stargazers_count":0}]`)) //nolint:errcheck // test fixture
+		_, _ = w.Write([]byte(`[{"full_name":"a/one","private":false,"stargazers_count":3,"language":"Go","ignored":"x"},` + //nolint:errcheck // test setup
+			`{"full_name":"a/two","private":true,"stargazers_count":0}]`))
 	}))
 	defer srv.Close()
 	tool := NewListReposTool(newTestClient(t, srv))
