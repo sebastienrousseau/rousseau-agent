@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"os"
@@ -58,7 +57,7 @@ func TestStartMCPClients_NoClientsIsNoOp(t *testing.T) {
 }
 
 func TestStartMCPClients_SkipsEmptyCommand(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	clients, names, err := startMCPClients(context.Background(), config.MCPConfig{
 		Clients: map[string]config.MCPClientConfig{"broken": {Command: ""}},
@@ -71,7 +70,7 @@ func TestStartMCPClients_SkipsEmptyCommand(t *testing.T) {
 }
 
 func TestStartMCPClients_FailSoftOnUnstartableServer(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	clients, names, err := startMCPClients(context.Background(), config.MCPConfig{
 		Clients: map[string]config.MCPClientConfig{
@@ -86,7 +85,7 @@ func TestStartMCPClients_FailSoftOnUnstartableServer(t *testing.T) {
 
 func TestStartMCPClients_RegistersAdvertisedTools(t *testing.T) {
 	registry := tools.NewRegistry()
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	server := fakeMCPServer(t, `[{"name":"echo","description":"echoes","inputSchema":{"type":"object"}}]`)
@@ -110,7 +109,7 @@ func TestStartMCPClients_RegistersAdvertisedTools(t *testing.T) {
 }
 
 func TestStartMCPClients_PartialRegistrationClosesClient(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	// The same tool name twice: the second Register collides, so
@@ -145,7 +144,7 @@ func TestStartMCPClients_IteratesInNameOrder(t *testing.T) {
 }
 
 func TestCloseMCPClients_LogsCloseFailuresAndSkipsNils(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	server := fakeMCPServer(t, `[{"name":"t","inputSchema":{}}]`)
@@ -167,7 +166,7 @@ func TestCloseMCPClients_LogsCloseFailuresAndSkipsNils(t *testing.T) {
 // TestAssembleDaemon_LogsMCPToolCount pins the summary log the daemon
 // emits once every configured MCP server is wired.
 func TestAssembleDaemon_LogsMCPToolCount(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	opts := makeDaemonOpts(t)
 	opts.Logger = slog.New(slog.NewTextHandler(&buf, nil))
 	opts.Config.MCP = config.MCPConfig{
