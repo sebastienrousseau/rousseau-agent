@@ -297,6 +297,11 @@ jobs:
           image: ${{ steps.localref.outputs.ref }}
           severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
           fail-build: true
+          # Print the findings. The default SARIF output goes to a file,
+          # so a failing gate says only "found vulnerabilities" and the
+          # person reading the log cannot tell which package, which CVE,
+          # or whether a fix exists.
+          output-format: table
 
   # -------------------------------------------------------------------
   # Supply-chain gate for PUSHED images, by registry digest.
@@ -348,3 +353,4 @@ jobs:
           image: ${{ steps.ref.outputs.ref }}
           severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
           fail-build: true
+          output-format: table
