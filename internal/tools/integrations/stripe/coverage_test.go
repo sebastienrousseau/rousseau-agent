@@ -3,6 +3,7 @@ package stripe
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,22 +27,21 @@ func TestEveryToolExposesMetadata(t *testing.T) {
 }
 
 func TestListChargesTool_HandlesEmptyInput(t *testing.T) {
-	c, err := New(Config{SecretKey: "sk_test_x"})
+	// Nil input is valid — every filter is optional, so the default
+	// limit is applied and no customer filter is sent.
+	srv, rec := newRecordingServer(t, http.StatusOK, `{"object":"list","data":[]}`)
+	tool := NewListChargesTool(newTestClient(t, srv))
+	_, err := tool.Execute(context.Background(), nil)
 	require.NoError(t, err)
-	tool := NewListChargesTool(c)
-	_, err = tool.Execute(context.Background(), nil)
-	if err != nil {
-		assert.NotContains(t, err.Error(), "bad input")
-	}
+	assert.Equal(t, "10", rec.Query.Get("limit"))
+	assert.False(t, rec.Query.Has("customer"))
 }
 
 func TestListChargesTool_CustomerFilter(t *testing.T) {
-	c, err := New(Config{SecretKey: "sk_test_x"})
+	srv, rec := newRecordingServer(t, http.StatusOK, `{"object":"list","data":[]}`)
+	tool := NewListChargesTool(newTestClient(t, srv))
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"customer":"cus_123","limit":5}`))
 	require.NoError(t, err)
-	tool := NewListChargesTool(c)
-	// The failure is on the wire; the input parse must not fail.
-	_, err = tool.Execute(context.Background(), json.RawMessage(`{"customer":"cus_123","limit":5}`))
-	if err != nil {
-		assert.NotContains(t, err.Error(), "bad input")
-	}
+	assert.Equal(t, "cus_123", rec.Query.Get("customer"))
+	assert.Equal(t, "5", rec.Query.Get("limit"))
 }

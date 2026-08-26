@@ -82,6 +82,11 @@ func (c *Client) postForm(ctx context.Context, method string, form url.Values, o
 }
 
 // postJSON issues a POST with a JSON body (Slack's newer methods).
+// Only chat.postMessage uses this today but the shape matches every
+// newer JSON-body slack method (conversations.open, users.info, …)
+// that we'll grow into.
+//
+//nolint:unparam // method is intentionally parameterised for future callers
 func (c *Client) postJSON(ctx context.Context, method string, body, out any) error {
 	raw, err := json.Marshal(body)
 	if err != nil {

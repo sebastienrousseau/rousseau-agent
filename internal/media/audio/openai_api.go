@@ -69,38 +69,10 @@ func (o *OpenAIAPI) Transcribe(ctx context.Context, audio []byte, mimetype strin
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Build multipart form: file + model + response_format=json.
 	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-
-	if _, err := mw.CreateFormFile("file", "voice"+extensionForMime(mimetype)); err != nil {
-		return Result{}, fmt.Errorf("audio/openai: create file field: %w", err)
-	}
-	// Re-read the file part header + body — the CreateFormFile above
-	// wrote the boundary; now stream the bytes into the writer
-	// returned. To keep the code simple, re-do with the returned writer.
-	buf.Reset()
-	mw = multipart.NewWriter(&buf)
-	fw, err := mw.CreateFormFile("file", "voice"+extensionForMime(mimetype))
+	contentType, err := writeTranscriptionForm(&buf, audio, mimetype, model, o.Language)
 	if err != nil {
-		return Result{}, fmt.Errorf("audio/openai: create file field: %w", err)
-	}
-	if _, err := io.Copy(fw, bytes.NewReader(audio)); err != nil {
-		return Result{}, fmt.Errorf("audio/openai: copy audio: %w", err)
-	}
-	if err := mw.WriteField("model", model); err != nil {
-		return Result{}, fmt.Errorf("audio/openai: model field: %w", err)
-	}
-	if err := mw.WriteField("response_format", "json"); err != nil {
-		return Result{}, fmt.Errorf("audio/openai: format field: %w", err)
-	}
-	if o.Language != "" {
-		if err := mw.WriteField("language", o.Language); err != nil {
-			return Result{}, fmt.Errorf("audio/openai: language field: %w", err)
-		}
-	}
-	if err := mw.Close(); err != nil {
-		return Result{}, fmt.Errorf("audio/openai: close multipart: %w", err)
+		return Result{}, err
 	}
 
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost, strings.TrimRight(base, "/")+"/audio/transcriptions", &buf)
@@ -108,7 +80,7 @@ func (o *OpenAIAPI) Transcribe(ctx context.Context, audio []byte, mimetype strin
 		return Result{}, fmt.Errorf("audio/openai: new request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+o.APIKey)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 
 	start := time.Now()
 	client := o.HTTPClient
@@ -146,4 +118,42 @@ func (o *OpenAIAPI) Transcribe(ctx context.Context, audio []byte, mimetype strin
 		Language: lang,
 		Duration: elapsed,
 	}, nil
+}
+
+// writeTranscriptionForm builds the multipart body for OpenAI's
+// /audio/transcriptions endpoint into w and returns the Content-Type
+// header (which carries the generated boundary).
+//
+// This is a separate function rather than inline in Transcribe for two
+// reasons. It separates body construction from HTTP concerns, which is
+// worth doing on its own merits. And it takes an io.Writer rather than
+// owning a bytes.Buffer, which makes the write-failure paths reachable
+// from tests -- against a bytes.Buffer sink none of these errors can
+// ever fire, so inline they were six permanently-dead branches that no
+// test could legitimately exercise.
+func writeTranscriptionForm(w io.Writer, audio []byte, mimetype, model, language string) (string, error) {
+	mw := multipart.NewWriter(w)
+
+	fw, err := mw.CreateFormFile("file", "voice"+extensionForMime(mimetype))
+	if err != nil {
+		return "", fmt.Errorf("audio/openai: create file field: %w", err)
+	}
+	if _, err := io.Copy(fw, bytes.NewReader(audio)); err != nil {
+		return "", fmt.Errorf("audio/openai: copy audio: %w", err)
+	}
+	if err := mw.WriteField("model", model); err != nil {
+		return "", fmt.Errorf("audio/openai: model field: %w", err)
+	}
+	if err := mw.WriteField("response_format", "json"); err != nil {
+		return "", fmt.Errorf("audio/openai: format field: %w", err)
+	}
+	if language != "" {
+		if err := mw.WriteField("language", language); err != nil {
+			return "", fmt.Errorf("audio/openai: language field: %w", err)
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return "", fmt.Errorf("audio/openai: close multipart: %w", err)
+	}
+	return mw.FormDataContentType(), nil
 }

@@ -168,3 +168,49 @@ func (r readerAdapter) Read(p []byte) (int, error) { return r.inner.Read(p) }
 
 // silence unused import when only completeFixture is referenced.
 var _ = strings.HasSuffix
+
+// TestComplete_ConversionErrorShortCircuits proves an unconvertible
+// message never reaches the transport.
+func TestComplete_ConversionErrorShortCircuits(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("transport must not be reached")
+	}))
+	defer server.Close()
+
+	p := &Provider{
+		client: sdk.NewClient(option.WithAPIKey("k"), option.WithBaseURL(server.URL)),
+		cfg:    Config{APIKey: "k", Model: "m", MaxTokens: 100},
+	}
+	_, err := p.Complete(context.Background(), agent.Request{
+		Messages: []agent.Message{{
+			Role:    agent.RoleUser,
+			Content: []agent.Content{{Kind: agent.ContentImage}}, // nil Image payload
+		}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "image content missing payload")
+}
+
+// TestComplete_UnsupportedResponseBlockErrors covers the response-side
+// conversion failure: a `thinking` block has no agent.Content analogue,
+// so Complete refuses the reply rather than silently dropping it.
+func TestComplete_UnsupportedResponseBlockErrors(t *testing.T) {
+	const raw = `{"id":"m","type":"message","role":"assistant","content":[
+	  {"type":"thinking","thinking":"pondering","signature":"sig"}
+	],"model":"m","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(raw)) //nolint:errcheck // test fixture
+	}))
+	defer server.Close()
+
+	p := &Provider{
+		client: sdk.NewClient(option.WithAPIKey("k"), option.WithBaseURL(server.URL)),
+		cfg:    Config{APIKey: "k", Model: "m", MaxTokens: 100},
+	}
+	_, err := p.Complete(context.Background(), agent.Request{
+		Messages: []agent.Message{agent.NewUserText("go")},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported content block")
+}

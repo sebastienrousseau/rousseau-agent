@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# CodeQL flags workflows that omit a permissions block as broadly
+# privileged. This workflow only reads the checkout and builds
+# throwaway images locally — read-only contents access is sufficient.
+permissions:
+  contents: read
+
 # Non-blocking on failure while we tune the budget. Once we've had a
 # few weeks of green runs on main, promote this to required-check
 # status in the branch ruleset.

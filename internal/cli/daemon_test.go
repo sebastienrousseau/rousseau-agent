@@ -16,6 +16,10 @@ func makeDaemonOpts(t *testing.T) *Options {
 	return &Options{
 		Config: &config.Config{
 			State: config.StateConfig{Path: filepath.Join(t.TempDir(), "sessions.db")},
+			// An empty skills dir keeps assembleDaemon hermetic: the
+			// default resolution would read $HOME/.local/share/rousseau/skills,
+			// so a developer's own skills could fail the build step.
+			Agent: config.AgentConfig{SkillsDir: t.TempDir()},
 		},
 		Logger: silentLogger(),
 	}

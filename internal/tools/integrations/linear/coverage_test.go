@@ -3,6 +3,7 @@ package linear
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -38,14 +39,11 @@ func TestUpdateIssueTool_ValidatesInput(t *testing.T) {
 }
 
 func TestListIssuesTool_HandlesEmptyInput(t *testing.T) {
-	c, err := New(Config{APIKey: "lin_api_x"})
+	// Nil input JSON is allowed — every filter is optional, so the tool
+	// must still issue a well-formed GraphQL query.
+	srv, rec := newGQLServer(t, http.StatusOK, `{"data":{"issues":{"nodes":[]}}}`)
+	tool := NewListIssuesTool(newTestClient(t, srv))
+	_, err := tool.Execute(context.Background(), nil)
 	require.NoError(t, err)
-	tool := NewListIssuesTool(c)
-	// Nil input JSON is allowed — every filter is optional.
-	_, err = tool.Execute(context.Background(), nil)
-	// Will fail on the wire call (no test server), but bad-input parse
-	// must not fire.
-	if err != nil {
-		assert.NotContains(t, err.Error(), "bad input")
-	}
+	assert.Contains(t, rec.Query, "issues(filter")
 }

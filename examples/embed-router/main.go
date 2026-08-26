@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -35,27 +36,43 @@ func (s *stub) Complete(_ context.Context, _ agent.Request) (agent.Response, err
 	}, nil
 }
 
-func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+func main() { os.Exit(run(context.Background(), os.Stdout, os.Stderr, defaultProviders())) }
+
+// defaultProviders is the fleet the router picks between. A real
+// deployment builds these with anthropic.New / openai.New / … instead.
+func defaultProviders() map[string]agent.Provider {
+	return map[string]agent.Provider{
+		"haiku":  &stub{name: "haiku"},
+		"sonnet": &stub{name: "sonnet"},
+		"opus":   &stub{name: "opus"},
+	}
+}
+
+// run composes the router, drives one request per branch and returns
+// the process exit code. main does nothing but call os.Exit so that
+// tests can drive run directly.
+func run(ctx context.Context, out, errOut io.Writer, providers map[string]agent.Provider) int {
+	logger := slog.New(slog.NewTextHandler(out, nil))
 
 	r, err := router.New(router.Options{
 		Default: "sonnet",
+		// Rules are evaluated in order and the first match wins, so
+		// the narrow rule has to come first: quick-chat's
+		// ToolUseCountMax of 0 disables that filter rather than
+		// requiring "no tools", and would otherwise swallow every
+		// short turn including the tool-heavy ones.
 		Rules: []router.Rule{
-			// Quick chit-chat with no tools in the transcript: haiku.
-			{Name: "quick-chat", MessageLenMax: 100, ToolUseCountMax: 0, Use: "haiku"},
-			// Long or tool-heavy turns: opus.
+			// Tool-heavy turns: opus.
 			{Name: "complex", ToolUseCountMin: 3, Use: "opus"},
+			// Quick chit-chat: haiku.
+			{Name: "quick-chat", MessageLenMax: 100, Use: "haiku"},
 		},
-		Providers: map[string]agent.Provider{
-			"haiku":  &stub{name: "haiku"},
-			"sonnet": &stub{name: "sonnet"},
-			"opus":   &stub{name: "opus"},
-		},
-		Logger: logger,
+		Providers: providers,
+		Logger:    logger,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "router:", err)
-		os.Exit(1)
+		fmt.Fprintln(errOut, "router:", err)
+		return 1
 	}
 
 	// Three test requests exercising each branch.
@@ -78,13 +95,14 @@ func main() {
 	}
 
 	for _, tc := range tests {
-		resp, err := r.Complete(context.Background(), tc.req)
+		resp, err := r.Complete(ctx, tc.req)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, tc.name, "err:", err)
+			fmt.Fprintln(errOut, tc.name, "err:", err)
 			continue
 		}
-		fmt.Printf("%-30s → %s\n", tc.name, resp.Model)
+		fmt.Fprintf(out, "%-30s → %s\n", tc.name, resp.Model)
 	}
+	return 0
 }
 
 func longText() string {

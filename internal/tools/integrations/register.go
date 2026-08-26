@@ -41,6 +41,12 @@ type ComposioConfig struct {
 	// (case-insensitive). Empty registers every visible action —
 	// convenient for exploration, dangerous for auditing.
 	Apps []string
+	// BaseURL overrides Composio's REST endpoint. Empty uses
+	// [composio.DefaultBaseURL]. Mirrors GitHubConfig.BaseURL: it
+	// lets an operator point at a self-hosted / regional Composio
+	// deployment, and lets the wiring be exercised against a local
+	// stub instead of the public API.
+	BaseURL string
 }
 
 // GitHubConfig toggles + configures the GitHub suite.
@@ -142,8 +148,9 @@ func RegisterAll(reg *tools.Registry, cfg Config, logger *slog.Logger) error {
 
 	if cfg.Composio.Enabled {
 		c, err := composio.New(composio.Config{
-			APIKey: cfg.Composio.APIKey,
-			UserID: cfg.Composio.UserID,
+			APIKey:  cfg.Composio.APIKey,
+			UserID:  cfg.Composio.UserID,
+			BaseURL: cfg.Composio.BaseURL,
 		})
 		if err != nil {
 			return fmt.Errorf("integrations/composio: %w", err)

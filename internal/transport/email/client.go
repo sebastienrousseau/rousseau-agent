@@ -293,8 +293,16 @@ func buildMessage(from, to, body string) []byte {
 
 // -- default factories -------------------------------------------------
 
+// imapDialTLS is the TLS dial step of defaultIMAPFactory, held in a
+// package-level var so tests can point the factory at a loopback IMAP
+// server carrying a throwaway CA rather than a public host. Only
+// tests reassign it.
+var imapDialTLS = func(addr string) (*imapclient.Client, error) {
+	return imapclient.DialTLS(addr, nil)
+}
+
 func defaultIMAPFactory(addr, user, pass string) (IMAPClient, error) {
-	client, err := imapclient.DialTLS(addr, nil)
+	client, err := imapDialTLS(addr)
 	if err != nil {
 		return nil, err
 	}

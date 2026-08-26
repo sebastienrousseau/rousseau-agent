@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -26,9 +27,20 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/pkg/llm/claudecli"
 )
 
-func main() {
-	provider := claudecli.New(claudecli.Config{PermissionMode: "acceptEdits"})
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+func main() { os.Exit(run(context.Background(), defaultProvider(), os.Stdout, os.Stderr)) }
+
+// defaultProvider shells out to the local `claude` CLI. Substitute any
+// other agent.Provider for a different backend.
+func defaultProvider() agent.Provider {
+	return claudecli.New(claudecli.Config{PermissionMode: "acceptEdits"})
+}
+
+// run fans the parent session out into three sub-agents and prints the
+// aggregated result, returning the process exit code. The provider is a
+// parameter so the fan-out can be pointed at any backend; main does
+// nothing but call os.Exit so that tests can drive run directly.
+func run(ctx context.Context, provider agent.Provider, out, errOut io.Writer) int {
+	logger := slog.New(slog.NewJSONHandler(errOut, nil))
 	parent := agent.NewSession("triage")
 
 	tasks := []subagent.Task{
@@ -56,12 +68,13 @@ func main() {
 		AggregatorMaxBytes: 8 * 1024, // 8 KiB combined output
 	}
 
-	results, err := subagent.Spawn(context.Background(), parent, provider, tasks, policy, logger)
+	results, err := subagent.Spawn(ctx, parent, provider, tasks, policy, logger)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "spawn: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(errOut, "spawn: %v\n", err)
+		return 1
 	}
 
 	aggregated := subagent.DefaultAggregator{}.Aggregate(results, policy.AggregatorMaxBytes)
-	fmt.Println(aggregated.ToolResult.Output)
+	fmt.Fprintln(out, aggregated.ToolResult.Output)
+	return 0
 }

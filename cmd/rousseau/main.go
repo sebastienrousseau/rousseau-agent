@@ -11,9 +11,14 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/cli"
 )
 
-func main() {
+func main() { os.Exit(run()) }
+
+// run installs the interrupt handler, runs the Cobra command tree and
+// returns the process exit code. It exists so tests can drive the real
+// entry point: main itself may do nothing but call os.Exit, which would
+// take the test binary down with it.
+func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := cli.Execute(ctx)
-	cancel()
-	os.Exit(code)
+	defer cancel()
+	return cli.Execute(ctx)
 }
