@@ -40,6 +40,17 @@ type MessageEditor interface {
 	EditText(ctx context.Context, chat types.JID, id, body string) error
 }
 
+// Reactor is the OPTIONAL emoji-reaction capability. Same shape as
+// MessageEditor: kept off Sender so unit fakes stay small, and callers
+// type-assert before use. Reactions confirm receipt/completion in-band
+// without adding lines to the thread.
+type Reactor interface {
+	// React sends emoji as a reaction to targetID in chat. senderJID is
+	// the JID that sent the target message (whatsmeow needs it to build
+	// the reaction key). An empty emoji removes any prior reaction.
+	React(ctx context.Context, chat, senderJID types.JID, targetID, emoji string) error
+}
+
 // wmSender adapts a *whatsmeow.Client to the Sender interface.
 type wmSender struct{ wm *whatsmeow.Client }
 
@@ -75,8 +86,22 @@ func (s *wmSender) EditText(ctx context.Context, chat types.JID, id, body string
 	return err
 }
 
-// Compile-time check: the real client supports in-place edits.
-var _ MessageEditor = (*wmSender)(nil)
+// React satisfies Reactor. targetID is the ID of the message being
+// reacted to; senderJID is who sent it (self for outbound, peer for
+// inbound). Whatsmeow's BuildReaction packs both into the reaction
+// key so recipients can dedupe.
+func (s *wmSender) React(ctx context.Context, chat, senderJID types.JID, targetID, emoji string) error {
+	msg := s.wm.BuildReaction(chat, senderJID, targetID, emoji)
+	_, err := s.wm.SendMessage(ctx, chat, msg)
+	return err
+}
+
+// Compile-time checks: the real client supports both optional
+// capabilities.
+var (
+	_ MessageEditor = (*wmSender)(nil)
+	_ Reactor       = (*wmSender)(nil)
+)
 
 // parseJID parses a JID string like "15551234567@s.whatsapp.net" into
 // the whatsmeow types. It rejects empty inputs and surfaces the

@@ -130,6 +130,12 @@ func resolveFrom(evt *events.Message, ownID *types.JID) types.JID {
 func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log *slog.Logger) {
 	log.Info("whatsapp.incoming", slog.String("from", res.Msg.From))
 
+	// Immediate emoji-reaction ack: sub-second confirmation of receipt,
+	// no chat clutter. Best-effort; if the sender does not implement
+	// Reactor (test fakes) or the send fails, we silently continue.
+	react := reactorFor(in)
+	react(ctx, "👀")
+
 	// Typing indicator — best-effort, never blocks the reply flow.
 	setPresence(ctx, in.Sender, res.Chat, types.ChatPresenceComposing, log)
 	defer setPresence(ctx, in.Sender, res.Chat, types.ChatPresencePaused, log)
@@ -149,10 +155,12 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 		log.Error("whatsapp.handler_failed",
 			slog.String("err", err.Error()),
 			slog.Duration("elapsed", elapsed))
+		react(context.Background(), "❌")
 		return
 	}
 	if reply == "" {
 		log.Info("whatsapp.empty_reply", slog.Duration("elapsed", elapsed))
+		react(context.Background(), "✅")
 		return
 	}
 	log.Info("whatsapp.handler_ok",
@@ -161,6 +169,41 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 
 	if err := in.Sender.SendText(ctx, res.Chat, PrependHeader(reply, in.Header)); err != nil {
 		log.Error("whatsapp.send_failed", slog.String("err", err.Error()))
+		react(context.Background(), "❌")
+		return
+	}
+	react(context.Background(), "✅")
+}
+
+// reactionTimeout bounds each reaction send so a slow network never
+// blocks the reply flow. Reactions are best-effort UX; missing one is
+// far cheaper than a stuck handler.
+const reactionTimeout = 3 * time.Second
+
+// reactorFor returns a closure that reacts to the current inbound
+// event when the sender supports it. When the sender does not
+// implement Reactor (unit fakes) or in.Event lacks an ID, the closure
+// is a no-op — callers do not branch.
+func reactorFor(in DispatchInput) func(context.Context, string) {
+	r, ok := in.Sender.(Reactor)
+	if !ok || in.Event == nil || in.Event.Info.ID == "" {
+		return func(context.Context, string) {}
+	}
+	chat := in.Event.Info.Chat
+	senderJID := in.Event.Info.Sender
+	targetID := in.Event.Info.ID
+	log := in.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(ctx context.Context, emoji string) {
+		rctx, cancel := context.WithTimeout(ctx, reactionTimeout)
+		defer cancel()
+		if err := r.React(rctx, chat, senderJID, targetID, emoji); err != nil {
+			log.Debug("whatsapp.react_failed",
+				slog.String("emoji", emoji),
+				slog.String("err", err.Error()))
+		}
 	}
 }
 
