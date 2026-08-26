@@ -297,6 +297,10 @@ jobs:
           image: ${{ steps.localref.outputs.ref }}
           severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
           fail-build: true
+          # Exceptions live in .grype.yaml at the repo root, each with a
+          # written reason and a removal condition. The runtime images
+          # in container-release.yml are gated with NO exceptions.
+          config: .grype.yaml
           # Print the findings. The default SARIF output goes to a file,
           # so a failing gate says only "found vulnerabilities" and the
           # person reading the log cannot tell which package, which CVE,
@@ -353,4 +357,5 @@ jobs:
           image: ${{ steps.ref.outputs.ref }}
           severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
           fail-build: true
+          config: .grype.yaml
           output-format: table
