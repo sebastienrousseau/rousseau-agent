@@ -40,8 +40,26 @@ func NewSupervisor(reg *control.Registry, logger *slog.Logger) *Supervisor {
 // Registry exposes the underlying turn registry.
 func (s *Supervisor) Registry() *control.Registry { return s.reg }
 
+// beginRetryBudget bounds Wrap's steer-vs-begin retry loop. Each miss
+// costs a map lookup and either a Turn.Steer under one mutex or a
+// TryBegin under another, so the ceiling is generous: pathological
+// contention cannot spin forever, but a normal collision between two
+// concurrent inbounds resolves in one or two hops.
+//
+// Kept as a var (not const) so a test can lower it to exercise the
+// exhaustion warn path without staging a real race.
+var beginRetryBudget = 8
+
 // Wrap returns a Handler that applies the supervision rules before
 // delegating to next.
+//
+// The retry loop is what makes concurrent inbounds safe. Two messages
+// for the same key can race: both may see "nothing running" on Lookup,
+// both may then call TryBegin, and TryBegin serialises them — one
+// begins, the other collides. The loser retries: on the next hop
+// Lookup finds the winner's turn and folds the loser's text in via
+// Steer, so the LLM sees one turn that received two messages instead
+// of two turns racing on the same claude session.
 func (s *Supervisor) Wrap(next Handler) Handler {
 	return HandlerFunc(func(ctx context.Context, msg IncomingMessage) (string, error) {
 		key := msg.From
@@ -55,15 +73,23 @@ func (s *Supervisor) Wrap(next Handler) Handler {
 		if d.Prompt == "" {
 			return "", nil
 		}
-		if turn, ok := s.reg.Lookup(key); ok && turn.Steer(d.Prompt) {
-			s.logger.Info("transport.steered", slog.String("from", key))
-			return SteerAck, nil
+		for attempt := 0; attempt < beginRetryBudget; attempt++ {
+			if turn, ok := s.reg.Lookup(key); ok && turn.Steer(d.Prompt) {
+				s.logger.Info("transport.steered", slog.String("from", key))
+				return SteerAck, nil
+			}
+			tctx, turn, claimed := s.reg.TryBegin(ctx, key)
+			if claimed {
+				defer turn.End()
+				msg.Body = d.Prompt
+				return next.Handle(tctx, msg)
+			}
+			// A concurrent inbound claimed the key first. Loop back to
+			// steer into their turn.
 		}
-		// Either nothing was running, or the turn finished in the gap
-		// between Lookup and Steer — run this message as a fresh turn.
-		tctx, turn := s.reg.Begin(ctx, key)
-		defer turn.End()
-		msg.Body = d.Prompt
-		return next.Handle(tctx, msg)
+		s.logger.Warn("transport.begin_retry_exhausted",
+			slog.String("from", key),
+			slog.Int("attempts", beginRetryBudget))
+		return "", nil
 	})
 }

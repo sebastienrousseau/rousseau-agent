@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/control"
 	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
@@ -47,6 +49,15 @@ type daemonWiring struct {
 	// Logger is retained so Cleanup can log MCP-client-close errors
 	// on the same logger the daemon used at startup.
 	Logger *slog.Logger
+
+	// supervisors holds one transport.Supervisor per transport name.
+	// Lazily populated on first TransportHandler call so a transport
+	// that does not run in this process pays no allocation. Each
+	// Supervisor owns its own control.Registry, which keeps
+	// conversations on different transports from colliding on the same
+	// key (e.g. a phone number that reaches both signal and whatsapp).
+	supervisorMu sync.Mutex
+	supervisors  map[string]*transport.Supervisor
 }
 
 // Cleanup releases every resource held by the wiring: closes the MCP
@@ -220,18 +231,51 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 // TransportHandler returns the transport.Handler each transport
 // should attach to its inbound loop. The chain is:
 //
-//	ratelimit.Wrap  →  resilience.Recover  →  wiring.Router
+//	ratelimit.Wrap  →  resilience.Recover  →  Supervisor.Wrap  →  wiring.Router
 //
-// Rate limiting is only applied when the ratelimit config has a
-// non-nil entry for the transport name; Recover always fires so a
-// panic in one handler never takes down the whole daemon.
+// Supervisor sits closest to the router so two inbound messages for
+// the same conversation cannot spawn two concurrent turns — the second
+// folds into the first via Steer instead of racing a fresh `claude
+// --resume` on the same session. Recover wraps that so a panic in the
+// supervised path still cannot take the daemon down, and rate limiting
+// is only applied when the ratelimit config has a non-nil entry for
+// this transport.
+//
+// Each transport gets its own Supervisor+Registry so keys on different
+// transports never collide.
 func (w *daemonWiring) TransportHandler(name string, logger *slog.Logger) transport.Handler {
+	sup := w.supervisorFor(name, logger)
 	h := transport.Handler(w.Router)
+	h = sup.Wrap(h)
 	h = resilience.Recover(h, name, logger)
 	if lim, ok := w.RateLimiters[name]; ok {
 		h = ratelimit.Wrap(h, lim, name, "")
 	}
 	return h
+}
+
+// supervisorFor returns the Supervisor for transport name, creating
+// (and remembering) it on first call. The lazy path is what lets a
+// test that only exercises one transport avoid constructing a
+// Registry for every transport in the codebase.
+func (w *daemonWiring) supervisorFor(name string, logger *slog.Logger) *transport.Supervisor {
+	w.supervisorMu.Lock()
+	defer w.supervisorMu.Unlock()
+	if sup, ok := w.supervisors[name]; ok {
+		return sup
+	}
+	if w.supervisors == nil {
+		w.supervisors = map[string]*transport.Supervisor{}
+	}
+	// The Bus is left nil for now: live-progress delivery back to the
+	// transport is per-transport wiring that lives on the Client
+	// (whatsapp.Client.Bus()) and is not routed through the daemon.
+	// Serialisation and control verbs still work; a follow-up commit
+	// can plumb bus events through the Registry so /status renders the
+	// same view the live reporter shows.
+	sup := transport.NewSupervisor(control.NewRegistry(control.RegistryOptions{}), logger)
+	w.supervisors[name] = sup
+	return sup
 }
 
 // startCron starts a cron scheduler using w.CronStore and the provided
