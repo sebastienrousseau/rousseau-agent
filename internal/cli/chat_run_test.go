@@ -45,8 +45,12 @@ func TestChatCmd_RunsTUIUntilContextCancelled(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.RunE(cmd, nil) }()
 
-	// Give RunE time to reach the program, then bring it down.
-	time.Sleep(200 * time.Millisecond)
+	// A fixed 200ms sleep flaked on loaded CI runners — the chat has
+	// to open the store, build every wiring step, and reach the first
+	// session save before cancel arrives. 2s is comfortably longer
+	// than any of the observed slow starts without lengthening the
+	// happy-path meaningfully.
+	time.Sleep(2 * time.Second)
 	cancel()
 
 	select {
@@ -142,3 +146,4 @@ func requireSessionPersisted(t *testing.T, path string) {
 	require.NoError(t, err)
 	assert.Len(t, hits, 1, "chat must persist the session it opens")
 }
+
