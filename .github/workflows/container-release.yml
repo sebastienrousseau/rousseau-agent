@@ -115,3 +115,27 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      # These are the images that actually run in production, holding a
+      # WhatsApp session and Claude OAuth credentials. They were being
+      # published signed and attested but never scanned, which meant the
+      # supply-chain story proved WHERE the image came from and nothing
+      # about WHAT WAS IN IT.
+      #
+      # The gate is strict here and deliberately stricter than for the
+      # builder image: this runs with credentials and network access,
+      # the builder does not.
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          artifact-name: rousseau-agent-${{ matrix.flavour }}.spdx.json
+
+      - name: Scan for vulnerabilities
+        uses: anchore/scan-action@v7
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          severity-cutoff: high
+          fail-build: true
+          output-format: table

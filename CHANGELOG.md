@@ -135,8 +135,6 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 
 ## [v0.0.1] — first tagged release
 
-## [v0.0.1] — first tagged release
-
 Marks the first cut of `rousseau-agent` with a versioned, attested
 release artefact. Every capability listed here already existed on
 `main`; this tag freezes it into a downloadable, verifiable bundle.

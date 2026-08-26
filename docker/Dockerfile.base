@@ -32,7 +32,7 @@
 #   docker pull mcr.microsoft.com/devcontainers/base:ubuntu
 #   docker inspect --format '{{index .RepoDigests 0}}' \
 #     mcr.microsoft.com/devcontainers/base:ubuntu
-FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:7ee7da33a68d997971660d91ecc8372e55a38a777c3c6bd6808daf91928052db
+FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:0455d069f6d0bef82131385092fd44c00315b60ac07a19eb969fb2e50bf59583
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -67,7 +67,19 @@ RUN usermod  -l rousseau -d /home/rousseau -m vscode \
 # ---------------------------------------------------------------------
 # Core CLI surface shared by both derived images.
 # ---------------------------------------------------------------------
-RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+# Apply distro security updates before installing anything.
+#
+# This is in tension with the digest pin above, and deliberately so.
+# The pin makes the STARTING POINT reproducible; the upgrade makes the
+# RESULT current. Without it the image inherits whatever CVEs the base
+# carried on the day it was published, and the vulnerability gate in
+# agent-images.yml fails on packages nothing in this repo chose --
+# util-linux, libsystemd, openssl, tar. Refresh the digest above when
+# the delta gets large; the weekly scheduled rebuild is what surfaces
+# that.
+RUN apt-get update -qq \
+ && apt-get upgrade -y -qq --no-install-recommends \
+ && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
       git \
@@ -77,6 +89,7 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
       ripgrep \
       unzip \
       wget \
+ && apt-get autoremove -y -qq \
  && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------

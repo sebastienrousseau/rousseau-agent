@@ -1,0 +1,67 @@
+# grype configuration — vulnerability-gate exceptions.
+#
+# Read this before adding an entry. Every rule here is a vulnerability
+# somebody decided not to fix, so each one states what it is, why it
+# cannot be fixed here, and what would let it be removed.
+#
+# The gate itself lives in .github/workflows/agent-images.yml and
+# .github/workflows/container-release.yml at severity-cutoff: high.
+#
+# SCOPE: these exceptions exist for the BUILDER image, which is a
+# development environment. It holds no credentials, exposes no network
+# service, and is not what runs in production. The runtime images
+# (docker/Dockerfile, .distroless, .lite) are gated with no exceptions
+# at all -- those hold a WhatsApp session and Claude OAuth tokens, and
+# anything found in them is a real finding to act on.
+
+ignore:
+  # ---------------------------------------------------------------
+  # 1. Vendored upstream release binaries.
+  #
+  # The builder installs yq, syft, grype and act as PINNED, SHA256-
+  # VERIFIED release binaries from their vendors. Grype reads the Go
+  # module list embedded in each one and reports their dependencies
+  # and the Go stdlib they were compiled against.
+  #
+  # Those findings are real for the vendor and unactionable here: all
+  # four are already at their latest release (checked 2026-08-26), so
+  # there is no newer build to move to. The only ways to clear them
+  # are to build each tool from source with a current toolchain, or to
+  # drop the tool. Neither is worth it for a dev-environment image.
+  #
+  # Scoped by LOCATION rather than by CVE deliberately. A CVE list goes
+  # stale silently and starts hiding new findings; a path stops
+  # matching the moment the tool moves or is removed, which is the
+  # failure mode you want.
+  #
+  # REMOVE WHEN: the tool ships a release built with a patched
+  # toolchain, and the pin in docker/Dockerfile.builder is bumped.
+  - package:
+      location: "/usr/local/bin/yq"
+  - package:
+      location: "/usr/local/bin/syft"
+  - package:
+      location: "/usr/local/bin/grype"
+  - package:
+      location: "/usr/local/bin/act"
+
+  # ---------------------------------------------------------------
+  # 2. Java version misdetection.
+  #
+  # The image installs Java 21 via mise. Grype's binary classifier
+  # additionally reports packages named `jre` and `openjdk` at version
+  # "1.10.0", which is not a version any JDK has ever shipped, and
+  # matches them against CVEs from 2018-2021 whose fixes are 11.0.x.
+  # Java 21 is not affected by CVE-2018-3149 or CVE-2021-35550.
+  #
+  # Scoped to the bogus version string only: a genuine finding against
+  # the real `jdk 21.x` package still fails the gate.
+  #
+  # REMOVE WHEN: grype's java binary cataloger stops emitting the
+  # phantom 1.10.0 package.
+  - package:
+      name: "jre"
+      version: "1.10.0"
+  - package:
+      name: "openjdk"
+      version: "1.10.0"
