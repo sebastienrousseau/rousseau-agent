@@ -45,7 +45,10 @@ func (s *Supervisor) Registry() *control.Registry { return s.reg }
 // TryBegin under another, so the ceiling is generous: pathological
 // contention cannot spin forever, but a normal collision between two
 // concurrent inbounds resolves in one or two hops.
-const beginRetryBudget = 8
+//
+// Kept as a var (not const) so a test can lower it to exercise the
+// exhaustion warn path without staging a real race.
+var beginRetryBudget = 8
 
 // Wrap returns a Handler that applies the supervision rules before
 // delegating to next.

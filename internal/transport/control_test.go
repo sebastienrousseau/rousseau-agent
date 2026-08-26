@@ -242,3 +242,26 @@ func TestSupervisor_ConcurrentInboundsProduceOneTurn(t *testing.T) {
 	assert.Equal(t, 1, handlerReplies)
 	assert.Equal(t, n-1, steerReplies, "every loser must fold into the winner's turn")
 }
+
+// TestSupervisor_ReturnsEmptyOnBudgetExhaustion exercises the
+// defensive exit at the bottom of Wrap. In production the retry loop
+// always resolves within one or two hops — reaching the exhaustion
+// warn requires either a bug in the registry or pathological
+// contention. Lowering the budget to zero is the cheapest way to prove
+// the path exits cleanly instead of spinning or panicking.
+func TestSupervisor_ReturnsEmptyOnBudgetExhaustion(t *testing.T) {
+	prev := beginRetryBudget
+	beginRetryBudget = 0
+	t.Cleanup(func() { beginRetryBudget = prev })
+
+	sup := newSupervisor()
+	called := false
+	h := sup.Wrap(HandlerFunc(func(context.Context, IncomingMessage) (string, error) {
+		called = true
+		return "should never reach here", nil
+	}))
+	reply, err := h.Handle(context.Background(), IncomingMessage{From: "wa:1", Body: "anything"})
+	require.NoError(t, err)
+	assert.Empty(t, reply)
+	assert.False(t, called, "the handler must not run when the loop budget is exhausted before any attempt")
+}
