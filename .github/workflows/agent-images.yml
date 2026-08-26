@@ -167,6 +167,18 @@ jobs:
       attestations: write
     outputs:
       digest: ${{ steps.build.outputs.digest }}
+    # Local registry service for the PR path. The docker-container
+    # buildx driver runs in an isolated container that does NOT share
+    # the host docker daemon's image store — so `load: true` from a
+    # prior step is invisible to a subsequent `docker buildx build`.
+    # Pushing base to a real registry (localhost:5000) is the standard
+    # way to hand an image between chained buildx invocations without
+    # driver gymnastics.
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
     steps:
       - uses: actions/checkout@v7
 
@@ -180,18 +192,24 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          # network=host is what lets the docker-container driver reach
+          # the registry service on the runner's localhost:5000.
+          driver-opts: network=host
 
-      # On PRs the base image was never pushed, so rebuild it locally
-      # under the tag Dockerfile.builder expects by default.
-      - name: Rebuild base locally (pull_request only)
+      # On PRs the base image was never pushed to ghcr, so publish it
+      # into the local registry service where the builder step can pull
+      # it. Uses the same insecure-http registry buildkit is talking to
+      # through --network host.
+      - name: Rebuild base into local registry (pull_request only)
         if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile.base
           platforms: ${{ env.PLATFORMS }}
-          load: true
-          tags: localhost/agent-base:local
+          push: true
+          tags: localhost:5000/agent-base:local
           cache-from: type=gha,scope=agent-base
 
       - name: Derive image tags
@@ -217,10 +235,10 @@ jobs:
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Empty on PR, so the Dockerfile default (localhost/agent-base:local)
-          # applies and picks up the locally rebuilt image above.
+          # Non-PR: pin BASE_IMAGE to the digest from the base job.
+          # PR: point BASE_IMAGE at the local registry copy above.
           build-args: |
-            ${{ needs.base.outputs.image && format('BASE_IMAGE={0}', needs.base.outputs.image) || '' }}
+            BASE_IMAGE=${{ needs.base.outputs.image || 'localhost:5000/agent-base:local' }}
           cache-from: type=gha,scope=agent-builder
           cache-to: type=gha,scope=agent-builder,mode=max
 

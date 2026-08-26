@@ -145,7 +145,7 @@ func TestEditingProgressSink_EditTargetsTheHandleAndChat(t *testing.T) {
 func TestEditingProgressSink_EditPropagatesError(t *testing.T) {
 	want := errors.New("edit rejected")
 	s := newProgressSink(&editingSender{editErr: want}, testChat(t))
-	ed := s.(progress.Editor) //nolint:errcheck // asserted by the sibling test
+	ed := s.(progress.Editor)
 	assert.ErrorIs(t, ed.Edit(context.Background(), "h", progress.Update{Text: "x"}), want)
 }
 
