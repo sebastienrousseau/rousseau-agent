@@ -27,6 +27,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -44,6 +45,7 @@ import (
 type Client struct {
 	cfg        Config
 	logger     *slog.Logger
+	bus        *progress.Bus
 	mu         sync.Mutex
 	wm         *whatsmeow.Client
 	sender     Sender
@@ -51,6 +53,17 @@ type Client struct {
 	ownID      *types.JID
 	handler    transport.Handler
 	stopped    bool
+	// dispatch decides whether an inbound message is handled inline or
+	// on its own goroutine.
+	//
+	// whatsmeow drains its inbound node queue on ONE goroutine and
+	// dispatches message events synchronously, so a handler that
+	// blocks for the length of an agent turn also blocks every message
+	// that arrives during it — which would make mid-flight interaction
+	// impossible by construction. Start therefore switches this to
+	// "go f()". It stays inline by default so unit tests that build a
+	// Client directly keep their synchronous, race-free assertions.
+	dispatch func(func())
 }
 
 // Start-path test seams. Start's whatsmeow touchpoints — opening the
@@ -97,8 +110,18 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{cfg: cfg, logger: logger}, nil
+	return &Client{
+		cfg:      cfg,
+		logger:   logger,
+		bus:      progress.NewBus(progress.BusOptions{}),
+		dispatch: func(f func()) { f() },
+	}, nil
 }
+
+// Bus returns the progress bus this transport delivers live updates
+// from. Daemon assembly hands it to the control registry so the agent
+// loop's events reach this transport's reporters.
+func (c *Client) Bus() *progress.Bus { return c.bus }
 
 // Name returns the transport identifier.
 func (*Client) Name() string { return "whatsapp" }
@@ -119,6 +142,12 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 	if err != nil {
 		return err
 	}
+	// From here on inbound messages are handled off the whatsmeow
+	// receive goroutine, so a running turn no longer stalls delivery
+	// of the next message.
+	c.mu.Lock()
+	c.dispatch = func(f func()) { go f() }
+	c.mu.Unlock()
 	wm.AddEventHandler(c.onEvent)
 
 	c.mu.Lock()
@@ -184,6 +213,7 @@ func (c *Client) Stop() error {
 	if c.wm != nil {
 		c.wm.Disconnect()
 	}
+	c.bus.Close()
 	return nil
 }
 
@@ -202,11 +232,19 @@ func (c *Client) onEvent(raw any) {
 
 func (c *Client) handleMessage(evt *events.Message) {
 	c.mu.Lock()
-	sender, downloader, ownID := c.sender, c.downloader, c.ownID
+	sender, downloader, ownID, dispatch := c.sender, c.downloader, c.ownID, c.dispatch
 	c.mu.Unlock()
 	if sender == nil {
 		return
 	}
+	dispatch(func() {
+		c.dispatchOne(evt, sender, downloader, ownID)
+	})
+}
+
+// dispatchOne runs one inbound message through Dispatch. Split out so
+// handleMessage's goroutine seam stays a one-liner.
+func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Downloader, ownID *types.JID) {
 	Dispatch(context.Background(), DispatchInput{
 		Event:       evt,
 		OwnID:       ownID,
@@ -216,6 +254,7 @@ func (c *Client) handleMessage(evt *events.Message) {
 		Transcriber: c.cfg.Transcriber,
 		Header:      c.cfg.ReplyHeader,
 		Logger:      c.logger,
+		Progress:    c.bus,
 	})
 }
 

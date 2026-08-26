@@ -10,6 +10,7 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/hooks"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
@@ -41,6 +42,15 @@ type Options struct {
 	// call so cost can be aggregated per session and reported via
 	// `rousseau session cost`. Nil disables cost telemetry entirely.
 	CostRecorder CostRecorder
+	// Progress receives live progress events for every turn this Agent
+	// runs, so a chat transport can show the user what is happening
+	// during a long turn. Nil disables emission.
+	//
+	// A per-turn publisher on the context (progress.WithPublisher, set
+	// by a supervisor) takes precedence over this one — Options is
+	// shared by every conversation the daemon serves, the context is
+	// not.
+	Progress progress.Publisher
 	// Hooks is the lifecycle-hook runner. When non-nil the agent
 	// loop consults it at pre_tool_use before each tool call.
 	// A Deny verdict blocks the tool and surfaces the reason to the
@@ -114,6 +124,16 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 // Compression happens in place; long sessions keep fitting the model's
 // context without the caller having to intervene.
 func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
+	start := time.Now()
+	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
+	msg, err := a.turn(ctx, s)
+	a.emitTerminal(ctx, s, start, err)
+	return msg, err
+}
+
+// turn is Turn's body, split out so Turn can bracket it with the
+// progress turn_started / terminal pair on every exit path.
+func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
 	if len(s.Messages) == 0 {
 		return Message{}, ErrEmptySession
 	}
@@ -131,6 +151,16 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	toolDefs := a.registry.Definitions()
 
 	for i := 0; i < a.opts.MaxIterations; i++ {
+		// Mid-flight control: block while the user has the turn
+		// paused, abort if they cancelled, and fold in anything they
+		// steered into the turn since the last round-trip.
+		if err := gate(ctx); err != nil {
+			return Message{}, err
+		}
+		for _, m := range drainSteered(ctx) {
+			s.Append(m)
+		}
+
 		req := Request{
 			SessionID: s.ID,
 			System:    a.systemPrompt(ctx, s),
@@ -138,6 +168,7 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 			Tools:     toolDefs,
 		}
 
+		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})
 		start := time.Now()
 		resp, err := a.provider.Complete(ctx, req)
 		observability.ObserveProviderLatency(a.provider.Name(), "complete", start)
@@ -227,6 +258,13 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 		if c.Kind != ContentToolUse || c.ToolUse == nil {
 			continue
 		}
+		// Between tool calls is the other safe point for pause/cancel.
+		// Steered text is deliberately NOT drained here: the message
+		// list must stay a well-formed tool_use/tool_result pair, so
+		// injections wait for the iteration boundary.
+		if err := gate(ctx); err != nil {
+			return nil, err
+		}
 		use := c.ToolUse
 		tool, ok := a.registry.Get(use.Name)
 		if !ok {
@@ -243,6 +281,7 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 				reason = "denied by policy"
 			}
 			a.logger.Warn("tool.denied", slog.String("name", use.Name), slog.String("reason", reason))
+			a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
 			results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
 				ToolUseID: use.ID,
 				Output:    "tool call blocked: " + reason,
@@ -270,6 +309,7 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 						reason = "denied by hook"
 					}
 					a.logger.Warn("tool.hook_denied", slog.String("name", use.Name), slog.String("reason", reason))
+					a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
 					results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
 						ToolUseID: use.ID,
 						Output:    "tool call blocked by hook: " + reason,
@@ -292,13 +332,18 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 		observability.ToolCalls.WithLabelValues(use.Name, "allow").Inc()
 
 		a.logger.Info("tool.execute", slog.String("name", use.Name), slog.String("id", use.ID))
+		a.emitEvent(ctx, progress.Event{Kind: progress.KindToolStarted, Tool: use.Name})
+		toolStart := time.Now()
 		out, err := tool.Execute(ctx, use.Input)
+		done := progress.Event{Kind: progress.KindToolFinished, Tool: use.Name, Elapsed: time.Since(toolStart)}
 		result := &ToolResult{ToolUseID: use.ID, Output: out}
 		if err != nil {
 			result.IsError = true
 			result.Output = err.Error()
+			done.Err = err.Error()
 			a.logger.Warn("tool.error", slog.String("name", use.Name), slog.String("err", err.Error()))
 		}
+		a.emitEvent(ctx, done)
 		results = append(results, Content{Kind: ContentToolResult, ToolResult: result})
 	}
 	return results, nil

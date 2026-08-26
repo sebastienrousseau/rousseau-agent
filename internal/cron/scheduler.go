@@ -19,6 +19,7 @@ import (
 	rcron "github.com/robfig/cron/v3"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
@@ -53,6 +54,12 @@ type Config struct {
 	PollInterval time.Duration
 	// Logger receives structured events. Nil uses slog.Default().
 	Logger *slog.Logger
+	// Progress, when non-nil, receives live progress events for each
+	// firing job, keyed on the job's DeliverTo target — which is the
+	// same key the transport subscribes with, so a scheduled job that
+	// takes minutes announces itself instead of arriving out of
+	// nowhere. Jobs with no delivery target publish nothing.
+	Progress progress.Publisher
 }
 
 // Scheduler is the running cron loop.
@@ -187,10 +194,18 @@ func (s *Scheduler) fire(job sqlitestore.CronJob) {
 
 	start := time.Now()
 	s.logger.Info("cron.firing", slog.String("job", job.Name))
+	s.publish(ctx, job, progress.Event{Kind: progress.KindCronStarted, Text: job.Name})
 
+	ctx = progress.WithKey(ctx, job.DeliverTo)
 	reply, err := s.cfg.Runner.RunOnce(ctx, job.Prompt)
 	elapsed := time.Since(start)
 	if err != nil {
+		s.publish(ctx, job, progress.Event{
+			Kind:    progress.KindError,
+			Text:    job.Name,
+			Err:     err.Error(),
+			Elapsed: elapsed,
+		})
 		s.logger.Error("cron.run_failed",
 			slog.String("job", job.Name),
 			slog.String("err", err.Error()),
@@ -217,6 +232,22 @@ func (s *Scheduler) fire(job sqlitestore.CronJob) {
 		slog.String("job", job.Name),
 		slog.Duration("elapsed", elapsed),
 		slog.Int("reply_len", len(reply)))
+	s.publish(ctx, job, progress.Event{
+		Kind:    progress.KindCronFinished,
+		Text:    job.Name,
+		Elapsed: elapsed,
+	})
+}
+
+// publish emits a progress event for a firing job. Jobs without a
+// delivery target have nowhere to show progress, so they publish
+// nothing rather than filling a bus nobody reads.
+func (s *Scheduler) publish(ctx context.Context, job sqlitestore.CronJob, ev progress.Event) {
+	if s.cfg.Progress == nil || job.DeliverTo == "" {
+		return
+	}
+	ev.Key = job.DeliverTo
+	progress.Emit(ctx, s.cfg.Progress, ev)
 }
 
 // ProviderRunner is the default TurnRunner: it wraps an agent.Provider

@@ -13,6 +13,7 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -48,6 +49,11 @@ type DispatchInput struct {
 	Transcriber Transcriber
 	Header      string
 	Logger      *slog.Logger
+	// Progress, when non-nil, is subscribed for the duration of the
+	// handler call so the user sees live updates while a long turn
+	// runs. Always populated by Client; nil only in unit tests that
+	// exercise the plain reply path.
+	Progress *progress.Bus
 }
 
 // Dispatch processes a single inbound whatsmeow message: resolves it
@@ -127,6 +133,14 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 	// Typing indicator — best-effort, never blocks the reply flow.
 	setPresence(ctx, in.Sender, res.Chat, types.ChatPresenceComposing, log)
 	defer setPresence(ctx, in.Sender, res.Chat, types.ChatPresencePaused, log)
+
+	// Live progress for the duration of the turn. The routing key is
+	// the sender identifier, which is exactly what the control
+	// Supervisor keys its registry on, so the two halves meet without
+	// either learning about session IDs.
+	if stop := startProgress(ctx, in.Progress, in.Sender, res.Chat, res.Msg.From, log); stop != nil {
+		defer stop()
+	}
 
 	start := time.Now()
 	reply, err := in.Handler.Handle(ctx, res.Msg)

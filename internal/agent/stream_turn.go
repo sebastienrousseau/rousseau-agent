@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 )
 
@@ -24,6 +26,16 @@ import (
 func (a *Agent) TurnStream(ctx context.Context, s *Session, events chan<- StreamEvent) (Message, error) {
 	defer close(events)
 
+	start := time.Now()
+	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
+	msg, err := a.turnStream(ctx, s, events)
+	a.emitTerminal(ctx, s, start, err)
+	return msg, err
+}
+
+// turnStream is TurnStream's body, split out so the exported method
+// can bracket every exit path with the progress terminal event.
+func (a *Agent) turnStream(ctx context.Context, s *Session, events chan<- StreamEvent) (Message, error) {
 	if len(s.Messages) == 0 {
 		return Message{}, ErrEmptySession
 	}
@@ -37,6 +49,13 @@ func (a *Agent) TurnStream(ctx context.Context, s *Session, events chan<- Stream
 	streamer, canStream := a.provider.(StreamingProvider)
 
 	for i := 0; i < a.opts.MaxIterations; i++ {
+		if err := gate(ctx); err != nil {
+			return Message{}, err
+		}
+		for _, m := range drainSteered(ctx) {
+			s.Append(m)
+		}
+
 		req := Request{
 			SessionID: s.ID,
 			System:    a.systemPrompt(ctx, s),
@@ -44,12 +63,13 @@ func (a *Agent) TurnStream(ctx context.Context, s *Session, events chan<- Stream
 			Tools:     toolDefs,
 		}
 
+		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})
 		var (
 			resp Response
 			err  error
 		)
 		if canStream {
-			resp, err = a.streamOnce(ctx, streamer, req, events)
+			resp, err = a.streamOnce(ctx, streamer, req, events, i+1)
 		} else {
 			resp, err = a.provider.Complete(ctx, req)
 		}
@@ -84,13 +104,22 @@ func (a *Agent) TurnStream(ctx context.Context, s *Session, events chan<- Stream
 }
 
 // streamOnce invokes the provider's Stream, forwards every event to
-// the caller's channel, and returns the terminal Response.
-func (a *Agent) streamOnce(ctx context.Context, p StreamingProvider, req Request, out chan<- StreamEvent) (Response, error) {
+// the caller's channel, lifts each one into the progress model, and
+// returns the terminal Response.
+//
+// Lifting rather than duplicating is the point: StreamEvent already
+// describes a single provider round-trip, so the progress layer
+// translates it instead of asking providers to emit a second, parallel
+// event stream.
+func (a *Agent) streamOnce(ctx context.Context, p StreamingProvider, req Request, out chan<- StreamEvent, iteration int) (Response, error) {
 	inEvents, inReport, err := p.Stream(ctx, req)
 	if err != nil {
 		return Response{}, err
 	}
 	for evt := range inEvents {
+		if ev, ok := liftStreamEvent(evt, iteration); ok {
+			a.emitEvent(ctx, ev)
+		}
 		select {
 		case out <- evt:
 		case <-ctx.Done():
@@ -102,4 +131,20 @@ func (a *Agent) streamOnce(ctx context.Context, p StreamingProvider, req Request
 		return Response{}, fmt.Errorf("provider closed report channel without a StreamReport")
 	}
 	return report.Response, report.Err
+}
+
+// liftStreamEvent maps a provider StreamEvent onto the progress model.
+// Kinds with no progress meaning (start, result, other) report false.
+func liftStreamEvent(evt StreamEvent, iteration int) (progress.Event, bool) {
+	switch evt.Kind {
+	case StreamTextDelta:
+		if evt.Delta == "" {
+			return progress.Event{}, false
+		}
+		return progress.Event{Kind: progress.KindLLMDelta, Text: evt.Delta, Iteration: iteration}, true
+	case StreamToolUse:
+		return progress.Event{Kind: progress.KindToolStarted, Tool: "tool", Iteration: iteration}, true
+	default:
+		return progress.Event{}, false
+	}
 }
