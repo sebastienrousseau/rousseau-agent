@@ -38,3 +38,6 @@ RELEASE_v*.md
 
 # Benchmark results (published as CI artefacts, never committed)
 /test/benchmarks/results/
+
+# Stale build artefact of examples/embed-a2a; never intended to be tracked.
+/embed-a2a

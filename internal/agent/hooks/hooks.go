@@ -235,10 +235,11 @@ func mergeEnv(base []string, overrides map[string]string) []string {
 	}
 	for _, kv := range base {
 		if k, _, ok := splitEnv(kv); ok {
+			// This covers unset too: `unset` is built from `overrides`
+			// above, so every unset key is by construction also an
+			// overrides key and is dropped here. A separate
+			// `if unset[k] { continue }` after this was dead code.
 			if _, replace := overrides[k]; replace {
-				continue
-			}
-			if unset[k] {
 				continue
 			}
 		}
