@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,12 +30,6 @@ import (
 // Transcriber turns an audio blob (voice note / audio attachment) into
 // text. Wired from media.audio.backend via the CLI. Nil disables audio
 // handling.
-//
-// TODO(v0.0.3): route signal-cli's `dataMessage.attachments[]` items
-// with `contentType` starting "audio/" through this. Attachment bodies
-// are downloaded by signal-cli to its
-// `~/.local/share/signal-cli/attachments/` cache and referenced by
-// numeric ID — the runtime just needs to read the cached file.
 type Transcriber interface {
 	Transcribe(ctx context.Context, audio []byte, mimetype string) (string, error)
 }
@@ -52,9 +48,19 @@ type Config struct {
 	// ReplyHeader is prepended to every outbound reply. Empty leaves
 	// the message body unmodified.
 	ReplyHeader string
-	// Transcriber, when non-nil, will be invoked for audio attachments
-	// once per-transport routing lands (see Transcriber godoc TODO).
+	// Transcriber, when non-nil, is invoked when a received message
+	// has no text but carries an audio/* attachment.
 	Transcriber Transcriber
+	// AttachmentsDir is the local path where signal-cli writes
+	// received attachments. Required for audio transcription — the
+	// signal-cli JSON-RPC feed exposes attachments only by `id`, so
+	// the transport reads the bytes from `<AttachmentsDir>/<id>`.
+	// Typically `<signal-cli-data>/attachments` (defaults vary by
+	// distro; explicit configuration keeps things predictable).
+	AttachmentsDir string
+	// MaxAudioBytes caps a single-file read to protect against a
+	// runaway attachment. Zero uses 32 MiB.
+	MaxAudioBytes int64
 }
 
 // Client is a transport.Transport backed by signal-cli.
@@ -198,6 +204,9 @@ func (c *Client) handleFrame(ctx context.Context, raw []byte, handler transport.
 	}
 	body := strings.TrimSpace(params.Envelope.DataMessage.Message)
 	if body == "" {
+		body = c.transcribeAudio(ctx, params.Envelope.DataMessage.Attachments)
+	}
+	if body == "" {
 		return nil
 	}
 	msg := transport.IncomingMessage{
@@ -262,7 +271,17 @@ type receiveEnvelope struct {
 }
 
 type receiveDataMessage struct {
-	Message string `json:"message"`
+	Message     string              `json:"message"`
+	Attachments []receiveAttachment `json:"attachments,omitempty"`
+}
+
+// receiveAttachment mirrors the attachment envelope signal-cli emits
+// in its JSON-RPC receive frame. Only the fields we route on.
+type receiveAttachment struct {
+	ID          string `json:"id"`
+	ContentType string `json:"contentType"`
+	Filename    string `json:"filename,omitempty"`
+	Size        int64  `json:"size,omitempty"`
 }
 
 // prefixWriter routes signal-cli's stderr into our structured logger.
@@ -294,6 +313,62 @@ func indexByte(b []byte, c byte) int {
 		}
 	}
 	return -1
+}
+
+// transcribeAudio walks the attachments for the first audio/* one,
+// reads it from AttachmentsDir/<id>, and hands the bytes to
+// Config.Transcriber. Returns "" on any failure — the caller then
+// drops the message rather than replying with a stub. Nil Transcriber
+// or empty AttachmentsDir → "" without touching disk.
+func (c *Client) transcribeAudio(ctx context.Context, atts []receiveAttachment) string {
+	if c.cfg.Transcriber == nil || c.cfg.AttachmentsDir == "" || len(atts) == 0 {
+		return ""
+	}
+	var pick *receiveAttachment
+	for i := range atts {
+		if strings.HasPrefix(atts[i].ContentType, "audio/") {
+			pick = &atts[i]
+			break
+		}
+	}
+	if pick == nil {
+		return ""
+	}
+	if pick.ID == "" {
+		c.logger.Warn("signal.audio.missing_id",
+			slog.String("filename", pick.Filename))
+		return ""
+	}
+	path := filepath.Join(c.cfg.AttachmentsDir, pick.ID)
+	blob, err := c.readAttachment(path)
+	if err != nil {
+		c.logger.Warn("signal.audio.read_failed",
+			slog.String("path", path),
+			slog.String("err", err.Error()))
+		return ""
+	}
+	transcript, err := c.cfg.Transcriber.Transcribe(ctx, blob, pick.ContentType)
+	if err != nil {
+		c.logger.Warn("signal.audio.transcribe_failed",
+			slog.String("err", err.Error()))
+		return ""
+	}
+	return transcript
+}
+
+// readAttachment reads path with a size cap so a large file cannot
+// exhaust the process.
+func (c *Client) readAttachment(path string) ([]byte, error) {
+	f, err := os.Open(path) //nolint:gosec // operator-configured AttachmentsDir
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }() //nolint:errcheck // best-effort close of a read-only file
+	maxBytes := c.cfg.MaxAudioBytes
+	if maxBytes <= 0 {
+		maxBytes = 32 << 20
+	}
+	return io.ReadAll(io.LimitReader(f, maxBytes))
 }
 
 // Compile-time interface satisfaction check.

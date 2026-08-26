@@ -452,6 +452,11 @@ type SignalConfig struct {
 	ReplyHeader string `mapstructure:"reply_header"`
 	// Allowlist restricts inbound handling to these E.164 numbers.
 	Allowlist []string `mapstructure:"allowlist"`
+	// AttachmentsDir is the local path where signal-cli persists
+	// received attachments (typically `<signal-cli-data>/attachments`).
+	// Required when `media.audio.backend` is configured and the
+	// operator wants voice notes routed through transcription.
+	AttachmentsDir string `mapstructure:"attachments_dir"`
 }
 
 // WhatsAppConfig groups the whatsapp transport tuning knobs.
