@@ -1,6 +1,6 @@
 .PHONY: help setup build install test test-race lint vet vuln check clean tidy fmt bench fuzz \
         image image-base image-builder image-daemon image-distroless image-lite \
-        images quadlet-install quadlet-status container-check cover cover-html
+        images quadlet-install quadlet-status container-check cover cover-html cover-gate
 
 BIN         := bin/rousseau
 PKG         := ./...
@@ -77,6 +77,10 @@ clean: ## Remove build artifacts
 cover: ## Run tests with coverage and print the total
 	@go test $(PKG) -coverprofile=coverage.out -covermode=atomic
 	@go tool cover -func=coverage.out | tail -1
+
+cover-gate: ## Enforce the 95% total and per-package coverage floors
+	@go test $(PKG) -coverprofile=coverage.out -covermode=atomic >/dev/null
+	@bash scripts/coverage-gate.sh coverage.out 95 95
 
 cover-html: cover ## Write an HTML coverage report
 	@go tool cover -html=coverage.out -o coverage.html

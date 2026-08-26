@@ -52,19 +52,20 @@ jobs:
           go-version: '1.26.6'
           cache: true
       - run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
-      - name: coverage floor
+      - name: coverage gate
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          pct=$(go tool cover -func=coverage.out | awk '/^total:/ {print substr($3, 1, length($3)-1)}')
-          echo "coverage: $pct%"
-          # Coverage floor tracks the current baseline. Pure business logic sits
-          # around 85–100%; overall floor is 75% because ~20% of statements
-          # are WebSocket dial paths (Slack Socket Mode, Discord Gateway,
-          # whatsmeow), signal-cli subprocess management, and cobra RunE
-          # closures that launch daemons — each testable only with a
-          # dedicated network fake. Raising this floor is a real goal;
-          # padding it with meaningless tests is not.
-          awk -v p="$pct" 'BEGIN { exit (p+0 >= 75) ? 0 : 1 }' || { echo "coverage below 75%"; exit 1; }
+        # Enforces a 95% repo-wide floor AND a 95% per-package floor.
+        #
+        # The previous floor was 75%, justified by WebSocket dial paths
+        # (Slack Socket Mode, Discord Gateway, whatsmeow), signal-cli
+        # subprocess management and cobra RunE closures being "testable
+        # only with a dedicated network fake". Those fakes now exist, so
+        # the floor moves to match reality.
+        #
+        # Exemptions live in scripts/coverage-gate.sh, are listed one
+        # package at a time with a reason, and the script reports any
+        # that have become unnecessary.
+        run: scripts/coverage-gate.sh coverage.out 95 95
 
   vuln:
     name: govulncheck
