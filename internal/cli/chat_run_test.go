@@ -146,4 +146,3 @@ func requireSessionPersisted(t *testing.T, path string) {
 	require.NoError(t, err)
 	assert.Len(t, hits, 1, "chat must persist the session it opens")
 }
-
