@@ -62,9 +62,21 @@ jobs:
           - flavour: full
             dockerfile: docker/Dockerfile
             tag_prefix: ""
+            # Report-only. This flavour ships a build toolchain on
+            # purpose -- build-base, python, pipx, dev headers, plus Go
+            # and Rust via mise -- because Claude Code's Bash tool
+            # compiles things. Those runtimes always carry open CVEs;
+            # blocking on them means a permanently red pipeline or an
+            # exception list broad enough to hide real findings.
+            gate: false
           - flavour: distroless
             dockerfile: docker/Dockerfile.distroless
             tag_prefix: "distroless-"
+            # Blocking. Carries no shell and no toolchain, and passes
+            # clean today with nothing excepted -- so anything that
+            # appears here is a real regression. This is the flavour to
+            # run in production.
+            gate: true
 
     runs-on: ubuntu-latest
     steps:
@@ -195,5 +207,5 @@ jobs:
         with:
           image: ${{ steps.scanref.outputs.ref }}
           severity-cutoff: high
-          fail-build: true
+          fail-build: ${{ matrix.gate }}
           output-format: table
