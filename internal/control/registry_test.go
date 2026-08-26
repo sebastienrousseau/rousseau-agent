@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -385,4 +386,81 @@ func TestRegistry_Apply(t *testing.T) {
 		assert.Equal(t, idleReply, reg.Apply(Decision{Verb: Verb("nonsense")}, "k"))
 		assert.Equal(t, TurnRunning, turn.State())
 	})
+}
+
+func TestRegistry_TryBeginClaimsAnEmptyKey(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	ctx, turn, ok := reg.TryBegin(context.Background(), "k")
+	require.True(t, ok)
+	defer turn.End()
+	assert.Equal(t, "k", turn.Key())
+	assert.Equal(t, TurnRunning, turn.State())
+	assert.Same(t, turn, progress.PublisherFrom(ctx))
+	assert.Same(t, turn, agent.ControlFrom(ctx))
+	assert.True(t, reg.Running("k"))
+}
+
+func TestRegistry_TryBeginRejectsAnOccupiedKey(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	_, first := reg.Begin(context.Background(), "k")
+	defer first.End()
+
+	ctx, second, ok := reg.TryBegin(context.Background(), "k")
+	assert.False(t, ok)
+	assert.Nil(t, second)
+	assert.Nil(t, ctx)
+	assert.Equal(t, 1, reg.Len(), "the occupied slot must remain the first turn")
+}
+
+func TestRegistry_TryBeginContextCancelledOnRejection(t *testing.T) {
+	// The rejected TryBegin must not leak a live cancel — the goroutine
+	// that would have run the turn must have nothing to unwind.
+	reg, _ := newTestRegistry(nil)
+	_, first := reg.Begin(context.Background(), "k")
+	defer first.End()
+
+	ctx, _, ok := reg.TryBegin(context.Background(), "k")
+	require.False(t, ok)
+	// A nil returned context is the contract; no goroutine to observe.
+	assert.Nil(t, ctx)
+}
+
+func TestRegistry_TryBeginSerialisesConcurrentClaims(t *testing.T) {
+	// N goroutines racing on the same key must produce exactly ONE
+	// success — that is the property the Supervisor relies on to stop
+	// the "two claude --resume on the same session" bug.
+	const n = 64
+	reg, _ := newTestRegistry(nil)
+
+	var wg sync.WaitGroup
+	var winners int64
+	claim := func() {
+		defer wg.Done()
+		_, turn, ok := reg.TryBegin(context.Background(), "shared")
+		if ok {
+			atomic.AddInt64(&winners, 1)
+			// Hold the slot until every racer has attempted, so no
+			// racer can succeed on a re-entry after End.
+			<-time.After(20 * time.Millisecond)
+			turn.End()
+		}
+	}
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go claim()
+	}
+	wg.Wait()
+	assert.EqualValues(t, 1, winners, "exactly one goroutine may claim the key")
+}
+
+func TestRegistry_TryBeginReclaimsAfterEnd(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+	_, first, ok := reg.TryBegin(context.Background(), "k")
+	require.True(t, ok)
+	first.End()
+
+	_, second, ok := reg.TryBegin(context.Background(), "k")
+	require.True(t, ok, "the key must be reclaimable after End")
+	defer second.End()
+	assert.NotSame(t, first, second)
 }

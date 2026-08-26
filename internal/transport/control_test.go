@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -183,4 +186,59 @@ func TestSupervisor_PropagatesHandlerErrors(t *testing.T) {
 	}))
 	_, err := h.Handle(context.Background(), IncomingMessage{From: "wa:1", Body: "go", At: time.Now()})
 	assert.ErrorIs(t, err, want)
+}
+
+func TestSupervisor_ConcurrentInboundsProduceOneTurn(t *testing.T) {
+	// This is the property that stops the "two claude --resume on the
+	// same session" bug we saw in production. N goroutines all send an
+	// inbound for the same key at the same moment; exactly one must
+	// reach the handler, and the rest must fold into that turn via
+	// Steer (returning SteerAck).
+	sup := newSupervisor()
+
+	const n = 32
+	release := make(chan struct{})
+	var handlerCalls int64
+	h := sup.Wrap(HandlerFunc(func(ctx context.Context, msg IncomingMessage) (string, error) {
+		atomic.AddInt64(&handlerCalls, 1)
+		// Block long enough that every racer has a chance to observe
+		// this turn on Lookup and fold in via Steer.
+		<-release
+		return "reply", nil
+	}))
+
+	var wg sync.WaitGroup
+	replies := make([]string, n)
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			replies[i], errs[i] = h.Handle(context.Background(), IncomingMessage{
+				From: "wa:1",
+				Body: "message-" + strconv.Itoa(i),
+			})
+		}(i)
+	}
+	// Give every racer time to enter Wrap and either steer or claim.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	assert.EqualValues(t, 1, atomic.LoadInt64(&handlerCalls), "exactly one goroutine may reach the handler")
+
+	var handlerReplies, steerReplies int
+	for i, reply := range replies {
+		require.NoError(t, errs[i])
+		switch reply {
+		case "reply":
+			handlerReplies++
+		case SteerAck:
+			steerReplies++
+		default:
+			t.Fatalf("unexpected reply %d: %q", i, reply)
+		}
+	}
+	assert.Equal(t, 1, handlerReplies)
+	assert.Equal(t, n-1, steerReplies, "every loser must fold into the winner's turn")
 }

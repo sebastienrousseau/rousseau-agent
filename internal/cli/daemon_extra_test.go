@@ -74,3 +74,25 @@ func TestTransportHandler_WithRateLimiterAppliesFullChain(t *testing.T) {
 	h := wiring.TransportHandler("whatsapp", silentLogger())
 	assert.NotNil(t, h)
 }
+
+// TestTransportHandler_ReusesSupervisorPerTransport confirms two calls
+// for the same transport share one control.Registry — otherwise the
+// serialisation guarantee (one turn per key across concurrent inbounds)
+// would be broken by whichever cobra command called TransportHandler
+// last.
+func TestTransportHandler_ReusesSupervisorPerTransport(t *testing.T) {
+	opts := makeDaemonOpts(t)
+	opts.Config.Provider = "anthropic"
+	opts.Config.Anthropic = config.AnthropicConfig{APIKey: "sk-test", Model: "claude"}
+	wiring, err := assembleDaemon(context.Background(), opts, nil)
+	require.NoError(t, err)
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup
+
+	_ = wiring.TransportHandler("whatsapp", silentLogger())
+	_ = wiring.TransportHandler("whatsapp", silentLogger())
+	sig := wiring.supervisorFor("signal", silentLogger())
+	wa1 := wiring.supervisorFor("whatsapp", silentLogger())
+	wa2 := wiring.supervisorFor("whatsapp", silentLogger())
+	assert.Same(t, wa1, wa2, "the same transport must reuse its Supervisor")
+	assert.NotSame(t, wa1, sig, "different transports must not share a Registry (keys can collide)")
+}

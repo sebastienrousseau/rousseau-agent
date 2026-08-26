@@ -323,6 +323,13 @@ func NewRegistry(opts RegistryOptions) *Registry {
 //   - the Turn as the agent.TurnControl checkpoint gate.
 //
 // The caller MUST defer Turn.End.
+//
+// Begin unconditionally installs the new turn as the current one for
+// key. Concurrent callers therefore race — two Begins on the same key
+// will each get a distinct *Turn but the second silently evicts the
+// first from the registry map, leaving the first turn's goroutine
+// orphaned. Use TryBegin from the inbound path where two messages for
+// the same conversation can arrive concurrently.
 func (r *Registry) Begin(ctx context.Context, key string) (context.Context, *Turn) {
 	tctx, cancel := context.WithCancel(ctx)
 	now := r.opts.Now()
@@ -344,6 +351,59 @@ func (r *Registry) Begin(ctx context.Context, key string) (context.Context, *Tur
 	tctx = progress.WithPublisher(tctx, t)
 	tctx = agent.WithControl(tctx, t)
 	return tctx, t
+}
+
+// TryBegin is Begin's race-free sibling: it atomically claims key for
+// the caller. It returns (tctx, turn, true) when the slot was empty,
+// or when the previously-registered turn had already reached a
+// terminal state (Cancelled or Done) — in that case the stale turn is
+// evicted and the new turn takes its place, matching what a caller
+// who saw Lookup+Steer-fail would expect. Otherwise it returns (nil,
+// nil, false) and the caller resolves the collision (typically by
+// steering into the running turn on the next hop).
+//
+// Two goroutines racing on the same key are guaranteed to see one
+// success and one collision — never both begin — which is what makes
+// the transport-side Supervisor safe against concurrent inbound
+// messages that arrive faster than Steer can fold them into an
+// in-flight turn.
+func (r *Registry) TryBegin(ctx context.Context, key string) (context.Context, *Turn, bool) {
+	tctx, cancel := context.WithCancel(ctx)
+	now := r.opts.Now()
+	t := &Turn{
+		key:     key,
+		started: now,
+		now:     r.opts.Now,
+		cancel:  cancel,
+		next:    r.opts.Bus,
+		reg:     r,
+		state:   TurnRunning,
+		co:      progress.NewCoalescer(key, r.opts.Policy, now),
+	}
+	r.mu.Lock()
+	if existing, exists := r.turns[key]; exists && !existing.terminal() {
+		r.mu.Unlock()
+		cancel()
+		return nil, nil, false
+	}
+	r.turns[key] = t
+	r.mu.Unlock()
+
+	tctx = progress.WithKey(tctx, key)
+	tctx = progress.WithPublisher(tctx, t)
+	tctx = agent.WithControl(tctx, t)
+	return tctx, t, true
+}
+
+// terminal reports whether a turn has finished (either cancelled by
+// the user or naturally ended) and is therefore no longer eligible to
+// absorb steered text. TryBegin uses this to evict stale slots left
+// by a Cancel that has not yet run its End; the running-turn contract
+// is unchanged.
+func (t *Turn) terminal() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.state == TurnCancelled || t.state == TurnDone
 }
 
 // Lookup returns the in-flight turn for key.
