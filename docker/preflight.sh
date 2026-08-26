@@ -118,6 +118,29 @@ echo
 
 # -- builder-specific --------------------------------------------------
 echo "builder image prerequisites"
+
+# The builder image checks only that bwrap is INSTALLED, because under
+# BuildKit's docker-container driver unprivileged user namespaces are
+# unavailable and the smoke test fails even for a perfectly good
+# binary. Whether bwrap can actually build a sandbox is a property of
+# this host, so it is checked here instead — otherwise nothing verifies
+# it anywhere, and Claude Code's sandbox silently reports unavailable
+# at the moment you most want it.
+if command -v bwrap >/dev/null 2>&1; then
+    if bwrap --ro-bind / / -- /bin/true >/dev/null 2>&1; then
+        ok "bwrap can create a sandbox"
+    else
+        bad "bwrap is installed but cannot create a sandbox here"
+        note "Needs unprivileged user namespaces. Check the sysctl above,"
+        note "and on Debian/Ubuntu also:"
+        note "  sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+    fi
+else
+    warno "bwrap absent on this host"
+    note "Only relevant if you run agent tooling outside the builder"
+    note "image; the image ships its own."
+fi
+
 if [ -e /dev/fuse ]; then
     ok "/dev/fuse present (fuse-overlayfs for nested containers)"
 else
