@@ -1,0 +1,30 @@
+# systemd.service unit: restart rousseau-agent, triggered by
+# rousseau-agent-claude-creds.path when Claude Code refreshes the
+# host-side OAuth credentials file.
+#
+# Kept minimal on purpose: a Type=oneshot that shells out to
+# systemctl. The path-watch → restart pattern is documented on the
+# companion .path unit.
+#
+# NO dependency on rousseau-agent.service here — the whole point of
+# this unit is to bring rousseau-agent back up, and Requisite= or
+# BindsTo= would cause systemd to SIGTERM the oneshot mid-run when
+# rousseau-agent briefly transitions through 'inactive' during the
+# restart, tripping the start-limit and disabling the path unit.
+
+[Unit]
+Description=Restart rousseau-agent after a Claude OAuth token refresh
+Documentation=https://github.com/sebastienrousseau/rousseau-agent/blob/main/docker/README.md#claude-oauth-refresh
+# Storm-suppression: PathChanged can burst-fire (Claude Code
+# sometimes rewrites the credentials file two or three times in a
+# few seconds). Raise the start-limit ceiling so a burst does not
+# disable the path unit.
+StartLimitIntervalSec=30
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+# --no-block so the trigger returns immediately; the actual restart
+# runs in the background. Prevents a slow restart from wedging the
+# path-unit event dispatch.
+ExecStart=/usr/bin/systemctl --user --no-block restart rousseau-agent.service
