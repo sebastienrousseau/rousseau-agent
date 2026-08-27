@@ -1,0 +1,43 @@
+# systemd.path unit: restart rousseau-agent whenever Claude Code
+# refreshes the OAuth token on the host.
+#
+# WHY
+#
+# The container's Quadlet bind-mounts %h/.claude/.credentials.json
+# into the container at the FILE level (deliberately — we do not
+# want the container's .claude/ directory to share history with the
+# host's Claude Code). File-level bind mounts follow the source
+# inode, and Claude Code's OAuth refresh is an atomic
+# unlink + rename: the new token lands under a fresh inode, the
+# container keeps holding the deleted one, and every subprocess
+# after refresh dies with:
+#
+#   result: "Failed to authenticate: OAuth session expired and could
+#            not be refreshed"
+#
+# WHAT
+#
+# systemd watches the credentials file for change events and, when
+# one fires, triggers rousseau-agent-claude-creds.service which
+# restarts the main service. Podman re-resolves the bind mount at
+# start, so the container picks up the fresh inode immediately.
+#
+# Install:
+#   cp docker/rousseau-agent-claude-creds.{path,service} \
+#      $XDG_CONFIG_HOME/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now rousseau-agent-claude-creds.path
+
+[Unit]
+Description=Watch Claude OAuth credentials for host-side refresh
+Documentation=https://github.com/sebastienrousseau/rousseau-agent/blob/main/docker/README.md#claude-oauth-refresh
+
+[Path]
+# PathChanged fires on file-close-after-write. systemd re-arms the
+# inotify watch after IN_DELETE_SELF, so an atomic unlink+rename
+# (Claude Code's refresh pattern) is caught.
+PathChanged=%h/.claude/.credentials.json
+Unit=rousseau-agent-claude-creds.service
+
+[Install]
+WantedBy=default.target

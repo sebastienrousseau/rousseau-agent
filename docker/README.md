@@ -106,6 +106,52 @@ systemctl --user daemon-reload
 systemctl --user start rousseau-agent
 ```
 
+The Makefile shortcut installs both the Quadlet and the OAuth-refresh
+watcher described below in one shot:
+
+```bash
+make quadlet-install
+systemctl --user enable --now rousseau-agent-claude-creds.path
+systemctl --user start rousseau-agent
+```
+
+## Claude OAuth refresh
+
+The Quadlet bind-mounts `$HOME/.claude/.credentials.json` at the FILE
+level so the container can share the host's OAuth token without
+sharing the rest of the `.claude/` directory (session history,
+project settings, ...). File-level bind mounts follow the source
+INODE, and Claude Code refreshes tokens via an atomic
+unlink + rename — the new token lands under a fresh inode, the
+container keeps holding the deleted one, and every subprocess after
+refresh dies with `Failed to authenticate: OAuth session expired and
+could not be refreshed`.
+
+`rousseau-agent-claude-creds.path` is a systemd path unit that
+watches the credentials file for change events and, when one fires,
+restarts `rousseau-agent.service` via a small oneshot service.
+Podman re-resolves the bind mount at start, so the container picks
+up the fresh inode immediately.
+
+Install (copied by `make quadlet-install`):
+
+```bash
+cp docker/rousseau-agent-claude-creds.{path,service} \
+   "$XDG_CONFIG_HOME/systemd/user/"
+systemctl --user daemon-reload
+systemctl --user enable --now rousseau-agent-claude-creds.path
+```
+
+Verify:
+
+```bash
+systemctl --user status rousseau-agent-claude-creds.path
+```
+
+The watch fires on `PathChanged=` (close-after-write). systemd
+re-arms the inotify watch after `IN_DELETE_SELF`, so the
+atomic-rename refresh pattern is caught.
+
 ## Egress allowlist
 
 Neither container needs inbound network. Outbound calls only reach

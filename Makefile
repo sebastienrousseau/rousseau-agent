@@ -16,6 +16,7 @@ DATE        ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 ENGINE      ?= podman
 IMAGE_PREFIX ?= localhost
 QUADLET_DIR ?= $(HOME)/.config/containers/systemd
+SYSTEMD_USER_DIR ?= $(HOME)/.config/systemd/user
 LDFLAGS     := -s -w \
                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.version=$(VERSION)' \
                -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.commit=$(COMMIT)' \
@@ -118,15 +119,22 @@ images: image-base image-builder image-daemon image-distroless image-lite ## Bui
 
 # -- quadlet (podman only) --------------------------------------------
 
-quadlet-install: ## Install Quadlet units into ~/.config/containers/systemd
+quadlet-install: ## Install Quadlet + credential-watch units into ~/.config
 	@if [ "$(ENGINE)" != "podman" ]; then \
 		echo "quadlet-install requires podman (ENGINE=$(ENGINE))"; exit 1; fi
-	@mkdir -p $(QUADLET_DIR)
+	@mkdir -p $(QUADLET_DIR) $(SYSTEMD_USER_DIR)
 	@cp docker/rousseau-agent.container docker/agent-builder.container $(QUADLET_DIR)/
+	@cp docker/rousseau-agent-claude-creds.path \
+	    docker/rousseau-agent-claude-creds.service $(SYSTEMD_USER_DIR)/
 	@systemctl --user daemon-reload
-	@echo "installed to $(QUADLET_DIR); start with:"
+	@echo "installed:"
+	@echo "  $(QUADLET_DIR)/{rousseau-agent,agent-builder}.container"
+	@echo "  $(SYSTEMD_USER_DIR)/rousseau-agent-claude-creds.{path,service}"
+	@echo ""
+	@echo "start with:"
 	@echo "  systemctl --user start rousseau-agent"
 	@echo "  systemctl --user start agent-builder"
+	@echo "  systemctl --user enable --now rousseau-agent-claude-creds.path"
 
 quadlet-status: ## Show status of both Quadlet units
 	@systemctl --user status rousseau-agent agent-builder --no-pager || true
