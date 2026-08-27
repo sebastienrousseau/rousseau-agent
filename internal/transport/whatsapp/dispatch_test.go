@@ -52,7 +52,7 @@ type fakeDownloader struct {
 	err      error
 }
 
-func (f *fakeDownloader) Download(_ context.Context, _ DownloadableAudio) ([]byte, string, error) {
+func (f *fakeDownloader) Download(_ context.Context, _ Downloadable) ([]byte, string, error) {
 	return f.audio, f.mimetype, f.err
 }
 

@@ -13,25 +13,47 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/media"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
 // Downloader downloads media attached to a whatsmeow message. Extracted
-// so tests can inject a fixture-returning fake and exercise voice-note
-// handling without a live client.
+// so tests can inject a fixture-returning fake and exercise media
+// handling without a live client. The interface is deliberately
+// media-neutral: audio (voice notes) and image (photo) messages both
+// travel through the same Download call.
 type Downloader interface {
 	// Download fetches the media payload for a downloadable message.
-	// mimetype is returned so the transcriber knows the audio codec.
-	Download(ctx context.Context, msg DownloadableAudio) (bytes []byte, mimetype string, err error)
+	// mimetype is the envelope-reported value from whatsmeow — never
+	// trusted downstream, image path re-sniffs from bytes.
+	Download(ctx context.Context, msg Downloadable) (bytes []byte, mimetype string, err error)
 }
 
-// DownloadableAudio is the subset of *waProto.AudioMessage that the
-// downloader needs. Isolated so tests do not need to construct a full
-// whatsmeow message.
-type DownloadableAudio interface {
+// Downloadable is the smallest shape a whatsmeow media message needs
+// to expose for our Downloader. Every *waProto.{Audio,Image,Video,…}
+// Message type satisfies it, so widening this later means a bigger
+// switch inside Dispatch, not a signature change.
+type Downloadable interface {
 	GetMimetype() string
+}
+
+// DownloadableAudio narrows Downloadable for the audio branch, which
+// needs the duration for log/ignore decisions. Only accepted by
+// transcribeAudio, not by Downloader itself.
+type DownloadableAudio interface {
+	Downloadable
 	GetSeconds() uint32
+}
+
+// DownloadableImage narrows Downloadable for the image branch. The
+// dimension getters are used to log which image the pipeline handled
+// and to reject decode-time size explosions before they hit the
+// model.
+type DownloadableImage interface {
+	Downloadable
+	GetWidth() uint32
+	GetHeight() uint32
 }
 
 // Transcriber lives in types.go so the no_whatsmeow build can still
@@ -54,6 +76,10 @@ type DispatchInput struct {
 	// runs. Always populated by Client; nil only in unit tests that
 	// exercise the plain reply path.
 	Progress *progress.Bus
+	// MediaPolicy governs which images are accepted (MIME allowlist,
+	// per-image and per-turn byte caps). Zero-value falls back to the
+	// media.Policy defaults documented on that package.
+	MediaPolicy media.Policy
 }
 
 // Dispatch processes a single inbound whatsmeow message: resolves it
@@ -93,6 +119,38 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 				From: resolveFrom(in.Event, in.OwnID).String(),
 				Body: text,
 				At:   in.Event.Info.Timestamp,
+			},
+			Chat: in.Event.Info.Chat,
+		}
+		handleTextMessage(ctx, in, res, log)
+		return
+	}
+
+	// Images share the audio path's SkipEmptyText recovery: a
+	// photo-only message with no caption still deserves the model's
+	// attention. The image itself becomes an Attachment on the
+	// IncomingMessage; the caption (if any) fills Body.
+	if imageMsg := in.Event.Message.GetImageMessage(); imageMsg != nil && res.Skip == SkipEmptyText {
+		if in.Downloader == nil {
+			log.Info("whatsapp.image_ignored",
+				slog.String("reason", "downloader_not_configured"))
+			return
+		}
+		att, err := downloadImage(ctx, in.Downloader, imageMsg, in.MediaPolicy, log)
+		if err != nil {
+			log.Error("whatsapp.image_failed", slog.String("err", err.Error()))
+			return
+		}
+		if att == nil {
+			// Dropped by policy (size cap, disallowed MIME); already logged.
+			return
+		}
+		res = Resolved{
+			Msg: transport.IncomingMessage{
+				From:        resolveFrom(in.Event, in.OwnID).String(),
+				Body:        imageMsg.GetCaption(),
+				At:          in.Event.Info.Timestamp,
+				Attachments: []transport.Attachment{*att},
 			},
 			Chat: in.Event.Info.Chat,
 		}
@@ -244,4 +302,43 @@ func transcribeAudio(ctx context.Context, dl Downloader, t Transcriber, msg *waP
 		slog.Int("chars", len(text)),
 		slog.Duration("elapsed", time.Since(tstart)))
 	return text, nil
+}
+
+// downloadImage fetches an inbound image via dl, sniffs the MIME from
+// the payload bytes (never the envelope), and applies policy. Returns
+// (nil, nil) when the image is dropped by policy — the caller should
+// stop processing quietly, the reason is already logged. Non-nil err
+// signals a fetch failure worth surfacing.
+func downloadImage(ctx context.Context, dl Downloader, msg *waProto.ImageMessage, policy media.Policy, log *slog.Logger) (*transport.Attachment, error) {
+	if msg == nil {
+		return nil, errors.New("whatsapp: nil image message")
+	}
+	start := time.Now()
+	data, envelopeMIME, err := dl.Download(ctx, msg)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("whatsapp.image_downloaded",
+		slog.Int("bytes", len(data)),
+		slog.String("envelope_mime", envelopeMIME),
+		slog.Uint64("width", uint64(msg.GetWidth())),
+		slog.Uint64("height", uint64(msg.GetHeight())),
+		slog.Duration("elapsed", time.Since(start)))
+
+	sniffed, err := policy.Accept(data, 0)
+	if err != nil {
+		log.Info("whatsapp.image_dropped",
+			slog.String("reason", err.Error()),
+			slog.String("envelope_mime", envelopeMIME),
+			slog.Int("bytes", len(data)))
+		return nil, nil
+	}
+	if sniffed != envelopeMIME {
+		// Envelope disagreed with the actual bytes. Not fatal — we
+		// use the sniffed value — but worth an operator-visible log.
+		log.Warn("whatsapp.image_mime_lied",
+			slog.String("envelope", envelopeMIME),
+			slog.String("sniffed", sniffed))
+	}
+	return &transport.Attachment{MediaType: sniffed, Data: data}, nil
 }
