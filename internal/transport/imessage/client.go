@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/media"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -56,6 +57,10 @@ type Config struct {
 	// MaxAudioBytes caps a single attachment download to protect
 	// against a runaway file. Zero uses 32 MiB.
 	MaxAudioBytes int64
+	// MediaPolicy governs which image attachments are accepted (MIME
+	// allowlist, per-image and per-turn byte caps). Zero-value falls
+	// back to the media.Policy defaults documented on that package.
+	MediaPolicy media.Policy
 }
 
 // Client is a transport.Transport backed by BlueBubbles.
@@ -219,15 +224,19 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 		if body == "" {
 			body = c.transcribeAudio(ctx, m.Attachments)
 		}
-		if body == "" {
+		attachments := c.collectImageAttachments(ctx, m.Attachments)
+		if body == "" && len(attachments) == 0 {
 			continue
 		}
 		msg := transport.IncomingMessage{
-			From: m.Handle.Address,
-			Body: body,
-			At:   time.UnixMilli(m.DateCreated).UTC(),
+			From:        m.Handle.Address,
+			Body:        body,
+			At:          time.UnixMilli(m.DateCreated).UTC(),
+			Attachments: attachments,
 		}
-		c.logger.Info("imessage.incoming", slog.String("from", msg.From))
+		c.logger.Info("imessage.incoming",
+			slog.String("from", msg.From),
+			slog.Int("attachments", len(attachments)))
 		reply, err := handler.Handle(ctx, msg)
 		if err != nil {
 			c.logger.Error("imessage.handler_failed", slog.String("err", err.Error()))
@@ -363,6 +372,53 @@ func (c *Client) transcribeAudio(ctx context.Context, atts []attachmentRecord) s
 		return ""
 	}
 	return transcript
+}
+
+// collectImageAttachments walks the attachments for image/* entries,
+// downloads each via BlueBubbles, sniffs the MIME from the payload
+// bytes (envelope mimeType is a filter hint, never trusted for the
+// final Attachment.MediaType), and applies MediaPolicy. Failures per
+// attachment are logged and dropped -- one bad image never swallows
+// the whole message.
+func (c *Client) collectImageAttachments(ctx context.Context, atts []attachmentRecord) []transport.Attachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]transport.Attachment, 0, len(atts))
+	totalSoFar := 0
+	for i := range atts {
+		att := atts[i]
+		if !strings.HasPrefix(att.MimeType, "image/") {
+			continue
+		}
+		if att.GUID == "" {
+			continue
+		}
+		data, err := c.downloadAttachment(ctx, att.GUID)
+		if err != nil {
+			c.logger.Warn("imessage.image.download_failed",
+				slog.String("guid", att.GUID),
+				slog.String("err", err.Error()))
+			continue
+		}
+		sniffed, err := c.cfg.MediaPolicy.Accept(data, totalSoFar)
+		if err != nil {
+			c.logger.Info("imessage.image.dropped",
+				slog.String("guid", att.GUID),
+				slog.String("reason", err.Error()),
+				slog.Int("bytes", len(data)))
+			continue
+		}
+		if sniffed != att.MimeType {
+			c.logger.Warn("imessage.image.mime_lied",
+				slog.String("guid", att.GUID),
+				slog.String("envelope", att.MimeType),
+				slog.String("sniffed", sniffed))
+		}
+		out = append(out, transport.Attachment{MediaType: sniffed, Data: data})
+		totalSoFar += len(data)
+	}
+	return out
 }
 
 // downloadAttachment GETs the attachment blob from BlueBubbles's
