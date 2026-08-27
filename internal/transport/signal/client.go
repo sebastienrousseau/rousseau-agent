@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/media"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -61,6 +62,10 @@ type Config struct {
 	// MaxAudioBytes caps a single-file read to protect against a
 	// runaway attachment. Zero uses 32 MiB.
 	MaxAudioBytes int64
+	// MediaPolicy governs which image attachments are accepted (MIME
+	// allowlist, per-image and per-turn byte caps). Zero-value falls
+	// back to the media.Policy defaults documented on that package.
+	MediaPolicy media.Policy
 }
 
 // Client is a transport.Transport backed by signal-cli.
@@ -206,18 +211,22 @@ func (c *Client) handleFrame(ctx context.Context, raw []byte, handler transport.
 	if body == "" {
 		body = c.transcribeAudio(ctx, params.Envelope.DataMessage.Attachments)
 	}
-	if body == "" {
+	attachments := c.collectImageAttachments(params.Envelope.DataMessage.Attachments)
+	if body == "" && len(attachments) == 0 {
 		return nil
 	}
 	msg := transport.IncomingMessage{
-		From: params.Envelope.SourceNumber,
-		Body: body,
-		At:   time.UnixMilli(params.Envelope.Timestamp),
+		From:        params.Envelope.SourceNumber,
+		Body:        body,
+		At:          time.UnixMilli(params.Envelope.Timestamp),
+		Attachments: attachments,
 	}
 	if msg.From == "" {
 		msg.From = params.Envelope.Source
 	}
-	c.logger.Info("signal.incoming", slog.String("from", msg.From))
+	c.logger.Info("signal.incoming",
+		slog.String("from", msg.From),
+		slog.Int("attachments", len(attachments)))
 	reply, err := handler.Handle(ctx, msg)
 	if err != nil {
 		c.logger.Error("signal.handler_failed", slog.String("err", err.Error()))
@@ -358,6 +367,56 @@ func (c *Client) transcribeAudio(ctx context.Context, atts []receiveAttachment) 
 
 // readAttachment reads path with a size cap so a large file cannot
 // exhaust the process.
+// collectImageAttachments walks the attachments array for image/*
+// entries, reads each from AttachmentsDir/<id>, sniffs the MIME from
+// the bytes (envelope contentType is a filter hint only), and
+// applies MediaPolicy. Failures per attachment are logged and
+// dropped -- one bad image never swallows the whole message. Empty
+// AttachmentsDir short-circuits: no config, no image ingestion.
+func (c *Client) collectImageAttachments(atts []receiveAttachment) []transport.Attachment {
+	if c.cfg.AttachmentsDir == "" || len(atts) == 0 {
+		return nil
+	}
+	out := make([]transport.Attachment, 0, len(atts))
+	totalSoFar := 0
+	for i := range atts {
+		att := atts[i]
+		if !strings.HasPrefix(att.ContentType, "image/") {
+			continue
+		}
+		if att.ID == "" {
+			c.logger.Warn("signal.image.missing_id",
+				slog.String("filename", att.Filename))
+			continue
+		}
+		path := filepath.Join(c.cfg.AttachmentsDir, att.ID)
+		data, err := c.readAttachment(path)
+		if err != nil {
+			c.logger.Warn("signal.image.read_failed",
+				slog.String("path", path),
+				slog.String("err", err.Error()))
+			continue
+		}
+		sniffed, err := c.cfg.MediaPolicy.Accept(data, totalSoFar)
+		if err != nil {
+			c.logger.Info("signal.image.dropped",
+				slog.String("id", att.ID),
+				slog.String("reason", err.Error()),
+				slog.Int("bytes", len(data)))
+			continue
+		}
+		if sniffed != att.ContentType {
+			c.logger.Warn("signal.image.mime_lied",
+				slog.String("id", att.ID),
+				slog.String("envelope", att.ContentType),
+				slog.String("sniffed", sniffed))
+		}
+		out = append(out, transport.Attachment{MediaType: sniffed, Data: data})
+		totalSoFar += len(data)
+	}
+	return out
+}
+
 func (c *Client) readAttachment(path string) ([]byte, error) {
 	f, err := os.Open(path) //nolint:gosec // operator-configured AttachmentsDir
 	if err != nil {
