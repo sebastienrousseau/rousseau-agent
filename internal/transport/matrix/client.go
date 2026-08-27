@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/media"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -54,6 +55,10 @@ type Config struct {
 	Transcriber Transcriber
 	// MaxAudioBytes caps a single mxc download. Zero uses 32 MiB.
 	MaxAudioBytes int64
+	// MediaPolicy governs which m.image events are accepted (MIME
+	// allowlist, per-image and per-turn byte caps). Zero-value falls
+	// back to the media.Policy defaults documented on that package.
+	MediaPolicy media.Policy
 }
 
 // Client is a transport.Transport backed by the Matrix client-server
@@ -179,17 +184,20 @@ func (c *Client) route(ctx context.Context, resp *syncResponse, handler transpor
 			if body == "" {
 				body = c.transcribeAudio(ctx, evt.Content)
 			}
-			if body == "" {
+			attachments := c.collectImageAttachments(ctx, evt.Content)
+			if body == "" && len(attachments) == 0 {
 				continue
 			}
 			msg := transport.IncomingMessage{
-				From: evt.Sender,
-				Body: body,
-				At:   time.Unix(evt.OriginServerTS/1000, (evt.OriginServerTS%1000)*int64(time.Millisecond)),
+				From:        evt.Sender,
+				Body:        body,
+				At:          time.Unix(evt.OriginServerTS/1000, (evt.OriginServerTS%1000)*int64(time.Millisecond)),
+				Attachments: attachments,
 			}
 			c.logger.Info("matrix.incoming",
 				slog.String("from", msg.From),
-				slog.String("room", roomID))
+				slog.String("room", roomID),
+				slog.Int("attachments", len(attachments)))
 			reply, err := handler.Handle(ctx, msg)
 			if err != nil {
 				c.logger.Error("matrix.handler_failed", slog.String("err", err.Error()))
@@ -207,7 +215,9 @@ func (c *Client) route(ctx context.Context, resp *syncResponse, handler transpor
 
 // extractBody pulls the text body out of an m.room.message content
 // payload. Only m.text is honoured today; m.notice / m.emote could be
-// added if there is user demand.
+// added if there is user demand. m.image has a `body` field but by
+// convention it holds the filename ("IMG_0001.jpg"), not a caption —
+// treating it as text would forward noise.
 func extractBody(raw json.RawMessage) string {
 	var content struct {
 		MsgType string `json:"msgtype"`
@@ -349,6 +359,55 @@ func (c *Client) transcribeAudio(ctx context.Context, raw json.RawMessage) strin
 		return ""
 	}
 	return transcript
+}
+
+// collectImageAttachments parses an m.room.message content payload
+// for an m.image event, resolves the mxc:// URL, downloads the bytes,
+// sniffs the MIME (envelope info.mimetype is a hint, never trusted),
+// and applies MediaPolicy. Non-image or malformed events are
+// silently skipped -- the caller drops the message when there is
+// neither text nor a valid attachment.
+func (c *Client) collectImageAttachments(ctx context.Context, raw json.RawMessage) []transport.Attachment {
+	var content struct {
+		MsgType string `json:"msgtype"`
+		URL     string `json:"url"`
+		Info    struct {
+			Mimetype string `json:"mimetype"`
+			Size     int    `json:"size"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return nil
+	}
+	if content.MsgType != "m.image" || content.URL == "" {
+		return nil
+	}
+	server, mediaID, ok := parseMXC(content.URL)
+	if !ok {
+		c.logger.Debug("matrix.image_bad_mxc", slog.String("url", content.URL))
+		return nil
+	}
+	data, err := c.downloadMedia(ctx, server, mediaID)
+	if err != nil {
+		c.logger.Warn("matrix.image_download_failed",
+			slog.String("mxc", content.URL),
+			slog.String("err", err.Error()))
+		return nil
+	}
+	sniffed, err := c.cfg.MediaPolicy.Accept(data, 0)
+	if err != nil {
+		c.logger.Info("matrix.image_dropped",
+			slog.String("mxc", content.URL),
+			slog.String("reason", err.Error()),
+			slog.Int("bytes", len(data)))
+		return nil
+	}
+	if content.Info.Mimetype != "" && sniffed != content.Info.Mimetype {
+		c.logger.Warn("matrix.image_mime_lied",
+			slog.String("envelope", content.Info.Mimetype),
+			slog.String("sniffed", sniffed))
+	}
+	return []transport.Attachment{{MediaType: sniffed, Data: data}}
 }
 
 // parseMXC splits an mxc:// URI into (server, mediaID). Returns ok=false
