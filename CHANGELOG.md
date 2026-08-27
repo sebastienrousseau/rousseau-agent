@@ -15,7 +15,14 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
-Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
+Nothing yet.
+
+## [v0.0.2] — 2026-08-27
+
+Roadmap Wave 1-3 delivery plus the container-estate rework, the
+per-conversation turn serialisation that closed a long-standing
+`claude --resume` race, and the vulnerability-scan gate that now
+runs on every push (not just release tags).
 
 ### Added — Wave 1 (unblock credibility)
 
@@ -40,11 +47,10 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 
 - **Voice-note transcription** (`internal/media/audio`) — Whisper.cpp
   local backend + OpenAI Whisper API fallback + Noop for tests.
-  Wired end-to-end into WhatsApp (baseline), Telegram, and Discord —
-  audio-only messages route through the transcriber and are delivered
-  to the handler as normal text. Signal / iMessage / Matrix carry the
-  same `Transcriber` config surface (uniform operator knob) with
-  per-protocol audio-detection landing in v0.0.3.
+  Wired end-to-end into WhatsApp (baseline), Telegram, Discord,
+  Signal, iMessage, and Matrix — audio-only messages route through
+  the transcriber on every transport and are delivered to the
+  handler as normal text.
 - **Identity resolver** (`internal/identity` +
   `internal/state/sqlite/identity.go`) — maps
   `<transport>:<sender>` pairs to a stable identity so a
@@ -92,6 +98,47 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
   task store with bounded history-replay so late SSE subscribers
   don't lose events, plus a matching client that `SubmitTask` →
   drains updates on a channel until terminal Status.
+
+### Added — container estate & tooling
+
+- **Container split** (`docker/Dockerfile.base` +
+  `docker/Dockerfile.builder`) — one hardened, read-only,
+  credential-holding runtime image (`rousseau-agent`) and one
+  writable, credential-less build environment (`agent-builder`). The
+  earlier single-image design tried to be both and lost.
+- **Podman-first tooling** — `make images`, `make image-builder`,
+  `make quadlet-install`, `make container-check`, plus
+  `docker/preflight.sh` for host-side checks (subuid/subgid,
+  unprivileged userns, pasta/passt, seccomp, working `bwrap`
+  sandbox) so `systemctl --user start` no longer fails opaquely.
+- **Live turn progress + control verbs** (`internal/progress` +
+  `internal/control` + `internal/transport.Supervisor`) — coalesced
+  progress events surface as live edits on WhatsApp; four slash-only
+  verbs (`/status`, `/pause`, `/resume`, `/cancel`) act on the turn
+  registry without touching the LLM.
+
+### Added — reliability
+
+- **Per-conversation turn serialisation**
+  (`transport.Supervisor.Wrap` + `control.Registry.TryBegin`) —
+  concurrent inbounds on one key now steer into the running turn
+  instead of spawning a second `claude --resume` on the same
+  session UUID. Closes a production race that produced a 12+ min
+  stuck turn while a second turn silently answered the user.
+- **Immediate WhatsApp receipt-ack** — the transport reacts 👀 on
+  inbound receipt and ✅/❌ on completion so a long turn stops
+  looking like a dropped message.
+
+### Added — supply chain
+
+- **Vulnerability scan on every event**
+  (`.github/workflows/container-release.yml`) — the daemon-image
+  Grype scan now runs on pushes and pull requests, not only on
+  release tags. Distroless failures gate; the full flavour reports
+  without blocking while its base-image CVE queue drains.
+- **Workflow permission scopes** — every workflow declares an
+  explicit `permissions:` block (clears the two open
+  `actions/missing-workflow-permissions` code-scanning alerts).
 
 ### Added — Wave 4 (moonshot scaffolds)
 
@@ -284,5 +331,6 @@ cosign verify-blob \
     checksums.txt
 ```
 
-[Unreleased]: https://github.com/sebastienrousseau/rousseau-agent/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/sebastienrousseau/rousseau-agent/compare/v0.0.2...HEAD
+[v0.0.2]: https://github.com/sebastienrousseau/rousseau-agent/releases/tag/v0.0.2
 [v0.0.1]: https://github.com/sebastienrousseau/rousseau-agent/releases/tag/v0.0.1

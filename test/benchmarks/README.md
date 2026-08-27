@@ -66,7 +66,7 @@ Results land as JSON under `test/benchmarks/results/`:
 {
   "benchmark": "swe-bench",
   "corpus_commit": "abcd1234",
-  "rousseau_version": "v0.0.1-dirty",
+  "rousseau_version": "v0.0.2-dirty",
   "model": "claude-opus-4-6",
   "started_at": "2026-08-23T09:12:45Z",
   "ended_at":   "2026-08-23T15:04:33Z",

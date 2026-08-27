@@ -9,7 +9,7 @@
 #     slsa-verifier verify-artifact \
 #         --provenance-path <intoto>.jsonl \
 #         --source-uri github.com/sebastienrousseau/rousseau-agent \
-#         --source-tag v0.0.1 \
+#         --source-tag v0.0.2 \
 #         ./rousseau
 
 name: slsa

@@ -15,7 +15,7 @@
 #   cosign verify \
 #     --certificate-identity-regexp 'https://github.com/sebastienrousseau/rousseau-agent/.*' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-#     ghcr.io/sebastienrousseau/rousseau-agent:v0.0.1
+#     ghcr.io/sebastienrousseau/rousseau-agent:v0.0.2
 
 name: container release
 
@@ -104,7 +104,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # The tag prefix (distroless- or empty) is baked in via `flavor.prefix`
-          # so users get semantic tags like `distroless-v0.0.1` without us
+          # so users get semantic tags like `distroless-v0.0.2` without us
           # writing them out by hand.
           flavor: |
             prefix=${{ matrix.tag_prefix }}
