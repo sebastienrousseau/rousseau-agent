@@ -212,3 +212,91 @@ func TestFirstText_PrefersText(t *testing.T) {
 func TestFirstText_EmptyReturnsEmpty(t *testing.T) {
 	assert.Equal(t, "", firstText(agent.Message{}))
 }
+
+// capturingRunner records the session state at Turn-time. Lets the
+// mixed-content tests assert the exact Content slice the router
+// appended before delegating to the agent loop.
+type capturingRunner struct {
+	seen []agent.Content
+}
+
+func (c *capturingRunner) Turn(_ context.Context, sess *agent.Session) (agent.Message, error) {
+	if n := len(sess.Messages); n > 0 {
+		c.seen = sess.Messages[n-1].Content
+	}
+	reply := agent.NewAssistantText("ok")
+	sess.Append(reply)
+	return reply, nil
+}
+
+func TestBuildUserMessage_TextAndImageBecomeMixedContent(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	got, ok := buildUserMessage(IncomingMessage{
+		From: "wa:1",
+		Body: "look at this",
+		Attachments: []Attachment{
+			{MediaType: "image/png", Data: png},
+		},
+	}, "whatsapp")
+	require.True(t, ok)
+	require.Len(t, got.Content, 2)
+	assert.Equal(t, agent.ContentText, got.Content[0].Kind)
+	assert.Equal(t, "look at this", got.Content[0].Text)
+	assert.Equal(t, agent.ContentImage, got.Content[1].Kind)
+	require.NotNil(t, got.Content[1].Image)
+	assert.Equal(t, "image/png", got.Content[1].Image.MediaType)
+	assert.Equal(t, "whatsapp", got.Content[1].Image.Source)
+	assert.Equal(t, png, got.Content[1].Image.Data)
+}
+
+func TestBuildUserMessage_ImageOnlyOmitsTextBlock(t *testing.T) {
+	got, ok := buildUserMessage(IncomingMessage{
+		From: "wa:1",
+		Attachments: []Attachment{
+			{MediaType: "image/jpeg", Data: []byte{0xFF, 0xD8, 0xFF}},
+		},
+	}, "whatsapp")
+	require.True(t, ok)
+	require.Len(t, got.Content, 1, "no text → no text block")
+	assert.Equal(t, agent.ContentImage, got.Content[0].Kind)
+}
+
+func TestBuildUserMessage_EmptyDataAttachmentSkipped(t *testing.T) {
+	got, ok := buildUserMessage(IncomingMessage{
+		From: "wa:1",
+		Body: "just words",
+		Attachments: []Attachment{
+			{MediaType: "image/png", Data: nil}, // dropped
+		},
+	}, "whatsapp")
+	require.True(t, ok)
+	require.Len(t, got.Content, 1)
+	assert.Equal(t, agent.ContentText, got.Content[0].Kind)
+}
+
+func TestBuildUserMessage_NothingToSayReturnsFalse(t *testing.T) {
+	_, ok := buildUserMessage(IncomingMessage{From: "wa:1"}, "whatsapp")
+	assert.False(t, ok, "empty body + no attachments → nothing to append")
+}
+
+func TestRouter_HandleImageAttachmentReachesRunner(t *testing.T) {
+	png := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &capturingRunner{}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{Transport: "whatsapp"})
+
+	_, err := r.Handle(context.Background(), IncomingMessage{
+		From:        "1234@s.whatsapp.net",
+		Body:        "what is this?",
+		Attachments: []Attachment{{MediaType: "image/png", Data: png}},
+	})
+	require.NoError(t, err)
+
+	// The runner saw text + image on the last appended user message.
+	require.Len(t, runner.seen, 2)
+	assert.Equal(t, agent.ContentText, runner.seen[0].Kind)
+	assert.Equal(t, agent.ContentImage, runner.seen[1].Kind)
+	require.NotNil(t, runner.seen[1].Image)
+	assert.Equal(t, "whatsapp", runner.seen[1].Image.Source, "transport name must attribute the image")
+}
