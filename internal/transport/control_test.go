@@ -77,10 +77,16 @@ func TestSupervisor_ControlVerbsAnswerWithoutTheLLM(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	h := sup.Wrap(HandlerFunc(func(ctx context.Context, _ IncomingMessage) (string, error) {
-		close(entered)
+		// Emit BEFORE signalling entered — otherwise the test can run
+		// /status ahead of the coalescer observing the tool-started
+		// event, and the status renders "working on it" instead of
+		// "running `bash`". Consistent on linux/amd64, races on
+		// macos/arm64 because the scheduler wakes the test goroutine
+		// faster than the emit path completes.
 		progress.Emit(ctx, progress.PublisherFrom(ctx), progress.Event{
 			Kind: progress.KindToolStarted, Tool: "bash",
 		})
+		close(entered)
 		<-release
 		return "done", nil
 	}))

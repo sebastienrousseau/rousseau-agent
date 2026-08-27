@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"io"
 	"log/slog"
 	"testing"
@@ -30,7 +29,7 @@ func TestDisplayWindow_PositiveEchoesDuration(t *testing.T) {
 // documented no-op behaviour on nil / empty slices — the shape we
 // see when the daemon starts with mcp.clients disabled.
 func TestCloseMCPClients_NilAndEmptyAreNoOps(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	closeMCPClients(nil, logger)
 	closeMCPClients(nil, logger)

@@ -64,9 +64,15 @@ FROM node:22-alpine AS runtime
 # Every other language runtime (Go, Rust, Node versions, Ruby, PHP,
 # Lua, …) is installed on-demand via mise per repo, keyed off a
 # `.mise.toml` / `.tool-versions` file.
-RUN apk add --no-cache \
+# `apk upgrade` first: the base image carries whatever CVEs Alpine had
+# on its publication date, and this image is scanned on every build.
+#
+# fish was removed. bash is the shell contract Claude Code's Bash tool
+# expects, so a second interactive shell added attack surface and a
+# High-severity finding while serving nothing the daemon does.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache \
       bash \
-      fish \
       git \
       github-cli \
       openssh-client \
@@ -131,7 +137,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} \
 RUN deluser --remove-home node 2>/dev/null || true \
  && delgroup node        2>/dev/null || true \
  && addgroup -g 1000 rousseau \
- && adduser  -u 1000 -G rousseau -h /home/rousseau -s /usr/bin/fish -D rousseau
+ && adduser  -u 1000 -G rousseau -h /home/rousseau -s /bin/bash -D rousseau
 
 # Copy the static Go binary from the builder.
 COPY --from=builder /out/rousseau /usr/local/bin/rousseau

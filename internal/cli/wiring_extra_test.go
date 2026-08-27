@@ -764,7 +764,7 @@ func TestLoadSkillsFromResolutionChain_SystemLoadFailureIsLogged(t *testing.T) {
 	writeSkill(t, userDir, "user-only", "from user dir")
 	withSystemSkillsDir(t, brokenSkillsDir(t))
 
-	var buf bytes.Buffer
+	var buf syncBuffer
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	got, err := loadSkillsFromResolutionChain(&Options{
 		Config: &config.Config{Agent: config.AgentConfig{SkillsDir: userDir}},
