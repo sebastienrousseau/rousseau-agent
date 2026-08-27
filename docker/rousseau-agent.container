@@ -26,8 +26,20 @@ ContainerName=rousseau-agent
 # claude auth (claude refreshes cached tokens); the workspace is
 # read-write because the agent's coding tools operate on files there.
 # Nothing else on the host is visible.
+#
+# .claude.json (a FILE at HOME root, distinct from the .claude/
+# directory) carries claude-code's permission profile, MCP registry,
+# and per-project session index. Claude 2.1.x refuses to start
+# without it and loops on backups if the file is missing. It has to
+# be bind-mounted separately -- HOME itself is not shared.
+#
+# The file bind on .claude.json shares the atomic-rename inode
+# staleness footgun with the pre-PR-50 .credentials.json bind:
+# rousseau-agent-claude-creds.path watches both files and restarts
+# the daemon whenever either is replaced.
 Volume=%h/.local/share/rousseau:/home/rousseau/.local/share/rousseau:rw,Z
 Volume=%h/.claude:/home/rousseau/.claude:rw,Z
+Volume=%h/.claude.json:/home/rousseau/.claude.json:rw
 Volume=%h/team-rousseau-workspace:/workspace:rw,Z
 
 # No published ports — rousseau exposes no HTTP surface. Egress-only

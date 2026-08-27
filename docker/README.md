@@ -117,21 +117,27 @@ systemctl --user start rousseau-agent
 
 ## Claude OAuth refresh
 
-The Quadlet bind-mounts `$HOME/.claude/.credentials.json` at the FILE
-level so the container can share the host's OAuth token without
-sharing the rest of the `.claude/` directory (session history,
-project settings, ...). File-level bind mounts follow the source
-INODE, and Claude Code refreshes tokens via an atomic
-unlink + rename — the new token lands under a fresh inode, the
-container keeps holding the deleted one, and every subprocess after
-refresh dies with `Failed to authenticate: OAuth session expired and
-could not be refreshed`.
+Two Claude Code state files are bind-mounted into the container:
+
+- `$HOME/.claude/` — session history, projects, plugin cache. Dir
+  bind, so files replaced inside it stay visible; no watcher help
+  needed.
+- `$HOME/.claude.json` — permission profile, MCP registry, per-project
+  session index. Lives at HOME root, so it has to be file-bound.
+
+Claude Code rewrites both files via atomic `unlink + rename`. File
+binds follow the source **inode**, so an atomic replace leaves the
+container holding the deleted one and every subprocess after that
+dies with either `Failed to authenticate: OAuth session expired and
+could not be refreshed` or
+`Claude configuration file not found at: /home/rousseau/.claude.json`.
 
 `rousseau-agent-claude-creds.path` is a systemd path unit that
-watches the credentials file for change events and, when one fires,
-restarts `rousseau-agent.service` via a small oneshot service.
-Podman re-resolves the bind mount at start, so the container picks
-up the fresh inode immediately.
+watches **both** `%h/.claude.json` and `%h/.claude/.credentials.json`
+for change events and, when either fires, restarts
+`rousseau-agent.service` via a small oneshot service. Podman
+re-resolves file binds at start, so the fresh inodes are picked up
+immediately.
 
 Install (copied by `make quadlet-install`):
 
