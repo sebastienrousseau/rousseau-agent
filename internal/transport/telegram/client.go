@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/media"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -44,6 +45,10 @@ type Config struct {
 	// messages to text before the router sees them. Nil skips audio
 	// messages entirely (they don't fall through to the LLM).
 	Transcriber Transcriber
+	// MediaPolicy governs which image messages are accepted (MIME
+	// allowlist, per-image and per-turn byte caps). Zero-value falls
+	// back to the media.Policy defaults documented on that package.
+	MediaPolicy media.Policy
 }
 
 // Transcriber matches the shape used by every rousseau transport that
@@ -143,23 +148,31 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 		return
 	}
 
-	// Resolve the message text. Prefer the explicit Text field; fall
-	// back to transcribing an inbound voice / audio blob when the
-	// caller wired a Transcriber. Skipping when neither is available.
+	// Resolve the message text. Prefer the explicit Text field; then
+	// the Caption on a photo message; finally fall back to
+	// transcribing an inbound voice / audio blob. Text and image can
+	// coexist — the image adds Attachments, the caption becomes Body.
 	text := u.Message.Text
+	if text == "" && u.Message.Caption != "" && len(u.Message.Photo) > 0 {
+		text = u.Message.Caption
+	}
 	if text == "" {
 		text = c.transcribeAudio(ctx, u.Message)
 	}
-	if text == "" {
+	attachments := c.collectImageAttachments(ctx, u.Message.Photo)
+	if text == "" && len(attachments) == 0 {
 		return
 	}
 
 	msg := transport.IncomingMessage{
-		From: strconv.FormatInt(u.Message.Chat.ID, 10),
-		Body: text,
-		At:   time.Unix(u.Message.Date, 0),
+		From:        strconv.FormatInt(u.Message.Chat.ID, 10),
+		Body:        text,
+		At:          time.Unix(u.Message.Date, 0),
+		Attachments: attachments,
 	}
-	c.logger.Info("telegram.incoming", slog.String("from", msg.From))
+	c.logger.Info("telegram.incoming",
+		slog.String("from", msg.From),
+		slog.Int("attachments", len(attachments)))
 	reply, err := handler.Handle(ctx, msg)
 	if err != nil {
 		c.logger.Error("telegram.handler_failed", slog.String("err", err.Error()))
@@ -225,6 +238,43 @@ func (c *Client) transcribeAudio(ctx context.Context, m *telegramMessage) string
 		slog.Int("bytes", len(bytes)),
 		slog.Int("transcript_chars", len(text)))
 	return text
+}
+
+// collectImageAttachments downloads the largest rendition of an
+// inbound photo message (Bot API sorts PhotoSize entries smallest →
+// largest, so we take the last), sniffs the MIME from the payload
+// bytes, and applies MediaPolicy. Failures are logged and dropped;
+// a bad image never swallows the message it arrived with.
+func (c *Client) collectImageAttachments(ctx context.Context, sizes []telegramPhotoSize) []transport.Attachment {
+	if len(sizes) == 0 {
+		return nil
+	}
+	largest := sizes[len(sizes)-1]
+	if largest.FileID == "" {
+		return nil
+	}
+	data, _, err := c.downloadFile(ctx, largest.FileID)
+	if err != nil {
+		c.logger.Warn("telegram.image_download_failed",
+			slog.String("file_id", largest.FileID),
+			slog.String("err", err.Error()))
+		return nil
+	}
+	sniffed, err := c.cfg.MediaPolicy.Accept(data, 0)
+	if err != nil {
+		c.logger.Info("telegram.image_dropped",
+			slog.String("file_id", largest.FileID),
+			slog.String("reason", err.Error()),
+			slog.Int("bytes", len(data)))
+		return nil
+	}
+	c.logger.Info("telegram.image_downloaded",
+		slog.String("file_id", largest.FileID),
+		slog.String("mimetype", sniffed),
+		slog.Int("bytes", len(data)),
+		slog.Int("width", largest.Width),
+		slog.Int("height", largest.Height))
+	return []transport.Attachment{{MediaType: sniffed, Data: data}}
 }
 
 // downloadFile calls getFile to learn the file_path, then GETs it from
@@ -338,12 +388,25 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64          `json:"message_id"`
-	Date      int64          `json:"date"`
-	Text      string         `json:"text"`
-	Chat      telegramChat   `json:"chat"`
-	Voice     *telegramVoice `json:"voice,omitempty"`
-	Audio     *telegramAudio `json:"audio,omitempty"`
+	MessageID int64               `json:"message_id"`
+	Date      int64               `json:"date"`
+	Text      string              `json:"text"`
+	Caption   string              `json:"caption,omitempty"`
+	Chat      telegramChat        `json:"chat"`
+	Voice     *telegramVoice      `json:"voice,omitempty"`
+	Audio     *telegramAudio      `json:"audio,omitempty"`
+	Photo     []telegramPhotoSize `json:"photo,omitempty"`
+}
+
+// telegramPhotoSize is one rendition of an inbound photo. The Bot
+// API ships several sizes in the same message; the largest is the
+// last entry — the pipeline picks that one and lets the model see
+// full resolution.
+type telegramPhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
 }
 
 // telegramVoice is the Bot API's Voice object — Opus in an OGG
