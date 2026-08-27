@@ -30,6 +30,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/media"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -55,6 +56,10 @@ type Config struct {
 	// github.com/coder/websocket. Tests inject a stub that returns a
 	// scripted event stream.
 	DialWebSocket func(ctx context.Context, url string) (WSConn, error)
+	// MediaPolicy governs which files are accepted (MIME allowlist,
+	// per-image and per-turn byte caps). Zero-value falls back to the
+	// media.Policy defaults documented on that package.
+	MediaPolicy media.Policy
 }
 
 // WSConn is the narrow subset of *websocket.Conn the transport uses.
@@ -235,8 +240,15 @@ func (c *Client) dispatchEvent(ctx context.Context, env socketEnvelope, handler 
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
 		return fmt.Errorf("parse payload: %w", err)
 	}
-	if payload.Event.Type != "message" || payload.Event.SubType != "" {
-		return nil // ignore bot messages, edits, joins, etc.
+	if payload.Event.Type != "message" {
+		return nil
+	}
+	// Slack tags plain user attachments with subtype="file_share";
+	// bot edits, joins, and channel-events use other subtypes we do
+	// not want. Empty-subtype and file_share are the two shapes real
+	// user messages take.
+	if payload.Event.SubType != "" && payload.Event.SubType != "file_share" {
+		return nil
 	}
 	// Loop prevention: own bot message.
 	if c.cfg.BotUserID != "" && payload.Event.User == c.cfg.BotUserID {
@@ -246,17 +258,20 @@ func (c *Client) dispatchEvent(ctx context.Context, env socketEnvelope, handler 
 		return nil
 	}
 	body := payload.Event.Text
-	if body == "" {
+	attachments := c.collectFileAttachments(ctx, payload.Event.Files)
+	if body == "" && len(attachments) == 0 {
 		return nil
 	}
 	msg := transport.IncomingMessage{
-		From: payload.Event.User,
-		Body: body,
-		At:   time.Now().UTC(),
+		From:        payload.Event.User,
+		Body:        body,
+		At:          time.Now().UTC(),
+		Attachments: attachments,
 	}
 	c.logger.Info("slack.incoming",
 		slog.String("from", msg.From),
-		slog.String("channel", payload.Event.Channel))
+		slog.String("channel", payload.Event.Channel),
+		slog.Int("attachments", len(attachments)))
 	reply, err := handler.Handle(ctx, msg)
 	if err != nil {
 		c.logger.Error("slack.handler_failed", slog.String("err", err.Error()))
@@ -266,6 +281,87 @@ func (c *Client) dispatchEvent(ctx context.Context, env socketEnvelope, handler 
 		return nil
 	}
 	return c.postMessage(ctx, payload.Event.Channel, reply)
+}
+
+// collectFileAttachments walks the files array on an inbound event,
+// downloads each with the bot token, and applies the operator's
+// MediaPolicy. Failures per file are logged and dropped rather than
+// aborting the whole message — one bad file must not swallow a whole
+// user message. Non-image files are ignored entirely: the model has
+// no adapter to accept PDF/video today, so downloading them would
+// only waste egress.
+func (c *Client) collectFileAttachments(ctx context.Context, files []slackFile) []transport.Attachment {
+	if len(files) == 0 {
+		return nil
+	}
+	out := make([]transport.Attachment, 0, len(files))
+	totalSoFar := 0
+	for _, f := range files {
+		if f.URLPrivateDownload == "" {
+			continue
+		}
+		if !isImageMIME(f.Mimetype) {
+			c.logger.Debug("slack.file_skipped_non_image",
+				slog.String("file", f.ID),
+				slog.String("envelope_mime", f.Mimetype))
+			continue
+		}
+		data, err := c.downloadFile(ctx, f.URLPrivateDownload)
+		if err != nil {
+			c.logger.Warn("slack.file_download_failed",
+				slog.String("file", f.ID),
+				slog.String("err", err.Error()))
+			continue
+		}
+		sniffed, err := c.cfg.MediaPolicy.Accept(data, totalSoFar)
+		if err != nil {
+			c.logger.Info("slack.file_dropped",
+				slog.String("file", f.ID),
+				slog.String("reason", err.Error()),
+				slog.Int("bytes", len(data)))
+			continue
+		}
+		if sniffed != f.Mimetype {
+			c.logger.Warn("slack.file_mime_lied",
+				slog.String("file", f.ID),
+				slog.String("envelope", f.Mimetype),
+				slog.String("sniffed", sniffed))
+		}
+		out = append(out, transport.Attachment{MediaType: sniffed, Data: data})
+		totalSoFar += len(data)
+	}
+	return out
+}
+
+// isImageMIME returns true when the envelope MIME is one we intend
+// to attempt to accept. Kept separate from the media.Policy check
+// so the "PDF, skip" path never even opens the connection — Slack
+// file downloads are authenticated and metered.
+func isImageMIME(m string) bool {
+	if len(m) < 6 {
+		return false
+	}
+	return m[:6] == "image/"
+}
+
+// downloadFile GETs the file URL with the bot token and returns the
+// bytes. Slack requires the Authorization header for
+// url_private_download; a bare GET returns HTML.
+func (c *Client) downloadFile(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("slack: build file GET: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.cfg.BotToken)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("slack: file GET: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("slack: file GET: HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // Deliver sends a plain text message to a Slack channel id. Suitable
@@ -377,12 +473,23 @@ type eventsAPIPayload struct {
 }
 
 type slackEvent struct {
-	Type    string `json:"type"`
-	SubType string `json:"subtype,omitempty"`
-	User    string `json:"user,omitempty"`
-	BotID   string `json:"bot_id,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Channel string `json:"channel,omitempty"`
+	Type    string      `json:"type"`
+	SubType string      `json:"subtype,omitempty"`
+	User    string      `json:"user,omitempty"`
+	BotID   string      `json:"bot_id,omitempty"`
+	Text    string      `json:"text,omitempty"`
+	Channel string      `json:"channel,omitempty"`
+	Files   []slackFile `json:"files,omitempty"`
+}
+
+// slackFile is the subset of the Slack file object we need. The full
+// object is documented at https://api.slack.com/types/file — every
+// other field is metadata we do not need.
+type slackFile struct {
+	ID                 string `json:"id"`
+	Mimetype           string `json:"mimetype"`
+	Size               int    `json:"size"`
+	URLPrivateDownload string `json:"url_private_download"`
 }
 
 func truncate(s string, n int) string {
