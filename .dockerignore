@@ -1,0 +1,12 @@
+bin/
+coverage.out
+coverage.html
+*.log
+.git
+.github
+docs
+website
+apps
+web
+ui-tui
+scripts

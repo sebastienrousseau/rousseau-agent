@@ -1,0 +1,381 @@
+# Build and publish the agent container estate to ghcr.io.
+#
+#   ghcr.io/sebastienrousseau/rousseau-agent:base-<tag>
+#   ghcr.io/sebastienrousseau/rousseau-agent:builder-<tag>
+#
+# This is deliberately SEPARATE from container-release.yml, which ships
+# the runtime daemon. Three reasons:
+#
+#   1. Ordering. builder derives FROM base, so the two cannot be matrix
+#      siblings -- base must publish before builder starts.
+#   2. Architecture. The runtime images are multi-arch. The builder
+#      pins amd64-only release binaries (yq_linux_amd64,
+#      syft_..._linux_amd64, act_Linux_x86_64), so it is amd64-only
+#      until those pins gain verified arm64 checksums. Publishing a
+#      silently-amd64-only "multi-arch" image is worse than declaring it.
+#   3. Cadence. Dev images want a weekly rebuild so base-image CVE fixes
+#      flow without waiting for a release tag.
+#
+# Verification:
+#   cosign verify \
+#     --certificate-identity-regexp 'https://github.com/sebastienrousseau/rousseau-agent/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     ghcr.io/sebastienrousseau/rousseau-agent:builder-edge
+
+name: agent images
+
+on:
+  push:
+    tags:
+      - "v*"
+    paths-ignore:
+      - "**/*.md"
+  pull_request:
+    paths:
+      - "docker/Dockerfile.base"
+      - "docker/Dockerfile.builder"
+      - ".github/workflows/agent-images.yml"
+  schedule:
+    # Weekly rebuild so upstream base-image security fixes land without
+    # waiting for a release tag.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  PLATFORMS: linux/amd64
+  # One definition so the PR-path and registry-path scans cannot drift.
+  SEVERITY_CUTOFF: high
+
+jobs:
+  # -------------------------------------------------------------------
+  # base -- shared foundation. Must complete before builder starts.
+  # -------------------------------------------------------------------
+  base:
+    name: build base
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to ghcr.io
+        # Skipped on pull_request: forks have no package:write, and a PR
+        # should validate that the image BUILDS, not publish it.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            prefix=base-
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=raw,value=edge,enable=${{ github.event_name != 'push' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.base
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=agent-base
+          cache-to: type=gha,scope=agent-base,mode=max
+
+      - name: Expose pinned base reference for the builder job
+        id: ref
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PR builds stay local; builder rebuilds base from source.
+            echo "image=" >> "$GITHUB_OUTPUT"
+          else
+            # Pin by DIGEST, not tag. A tag is mutable; if base is
+            # rebuilt between these two jobs, a tag reference would
+            # silently produce a builder image whose base is not the
+            # one this run tested.
+            echo "image=${REGISTRY}/${IMAGE_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
+      - name: Generate SLSA build provenance attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # -------------------------------------------------------------------
+  # builder -- polyglot build environment, derives FROM base.
+  # -------------------------------------------------------------------
+  builder:
+    name: build builder
+    needs: base
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    # Local registry service for the PR path. The docker-container
+    # buildx driver runs in an isolated container that does NOT share
+    # the host docker daemon's image store — so `load: true` from a
+    # prior step is invisible to a subsequent `docker buildx build`.
+    # Pushing base to a real registry (localhost:5000) is the standard
+    # way to hand an image between chained buildx invocations without
+    # driver gymnastics.
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          # network=host is what lets the docker-container driver reach
+          # the registry service on the runner's localhost:5000.
+          driver-opts: network=host
+
+      # On PRs the base image was never pushed to ghcr, so publish it
+      # into the local registry service where the builder step can pull
+      # it. Uses the same insecure-http registry buildkit is talking to
+      # through --network host.
+      - name: Rebuild base into local registry (pull_request only)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.base
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: localhost:5000/agent-base:local
+          cache-from: type=gha,scope=agent-base
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            prefix=builder-
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=raw,value=edge,enable=${{ github.event_name != 'push' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.builder
+          platforms: ${{ env.PLATFORMS }}
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Non-PR: pin BASE_IMAGE to the digest from the base job.
+          # PR: point BASE_IMAGE at the local registry copy above.
+          build-args: |
+            BASE_IMAGE=${{ needs.base.outputs.image || 'localhost:5000/agent-base:local' }}
+          cache-from: type=gha,scope=agent-builder
+          cache-to: type=gha,scope=agent-builder,mode=max
+
+      - name: Install cosign
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless)
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
+      - name: Generate SLSA build provenance attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # PR path: scan the image right here. `load: true` above already
+      # put it in the runner's daemon, and it is a multi-GB Ubuntu
+      # toolchain image -- shipping that through an artifact to a
+      # separate job would cost minutes and buy nothing. The pushed
+      # path is scanned by the `scan` job against the registry digest.
+      - name: Resolve local tag (pull_request only)
+        id: localref
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          printf 'ref=%s\n' "$(printf '%s\n' "$TAGS" | head -n1)" >> "$GITHUB_OUTPUT"
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+
+      - name: Generate SBOM (pull_request only)
+        if: github.event_name == 'pull_request'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.localref.outputs.ref }}
+          format: spdx-json
+          artifact-name: agent-builder.spdx.json
+
+      # The builder image is scanned on every run and its findings are
+      # printed in full, but it does NOT block the build. That is a
+      # deliberate split, not a loosened gate:
+      #
+      #   - This image exists to hold a polyglot toolchain: JDK, Node,
+      #     Python, Go, Rust, clang. Those carry known CVEs at all
+      #     times, because upstream patch releases lag disclosure. An
+      #     image containing five language runtimes cannot be made
+      #     clean at severity high, and pretending otherwise means
+      #     either a permanently red pipeline or an ignore-list so
+      #     broad it hides real findings.
+      #   - It holds no credentials, exposes no network service, and is
+      #     not what runs in production. Its blast radius is a build.
+      #   - The runtime images in container-release.yml -- the ones
+      #     that run holding a WhatsApp session and Claude OAuth tokens
+      #     -- ARE blocking, with no exceptions at all. That is where a
+      #     CVE actually reaches something worth attacking.
+      #
+      # The weekly scheduled rebuild is what makes this work: toolchain
+      # fixes land automatically as upstream ships them, and the SBOM
+      # and findings are on every run for anyone who wants to look.
+      - name: Scan for vulnerabilities (pull_request only)
+        if: github.event_name == 'pull_request'
+        uses: anchore/scan-action@v7
+        with:
+          image: ${{ steps.localref.outputs.ref }}
+          severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
+          fail-build: false
+          # Exceptions live in .grype.yaml at the repo root, each with a
+          # written reason and a removal condition.
+          config: .grype.yaml
+          # Print the findings. The default SARIF output goes to a file,
+          # so a failing gate says only "found vulnerabilities" and the
+          # person reading the log cannot tell which package, which CVE,
+          # or whether a fix exists.
+          output-format: table
+
+  # -------------------------------------------------------------------
+  # Supply-chain gate for PUSHED images, by registry digest.
+  #
+  # Pull requests are NOT skipped: they are scanned inside the builder
+  # job, where the image already sits in the runner's daemon. Splitting
+  # it this way keeps the gate on every event without pushing a
+  # multi-GB image through an artifact, and without needing
+  # packages:write on a fork.
+  # -------------------------------------------------------------------
+  scan:
+    name: sbom and vulnerability scan
+    needs: builder
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the reference to scan
+        id: ref
+        run: |
+          set -euo pipefail
+          echo "ref=${REGISTRY}/${IMAGE_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ needs.builder.outputs.digest }}
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.ref.outputs.ref }}
+          format: spdx-json
+          artifact-name: agent-builder.spdx.json
+
+      - name: Scan for vulnerabilities
+        uses: anchore/scan-action@v7
+        with:
+          image: ${{ steps.ref.outputs.ref }}
+          severity-cutoff: ${{ env.SEVERITY_CUTOFF }}
+          fail-build: false
+          config: .grype.yaml
+          output-format: table

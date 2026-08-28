@@ -1,0 +1,211 @@
+# Build and publish container images to ghcr.io on tag push.
+#
+# Two flavours per tag:
+#   ghcr.io/sebastienrousseau/rousseau-agent:<tag>              (full runtime;
+#                                                                docker/Dockerfile)
+#   ghcr.io/sebastienrousseau/rousseau-agent:distroless-<tag>   (minimal;
+#                                                                docker/Dockerfile.distroless)
+#
+# Both are:
+#   - Multi-arch (linux/amd64, linux/arm64) via buildx QEMU
+#   - Cosign-signed keylessly (GitHub OIDC → Sigstore Fulcio → transparency log)
+#   - Attested with SLSA build provenance
+#
+# Verification:
+#   cosign verify \
+#     --certificate-identity-regexp 'https://github.com/sebastienrousseau/rousseau-agent/.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     ghcr.io/sebastienrousseau/rousseau-agent:v0.0.1
+
+name: container release
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - main
+  pull_request:
+    paths:
+      - "docker/**"
+      - ".github/workflows/container-release.yml"
+      - ".grype.yaml"
+      - "go.mod"
+      - "go.sum"
+      - "cmd/**"
+      - "internal/**"
+      - "pkg/**"
+  schedule:
+    # Weekly rebuild. A daemon image that was clean at release does not
+    # stay clean: CVEs are disclosed against packages already inside it.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  # id-token for cosign keyless + SLSA attestations
+  id-token: write
+  # attestations for SLSA build provenance
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavour: full
+            dockerfile: docker/Dockerfile
+            tag_prefix: ""
+            # Report-only. This flavour ships a build toolchain on
+            # purpose -- build-base, python, pipx, dev headers, plus Go
+            # and Rust via mise -- because Claude Code's Bash tool
+            # compiles things. Those runtimes always carry open CVEs;
+            # blocking on them means a permanently red pipeline or an
+            # exception list broad enough to hide real findings.
+            gate: false
+          - flavour: distroless
+            dockerfile: docker/Dockerfile.distroless
+            tag_prefix: "distroless-"
+            # Blocking. Carries no shell and no toolchain, and passes
+            # clean today with nothing excepted -- so anything that
+            # appears here is a real regression. This is the flavour to
+            # run in production.
+            gate: true
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to ghcr.io
+        # Publishing is tag-only, and a fork's token has no
+        # packages:write. Non-tag runs build locally and never push.
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU (for multi-arch builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The tag prefix (distroless- or empty) is baked in via `flavor.prefix`
+          # so users get semantic tags like `distroless-v0.0.1` without us
+          # writing them out by hand.
+          flavor: |
+            prefix=${{ matrix.tag_prefix }}
+            latest=false
+          tags: |
+            type=ref,event=tag
+            type=raw,value=${{ matrix.tag_prefix }}latest,enable=${{ github.ref_type == 'tag' }}
+            # Non-tag runs still need a tag to load and scan against.
+            # Never pushed -- `push:` below is tag-only.
+            type=raw,value=edge,enable=${{ github.ref_type != 'tag' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          # Multi-arch only when publishing. A local load (needed to
+          # scan a non-tag build) supports one platform at a time, so
+          # non-tag runs build amd64 and scan that.
+          platforms: ${{ startsWith(github.ref, 'refs/tags/') && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          load: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Layer cache to shave minutes off subsequent builds
+          cache-from: type=gha,scope=${{ matrix.flavour }}
+          cache-to: type=gha,scope=${{ matrix.flavour }},mode=max
+
+      - name: Install cosign
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image (keyless)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            [[ -z "$tag" ]] && continue
+            cosign sign --yes "${tag}@${DIGEST}"
+          done <<< "$TAGS"
+
+      - name: Generate SLSA build provenance attestation
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # These are the images that actually run in production, holding a
+      # WhatsApp session and Claude OAuth credentials. They were being
+      # published signed and attested but never scanned, which meant the
+      # supply-chain story proved WHERE the image came from and nothing
+      # about WHAT WAS IN IT.
+      #
+      # The gate is strict here and deliberately stricter than for the
+      # builder image: this runs with credentials and network access,
+      # the builder does not.
+      # Resolve what to scan. On a tag the image is in the registry and
+      # is addressed by digest, which verifies what actually landed
+      # there. Otherwise it was loaded locally and is addressed by tag.
+      - name: Resolve scan target
+        id: scanref
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "ref=${REGISTRY}/${IMAGE_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          else
+            printf 'ref=%s\n' "$(printf '%s\n' "$TAGS" | head -n1)" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          REGISTRY: ${{ env.REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.scanref.outputs.ref }}
+          format: spdx-json
+          artifact-name: rousseau-agent-${{ matrix.flavour }}.spdx.json
+
+      # BLOCKING, on every event, with no .grype.yaml exceptions.
+      #
+      # These are the images that run holding a WhatsApp session and
+      # Claude OAuth tokens. Unlike the builder image -- a dev toolchain
+      # that cannot be kept CVE-free -- a daemon image is small enough
+      # to keep clean, so anything found here is a real finding to act
+      # on rather than noise to triage.
+      #
+      # Deliberately no `config:` line: the builder's exceptions must
+      # not leak into the gate that protects production.
+      - name: Scan for vulnerabilities
+        uses: anchore/scan-action@v7
+        with:
+          image: ${{ steps.scanref.outputs.ref }}
+          severity-cutoff: high
+          fail-build: ${{ matrix.gate }}
+          output-format: table

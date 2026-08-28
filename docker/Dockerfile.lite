@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1.7
+#
+# :lite variant — same distroless base as :distroless, but the
+# whatsmeow-backed WhatsApp transport is compiled out behind
+# //go:build no_whatsmeow. Operators who don't need WhatsApp get a
+# ~14% smaller binary (43 MB vs 50 MB); the resulting image is
+# ~47 MB compressed (vs 55 MB for :distroless and 530 MB for :latest).
+#
+# What's out under -tags=no_whatsmeow:
+#   internal/transport/whatsapp/client.go, dispatch.go, resolve.go,
+#   sender.go, whisper.go, plus the whatsmeow SDK + qrterminal + all
+#   test files that depend on them.
+#
+# What's in: every other transport (signal, telegram, matrix, slack,
+# discord, sms, imessage, email) plus the CLI, agent, tools, and MCP
+# surfaces. Config file remains identical.
+
+########################  BUILDER  ########################
+ARG GO_VERSION=1.26
+FROM golang:${GO_VERSION}-alpine AS builder
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+
+ARG VERSION=container-lite
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=linux \
+    go build \
+        -tags no_whatsmeow \
+        -trimpath \
+        -ldflags="-s -w \
+          -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.version=${VERSION}' \
+          -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.commit=${COMMIT}' \
+          -X 'github.com/sebastienrousseau/rousseau-agent/internal/cli.buildDate=${BUILD_DATE}'" \
+        -o /out/rousseau ./cmd/rousseau
+
+########################  RUNTIME  ########################
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+COPY --from=builder /out/rousseau /usr/local/bin/rousseau
+
+WORKDIR /workspace
+ENV HOME=/home/nonroot
+
+ENTRYPOINT ["/usr/local/bin/rousseau"]
+CMD ["--help"]

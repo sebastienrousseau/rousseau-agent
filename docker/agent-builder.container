@@ -1,0 +1,104 @@
+# Podman Quadlet unit for agent-builder — the polyglot build environment.
+#
+# This is the COMPANION to rousseau-agent.container, not a replacement.
+# Run both. They exist because their threat models are contradictory:
+#
+#   rousseau-agent   ReadOnly=true, /tmp 64m, holds WhatsApp session +
+#                    Claude OAuth. Immutable because it is credentialed.
+#   agent-builder    writable $HOME, /tmp 8g, holds NO long-lived
+#                    credentials. Mutable because it is not.
+#
+# Do not add credential mounts to this unit, and do not relax
+# ReadOnly= on the daemon unit. The safety property is that no single
+# container is both writable and credentialed.
+#
+# Enable with:
+#     systemctl --user daemon-reload
+#     systemctl --user start agent-builder
+#
+# Build the image first:
+#     cd ~/team-rousseau-workspace/repos/public/go/rousseau-agent
+#     podman build -t agent-base:local    -f docker/Dockerfile.base .
+#     podman build -t agent-builder:local -f docker/Dockerfile.builder .
+
+[Unit]
+Description=rousseau agent-builder (polyglot build environment)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/agent-builder:local
+ContainerName=agent-builder
+
+# -- Mounts -----------------------------------------------------------
+# The workspace is the only bind mount. Note what is ABSENT relative to
+# the daemon unit: no ~/.claude (OAuth tokens), no
+# ~/.local/share/rousseau (WhatsApp session store), no ~/.ssh.
+Volume=%h/team-rousseau-workspace:/workspace:rw,Z
+
+# -- B1 FIX -----------------------------------------------------------
+# Writable root filesystem. This is the deliberate divergence from the
+# daemon unit and the reason the split exists. It restores `npm -g`,
+# `pip --user`, `cargo install`, and `rustup`, none of which can work
+# against a read-only $HOME.
+ReadOnly=false
+
+# -- B3 FIX -----------------------------------------------------------
+# 64 MiB is enough for a daemon that never builds anything; it is not
+# enough to compile Rust or run a Node install. TMPDIR in the image
+# additionally falls back to /workspace/tmp for anything larger.
+Tmpfs=/tmp:rw,size=8g,mode=1777
+
+# -- Identity ---------------------------------------------------------
+# Map container UID 1000 (rousseau) to the host user so bind-mounted
+# files are owned correctly on both sides under rootless podman.
+UserNS=keep-id
+
+# -- Hardening retained -----------------------------------------------
+# A writable filesystem is NOT a licence to drop the rest. Root is
+# never granted at runtime; everything requiring elevation is baked in
+# at build time.
+NoNewPrivileges=true
+DropCapability=all
+SeccompProfile=/usr/share/containers/seccomp.json
+SecurityLabelDisable=false
+
+# Nested user namespaces, required by bubblewrap (Claude Code's
+# sandbox) and by rootless podman-in-podman. This does NOT grant
+# privilege — unprivileged userns is how bwrap sandboxes WITHOUT
+# setuid. Verify after first boot with:
+#     podman exec agent-builder bwrap --ro-bind / / -- /bin/true
+# If that fails, the host needs subuid/subgid ranges for the mapped
+# user; check /etc/subuid and /etc/subgid.
+Annotation=run.oci.keep_original_groups=1
+
+# -- Network ----------------------------------------------------------
+# pasta: egress-only, rootless, inbound from host blocked by default.
+# The builder needs broader egress than the daemon (package registries:
+# npmjs, PyPI, crates.io, proxy.golang.org, GitHub). Apply the
+# egress allowlist at the nftables layer — see nftables.example.conf.
+Network=pasta
+
+# -- Credentials ------------------------------------------------------
+# Intentionally none by default. To grant a scoped GitHub token for a
+# fleet run, drop an EnvironmentFile pointing at a systemd credential:
+#     EnvironmentFile=%h/.config/agent-builder/gh-token.env
+# Use a fine-grained PAT scoped to the repos the run touches. Do NOT
+# mount ~/.ssh here — signing belongs to the daemon or the host.
+
+Environment=HOME=/home/rousseau
+Environment=TMPDIR=/workspace/tmp
+Environment=NPM_CONFIG_PREFIX=/home/rousseau/.node_modules
+
+AutoUpdate=disabled
+
+# Long-lived interactive/batch container rather than a supervised
+# daemon: it should not restart-loop when a build exits non-zero.
+Exec=sleep infinity
+
+[Service]
+Restart=no
+TimeoutStartSec=120s
+
+[Install]
+WantedBy=default.target

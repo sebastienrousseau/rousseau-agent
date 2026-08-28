@@ -1,0 +1,137 @@
+# syntax=docker/dockerfile:1.7
+#
+# agent-base — shared foundation for the rousseau-agent container estate.
+#
+# Two images derive from this one:
+#
+#   rousseau-agent   the hardened WhatsApp daemon (ReadOnly=true, caps
+#                    dropped, holds WhatsApp session + Claude OAuth).
+#   agent-builder    the polyglot build environment (writable $HOME,
+#                    large /tmp, no long-lived credentials).
+#
+# The split exists because those two threat models are contradictory: a
+# credential-holding daemon wants an immutable filesystem, and a build
+# environment needs a mutable one. Neither image is both privileged and
+# credentialed.
+#
+# Why Ubuntu and not Alpine: glibc. musl breaks Python manylinux wheels,
+# Node prebuilt native modules, cgo-linked binaries, and the official
+# Swift toolchain — all of which the 192-repo fleet needs.
+#
+# Why Ubuntu and not CachyOS/Arch (the host distro): Arch is a rolling
+# release with no digest-equivalent pinning story, which would regress
+# the OpenSSF Scorecard Pinned-Dependencies posture this repo already
+# maintains. swift.org also ships no official Arch toolchain. Host
+# parity is bought instead via chezmoi + mise version pins, which do not
+# require a matching distro.
+
+# Base image pinned by sha256 digest per Scorecard's Pinned-Dependencies
+# check. This is the same digest pinned in sebastienrousseau/dotfiles
+# .devcontainer/Dockerfile — keep the two in lockstep.
+# Refresh with:
+#   docker pull mcr.microsoft.com/devcontainers/base:ubuntu
+#   docker inspect --format '{{index .RepoDigests 0}}' \
+#     mcr.microsoft.com/devcontainers/base:ubuntu
+FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:0455d069f6d0bef82131385092fd44c00315b60ac07a19eb969fb2e50bf59583
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------
+# Identity
+#
+# The devcontainers base ships `vscode` at UID 1000. Rename it to
+# `rousseau` rather than delete-and-recreate: renaming preserves the
+# existing home directory, group memberships, and sudoers entry, and
+# keeps UID 1000 stable so `UserNS=keep-id` bind mounts stay owned
+# correctly on both sides under rootless podman.
+#
+# The host user is `seb`; the container user is `rousseau`. The
+# /home/seb compatibility shim (symlinks for .config, .ssh, workspace)
+# is created here so host-authored absolute paths resolve. Note
+# .node_modules is included — its absence is what silently breaks
+# `npm -g` when a read-only ~/.npmrc pins prefix=/home/seb/.node_modules.
+# ---------------------------------------------------------------------
+RUN usermod  -l rousseau -d /home/rousseau -m vscode \
+ && groupmod -n rousseau vscode \
+ && printf 'rousseau ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/rousseau \
+ && chmod 0440 /etc/sudoers.d/rousseau \
+ && mkdir -p /home/seb \
+ && ln -sfn /home/rousseau/.config       /home/seb/.config \
+ && ln -sfn /home/rousseau/.ssh          /home/seb/.ssh \
+ && ln -sfn /home/rousseau/.node_modules /home/seb/.node_modules \
+ && ln -sfn /workspace                   /home/seb/team-rousseau-workspace \
+ && chown -h rousseau:rousseau /home/seb/.config /home/seb/.ssh \
+                               /home/seb/.node_modules \
+                               /home/seb/team-rousseau-workspace
+
+# ---------------------------------------------------------------------
+# Core CLI surface shared by both derived images.
+# ---------------------------------------------------------------------
+# Apply distro security updates before installing anything.
+#
+# This is in tension with the digest pin above, and deliberately so.
+# The pin makes the STARTING POINT reproducible; the upgrade makes the
+# RESULT current. Without it the image inherits whatever CVEs the base
+# carried on the day it was published, and the vulnerability gate in
+# agent-images.yml fails on packages nothing in this repo chose --
+# util-linux, libsystemd, openssl, tar. Refresh the digest above when
+# the delta gets large; the weekly scheduled rebuild is what surfaces
+# that.
+RUN apt-get update -qq \
+ && apt-get upgrade -y -qq --no-install-recommends \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      git \
+      gnupg \
+      jq \
+      openssl \
+      ripgrep \
+      unzip \
+      wget \
+ && apt-get autoremove -y -qq \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------
+# mise (universal version manager) — pinned release binary, SHA256
+# verified. Refresh recipe:
+#   curl -fsSL https://api.github.com/repos/jdx/mise/releases/latest \
+#     | jq -r .tag_name
+#   curl -fsSL https://github.com/jdx/mise/releases/download/<TAG>/SHASUMS256.txt \
+#     | grep mise-<TAG>-linux-x64$
+# ---------------------------------------------------------------------
+ARG MISE_VERSION=2026.8.12
+ARG MISE_SHA256=f2092b1e67f0abc8803d3be120dd2bc5b656dd99680ba3159f710e149da10d05
+RUN set -eu \
+ && url="https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-x64" \
+ && curl -fsSL "$url" -o /tmp/mise \
+ && echo "${MISE_SHA256}  /tmp/mise" | sha256sum -c - \
+ && install -m 0755 /tmp/mise /usr/local/bin/mise \
+ && rm -f /tmp/mise
+
+# ---------------------------------------------------------------------
+# Environment.
+#
+# NPM_CONFIG_PREFIX is set here deliberately. The deployed Quadlet
+# bind-mounts ~/.npmrc read-only from the host, and that file pins
+# prefix=/home/seb/.node_modules. An env var takes precedence over
+# npmrc, so this repairs `npm -g` without requiring host-side edits or
+# root inside the container.
+#
+# TMPDIR points into /workspace rather than /tmp because the daemon
+# Quadlet caps /tmp at 64 MiB, which is too small for real builds. The
+# builder raises the tmpfs, but the fallback stays correct either way.
+# ---------------------------------------------------------------------
+ENV HOME=/home/rousseau \
+    NPM_CONFIG_PREFIX=/home/rousseau/.node_modules \
+    MISE_CACHE_DIR=/home/rousseau/.cache/mise \
+    TMPDIR=/workspace/tmp \
+    PATH=/home/rousseau/.node_modules/bin:/home/rousseau/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
+
+RUN mkdir -p /home/rousseau/.node_modules/bin \
+             /home/rousseau/.cache/mise \
+             /workspace/tmp \
+ && chown -R rousseau:rousseau /home/rousseau /workspace
+
+USER rousseau
+WORKDIR /workspace
