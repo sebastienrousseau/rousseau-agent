@@ -1,19 +1,9 @@
 # systemd.path unit: restart rousseau-agent whenever Claude Code
-# atomically rewrites either the OAuth credentials file or the
-# top-level configuration file on the host.
+# atomically rewrites the OAuth credentials file on the host.
 #
 # WHY
 #
-# Two host-side files are bind-mounted into the container at the
-# FILE level (not the DIR level):
-#
-#   * %h/.claude.json         — permission profile, MCP registry,
-#                               per-project session index
-#   * %h/.claude/.credentials.json — OAuth access + refresh tokens
-#
-# The .claude/ DIRECTORY is dir-bound, so files replaced within it
-# stay visible. .claude.json lives at HOME root, and HOME cannot be
-# bind-mounted, so it needs its own FILE bind. Both files are
+# The OAuth credentials file %h/.claude/.credentials.json is
 # rewritten by Claude Code via atomic unlink + rename -- the new
 # content lands under a fresh inode, the container keeps holding
 # the deleted one, and every subprocess after replacement dies with:
@@ -21,16 +11,33 @@
 #   Failed to authenticate: OAuth session expired and could not be
 #   refreshed
 #
-# or (for .claude.json)
-#
-#   Claude configuration file not found at: /home/rousseau/.claude.json
-#
 # WHAT
 #
-# systemd watches both files for change events and, when either
-# fires, triggers rousseau-agent-claude-creds.service which restarts
-# the main service. Podman re-resolves file binds at container
-# start, so the fresh inodes are picked up immediately.
+# systemd watches the credentials file for change events and, when
+# one fires, triggers rousseau-agent-claude-creds.service which
+# restarts the main service. Podman re-resolves file binds at
+# container start, so the fresh inode is picked up immediately.
+#
+# NOT WATCHING %h/.claude.json — WHY
+#
+# We used to watch %h/.claude.json too. It IS bind-mounted into the
+# container (permission profile, MCP registry, per-project session
+# index — the container needs a copy at startup so claude-cli finds
+# one), but it is rewritten by EVERY host-side Claude Code action:
+# switching a project, running a tool, editing MCP config. Watching
+# it caused the daemon to be restarted mid-turn every few seconds,
+# killing in-flight WhatsApp replies. See PR ##.
+#
+# The trade-off: after a host-side %h/.claude.json rewrite the
+# container's file bind IS stale, so a new claude-cli invocation
+# inside the container will report "Claude configuration file not
+# found at: /home/rousseau/.claude.json". This is only load-bearing
+# for the daemon's own claude-cli startup, which happens once at
+# container-start — during a running turn the file's contents are
+# not re-read. Symptom manifests only after a token refresh, at
+# which point .credentials.json also changes and the watch below
+# still fires a restart. Net effect: same recovery, no mid-turn
+# kills.
 #
 # NOTE ON .credentials.json
 #
@@ -48,14 +55,13 @@
 #   systemctl --user enable --now rousseau-agent-claude-creds.path
 
 [Unit]
-Description=Watch Claude configuration + credentials for host-side refresh
+Description=Watch Claude credentials for host-side OAuth refresh
 Documentation=https://github.com/sebastienrousseau/rousseau-agent/blob/main/docker/README.md#claude-oauth-refresh
 
 [Path]
 # PathChanged fires on file-close-after-write. systemd re-arms the
 # inotify watch after IN_DELETE_SELF, so an atomic unlink+rename
 # (Claude Code's rewrite pattern) is caught.
-PathChanged=%h/.claude.json
 PathChanged=%h/.claude/.credentials.json
 Unit=rousseau-agent-claude-creds.service
 
