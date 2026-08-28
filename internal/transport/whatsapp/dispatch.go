@@ -136,6 +136,15 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 	react := reactorFor(in)
 	react(ctx, "👀")
 
+	// Live placeholder message: sent right after the receipt reaction,
+	// edited every heartbeatInterval with an elapsed-time counter, and
+	// finally rewritten in place with the reply. Gives the user
+	// something to look at while a multi-minute turn runs instead of
+	// silence between 👀 and ✅. Nil when the sender lacks
+	// MessageEditor — the code paths below then fall back to a
+	// separate SendText for the reply.
+	hb := startHeartbeat(ctx, in.Sender, res.Chat, in.Header, log)
+
 	// Typing indicator — best-effort, never blocks the reply flow.
 	setPresence(ctx, in.Sender, res.Chat, types.ChatPresenceComposing, log)
 	defer setPresence(ctx, in.Sender, res.Chat, types.ChatPresencePaused, log)
@@ -155,11 +164,13 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 		log.Error("whatsapp.handler_failed",
 			slog.String("err", err.Error()),
 			slog.Duration("elapsed", elapsed))
+		hb.abort(context.Background())
 		react(context.Background(), "❌")
 		return
 	}
 	if reply == "" {
 		log.Info("whatsapp.empty_reply", slog.Duration("elapsed", elapsed))
+		hb.abort(context.Background())
 		react(context.Background(), "✅")
 		return
 	}
@@ -167,7 +178,18 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 		slog.Duration("elapsed", elapsed),
 		slog.Int("reply_len", len(reply)))
 
-	if err := in.Sender.SendText(ctx, res.Chat, PrependHeader(reply, in.Header)); err != nil {
+	finalBody := PrependHeader(reply, in.Header)
+	// Prefer editing the placeholder in place — one message per turn,
+	// no thread clutter, no push notification for the update. Falls
+	// back to a fresh SendText when the heartbeat was never started
+	// (test fake or a real client that lost MessageEditor) or when
+	// the edit failed (usually because WhatsApp's 15-min edit window
+	// closed on a very long turn).
+	if hb.finish(ctx, finalBody) {
+		react(context.Background(), "✅")
+		return
+	}
+	if err := in.Sender.SendText(ctx, res.Chat, finalBody); err != nil {
 		log.Error("whatsapp.send_failed", slog.String("err", err.Error()))
 		react(context.Background(), "❌")
 		return
