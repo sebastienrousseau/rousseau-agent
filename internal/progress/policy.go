@@ -36,6 +36,12 @@ const (
 	// dropped-from-the-front is signalled by a leading "…" bullet so
 	// the reader knows history was trimmed.
 	DefaultMaxBullets = 12
+	// DefaultSequentialInterval is the min gap between two sequential-
+	// mode emits. Small enough that each bullet lands as its own
+	// message within a second or two, large enough that a burst of
+	// tools (fan-out sub-agents, or a rapid tool_use chain) collapses
+	// into a batch instead of spamming one WhatsApp message per event.
+	DefaultSequentialInterval = 2 * time.Second
 )
 
 // Policy is the coalescing + throttling configuration. The zero value
@@ -66,7 +72,26 @@ type Policy struct {
 	// be delivered by editing the first message in place, which
 	// relaxes the throttle to MinEditInterval. The Reporter sets this
 	// from whether its Sink implements Editor.
+	//
+	// Ignored when Sequential is true — see below.
 	PreferEdit bool
+	// Sequential switches the coalescer from cumulative-edit mode
+	// (one live message that grows over time via EditText) to
+	// one-message-per-action mode. Each emit is a delta — only the
+	// bullets accumulated since the last emit — and lands as a fresh
+	// SendText. The output reads as a chronological log in the
+	// thread, matching the "each tool as its own line" feel of the
+	// Claude CLI's terminal output.
+	//
+	// When true, PreferEdit is forced false, MinEditInterval is
+	// ignored, HeartbeatInterval / MaxUpdates are ignored (empty
+	// updates would be pure noise), and SequentialInterval governs
+	// the emit cadence.
+	Sequential bool
+	// SequentialInterval is the min gap between two Sequential emits.
+	// Zero uses DefaultSequentialInterval. Ignored when Sequential
+	// is false.
+	SequentialInterval time.Duration
 }
 
 // DefaultPolicy returns the shipped throttle policy.
@@ -98,6 +123,9 @@ func (p Policy) Normalise() Policy {
 	}
 	if p.MaxBullets == 0 {
 		p.MaxBullets = DefaultMaxBullets
+	}
+	if p.SequentialInterval <= 0 {
+		p.SequentialInterval = DefaultSequentialInterval
 	}
 	return p
 }

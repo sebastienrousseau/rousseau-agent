@@ -85,6 +85,52 @@ func writeBullets(b *strings.Builder, st State) {
 	}
 }
 
+// RenderDelta is the sequential-mode renderer. Instead of the full
+// cumulative view Render produces, it emits ONLY the bullets that
+// arrived since the previous emit (State.Bullets[fromIdx:]) — the
+// message body for one delta-mode Update.
+//
+// Two exit paths:
+//
+//   Terminal: draws the closing summary line ("● done in Ns · N tools",
+//             "✗ failed after …", "● stopped after …"). Any bullets
+//             that landed since the previous emit precede it on their
+//             own lines so a burst-then-done still shows what ran.
+//
+//   Non-terminal: just the new bullets, one per line. No spinner —
+//                 a delta with zero new bullets never reaches this
+//                 function (Coalescer.readySequential gates it), and
+//                 a spinner line would be redundant noise in a
+//                 chronological feed.
+//
+// Trimmed-bullet marker: the "… (earlier steps trimmed)" line only
+// appears on the FIRST delta after a trim, so the reader sees the
+// signal once instead of on every subsequent emit.
+func RenderDelta(st State, fromIdx int, elapsed time.Duration, terminal bool) string {
+	if fromIdx < 0 {
+		fromIdx = 0
+	}
+	if fromIdx > len(st.Bullets) {
+		fromIdx = len(st.Bullets)
+	}
+	var b strings.Builder
+	if st.bulletsTrimmed && fromIdx == 0 {
+		b.WriteString(GlyphTrim)
+		b.WriteString(" (earlier steps trimmed)\n")
+	}
+	for _, bl := range st.Bullets[fromIdx:] {
+		b.WriteString(bulletGlyph(bl))
+		b.WriteString(" ")
+		b.WriteString(bl.Text)
+		b.WriteString("\n")
+	}
+	if terminal {
+		writeTerminalLine(&b, st, elapsed)
+		return b.String()
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // bulletGlyph picks the mark for one bullet.
 func bulletGlyph(b Bullet) string {
 	switch {

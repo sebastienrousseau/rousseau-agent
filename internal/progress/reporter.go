@@ -94,9 +94,16 @@ func NewReporter(cfg ReporterConfig) *Reporter {
 		cfg.Logger = slog.Default()
 	}
 	r := &Reporter{cfg: cfg}
+	// Editor + PreferEdit auto-wiring. Sequential mode overrides — an
+	// editing Sink is still recorded (some transports may want to use
+	// it for a different purpose), but PreferEdit stays false so
+	// Update.Replace is never true and every emit lands as a new
+	// message.
 	if ed, ok := cfg.Sink.(Editor); ok {
 		r.editor = ed
-		cfg.Policy.PreferEdit = true
+		if !cfg.Policy.Sequential {
+			cfg.Policy.PreferEdit = true
+		}
 	} else {
 		cfg.Policy.PreferEdit = false
 	}

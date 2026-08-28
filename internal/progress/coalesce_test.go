@@ -299,6 +299,86 @@ func TestCoalescer_BulletsTrimmedFromFront(t *testing.T) {
 	assert.True(t, st.bulletsTrimmed, "trim flag must be set for the renderer")
 }
 
+func TestCoalescer_SequentialEmitsDeltaBulletsOnly(t *testing.T) {
+	c := NewCoalescer("k", Policy{
+		Sequential:         true,
+		SequentialInterval: time.Second,
+	}, base)
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read", Detail: "foo.go"})
+	_, ok := c.Next(at(0))
+	assert.False(t, ok, "must wait for SequentialInterval")
+
+	u, ok := c.Next(at(1))
+	require.True(t, ok)
+	assert.Equal(t, GlyphBullet+" Read foo.go", u.Text)
+	assert.False(t, u.Replace, "sequential updates must never be edits")
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Bash", Detail: "go test"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Grep", Detail: "handleMessage", Err: "no matches"})
+	_, ok = c.Next(at(1))
+	assert.False(t, ok, "not yet — SequentialInterval has not elapsed since last emit")
+
+	u, ok = c.Next(at(2))
+	require.True(t, ok)
+	assert.Equal(t, GlyphBullet+" Bash go test\n"+GlyphFailed+" Grep handleMessage", u.Text)
+	assert.False(t, u.Replace)
+}
+
+func TestCoalescer_SequentialStaysSilentWithNoNewBullets(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second}, base)
+	c.Absorb(Event{Kind: KindThinking, Iteration: 3})
+	c.Absorb(Event{Kind: KindLLMDelta, Text: "some streamed text"})
+	_, ok := c.Next(at(60))
+	assert.False(t, ok, "no new bullet, no emit — sequential mode has no heartbeat")
+}
+
+func TestCoalescer_SequentialTerminalCarriesLastBurstAndSummary(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second}, base)
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read", Detail: "foo.go"})
+	_, ok := c.Next(at(1))
+	require.True(t, ok)
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Bash", Detail: "go test"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Grep", Detail: "handleMessage"})
+	c.Absorb(Event{Kind: KindTurnFinished})
+
+	u, ok := c.Next(at(2))
+	require.True(t, ok)
+	assert.Contains(t, u.Text, GlyphBullet+" Bash go test")
+	assert.Contains(t, u.Text, GlyphBullet+" Grep handleMessage")
+	assert.Contains(t, u.Text, GlyphBullet+" done in ")
+	assert.True(t, u.Terminal)
+	assert.False(t, u.Replace)
+}
+
+func TestCoalescer_SequentialFastTurnStillSuppressesEpitaph(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second}, base)
+	c.Absorb(Event{Kind: KindTurnStarted})
+	c.Absorb(Event{Kind: KindTurnFinished})
+	_, ok := c.Next(at(2))
+	assert.False(t, ok)
+	assert.Equal(t, 0, c.Emitted())
+}
+
+func TestCoalescer_SequentialTrimMarkerAppearsOnFirstDeltaOnly(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second, MaxBullets: 2}, base)
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "a"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "b"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "c"}) // trims "a"
+
+	u1, ok := c.Next(at(1))
+	require.True(t, ok)
+	assert.Contains(t, u1.Text, GlyphTrim+" (earlier steps trimmed)")
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "d"}) // trims "b"
+	u2, ok := c.Next(at(3))
+	require.True(t, ok)
+	assert.NotContains(t, u2.Text, "trimmed", "trim marker fires once, not on every delta")
+	assert.Equal(t, GlyphBullet+" d", u2.Text)
+}
+
 func TestRemoveFirst(t *testing.T) {
 	tests := []struct {
 		name string

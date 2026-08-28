@@ -99,6 +99,12 @@ type Coalescer struct {
 	emitted   int
 	dirty     bool
 	finalSent bool
+	// emittedBullets is how many entries from st.Bullets have already
+	// been included in an emitted Update. Only load-bearing in
+	// Sequential mode where each Update carries only the *new* bullets
+	// since the last emit — buildSequential renders State.Bullets from
+	// this index onward, then advances it to len(State.Bullets).
+	emittedBullets int
 }
 
 // NewCoalescer constructs a Coalescer for key, treating start as the
@@ -185,18 +191,31 @@ func (c *Coalescer) Absorb(ev Event) {
 // so returns the rendered Update. Calling Next has no effect when it
 // returns false, so it is safe to poll on a ticker.
 //
-// The rules, in order:
+// Two emit models, selected by Policy.Sequential:
 //
-//  1. Once the terminal update has been produced, never emit again.
-//  2. A terminal state flushes immediately — but ONLY if at least one
-//     progress update was already sent. A turn fast enough never to
-//     have shown progress must not be followed by an epitaph for
-//     progress the user never saw.
-//  3. The first update waits FirstDelay from the turn's start.
-//  4. Later updates wait MinEditInterval (when editing in place) or
-//     MinInterval (when posting new messages).
-//  5. With no new events, updates wait HeartbeatInterval instead.
-//  6. Past MaxUpdates, only heartbeats survive.
+//   Cumulative (Sequential = false, default):
+//     One live message per turn that grows over time via EditText.
+//     Rules:
+//      1. Once the terminal update has been produced, never emit again.
+//      2. A terminal state flushes immediately — but ONLY if at least
+//         one progress update was already sent.
+//      3. The first update waits FirstDelay from the turn's start.
+//      4. Later updates wait MinEditInterval (PreferEdit) or MinInterval.
+//      5. With no new events, updates wait HeartbeatInterval instead.
+//      6. Past MaxUpdates, only heartbeats survive.
+//
+//   Sequential (Sequential = true):
+//     One message per action; each emit carries the bullets accumulated
+//     since the last emit. Rules:
+//      1. Same terminal handling as cumulative.
+//      2. Emit ONLY when there is a new bullet and SequentialInterval
+//         has elapsed since the last emit. A burst of bullets that
+//         fires inside SequentialInterval collapses into one message.
+//      3. No FirstDelay wait past SequentialInterval for the first
+//         bullet — the first tool that finishes lands as its own
+//         message on the next tick.
+//      4. No HeartbeatInterval, no MaxUpdates cap — an empty update
+//         (no new bullets) would be pure noise in sequential mode.
 func (c *Coalescer) Next(now time.Time) (Update, bool) {
 	if c.finalSent {
 		return Update{}, false
@@ -209,13 +228,19 @@ func (c *Coalescer) Next(now time.Time) (Update, bool) {
 		c.finalSent = true
 		return c.build(now, true), true
 	}
+	if c.pol.Sequential {
+		if !c.readySequential(now) {
+			return Update{}, false
+		}
+		return c.build(now, false), true
+	}
 	if !c.ready(now) {
 		return Update{}, false
 	}
 	return c.build(now, false), true
 }
 
-// ready applies rules 3-6.
+// ready applies the cumulative-mode rules 3-6.
 func (c *Coalescer) ready(now time.Time) bool {
 	if !c.dirty && c.emitted == 0 {
 		return false
@@ -234,12 +259,44 @@ func (c *Coalescer) ready(now time.Time) bool {
 	return since >= c.pol.MinInterval
 }
 
+// readySequential applies the sequential-mode rules — emit only when
+// there is a new bullet and SequentialInterval has elapsed.
+func (c *Coalescer) readySequential(now time.Time) bool {
+	if len(c.st.Bullets) <= c.emittedBullets {
+		return false
+	}
+	if c.emitted == 0 {
+		return now.Sub(c.started) >= c.pol.SequentialInterval
+	}
+	return now.Sub(c.lastEmit) >= c.pol.SequentialInterval
+}
+
 // build renders the current state and advances the emit bookkeeping.
+// The rendered body differs between the two emit models:
+//
+//   Cumulative: Render — the full State (bullets + spinner + preview),
+//               edited into one live message.
+//   Sequential: RenderDelta — only the bullets accumulated since the
+//               last emit (or the terminal summary line), sent as a
+//               fresh message. Update.Replace is always false in this
+//               mode so the Reporter's editor branch is not taken.
 func (c *Coalescer) build(now time.Time, terminal bool) Update {
 	c.emitted++
 	c.lastEmit = now
 	c.dirty = false
 	elapsed := now.Sub(c.started)
+	if c.pol.Sequential {
+		text := RenderDelta(c.st, c.emittedBullets, elapsed, terminal)
+		c.emittedBullets = len(c.st.Bullets)
+		return Update{
+			Key:      c.st.Key,
+			Text:     text,
+			Seq:      c.emitted,
+			Elapsed:  elapsed,
+			Replace:  false,
+			Terminal: terminal,
+		}
+	}
 	return Update{
 		Key:      c.st.Key,
 		Text:     Render(c.st, elapsed),
@@ -252,6 +309,13 @@ func (c *Coalescer) build(now time.Time, terminal bool) Update {
 
 // appendBullet appends b to State.Bullets and trims to MaxBullets by
 // dropping from the front so the newest entries always survive.
+//
+// Trimming rebases the log — the surviving bullets shift down `drop`
+// positions. emittedBullets is an index into the same slice, so it
+// shifts by the same amount (floored at zero) to stay consistent
+// with the survivors. Without this, sequential mode after a trim
+// would either double-emit surviving bullets or, more commonly, see
+// `len(Bullets) <= emittedBullets` and silently stop emitting.
 func (c *Coalescer) appendBullet(b Bullet) {
 	if b.Text == "" {
 		return
@@ -262,6 +326,11 @@ func (c *Coalescer) appendBullet(b Bullet) {
 		drop := len(c.st.Bullets) - cap
 		c.st.Bullets = append(c.st.Bullets[:0:0], c.st.Bullets[drop:]...)
 		c.st.bulletsTrimmed = true
+		if c.emittedBullets >= drop {
+			c.emittedBullets -= drop
+		} else {
+			c.emittedBullets = 0
+		}
 	}
 }
 
