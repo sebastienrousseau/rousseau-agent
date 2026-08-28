@@ -63,6 +63,11 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				LogLevel:    whatsappLogLevel(opts.Config.Log.Level),
 				ReplyHeader: opts.Config.WhatsApp.ReplyHeader,
 				Transcriber: buildTranscriber(opts),
+				// Share the daemon-scoped progress bus so the agent's
+				// per-turn events (tool_use, text_delta) reach this
+				// transport's live-update reporter → WhatsApp message
+				// edits with Claude-CLI-style detail.
+				Progress: wiring.Progress,
 			}, opts.Logger)
 			if err != nil {
 				return err
