@@ -118,6 +118,9 @@ func (v *VoyageEmbedder) Embed(ctx context.Context, texts []string) ([][]float32
 		if row.Index < 0 || row.Index >= len(vecs) {
 			return nil, fmt.Errorf("voyage: bad response index %d", row.Index)
 		}
+		if len(row.Embedding) != v.dims {
+			return nil, fmt.Errorf("voyage: model returned %d dims, configured %d", len(row.Embedding), v.dims)
+		}
 		vecs[row.Index] = row.Embedding
 	}
 	return vecs, nil

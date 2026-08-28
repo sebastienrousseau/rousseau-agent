@@ -170,6 +170,21 @@ func TestVoyageEmbedder_WrongCountResponse(t *testing.T) {
 	assert.ErrorContains(t, err, "expected 2")
 }
 
+// TestVoyageEmbedder_WrongDimsInResponse mirrors the same check on
+// the OpenAI adapter. The persistence layer sizes its BLOB column to
+// Dims, so a silent truncation would corrupt the store; the
+// dimension mismatch has to surface up.
+func TestVoyageEmbedder_WrongDimsInResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"index":0,"embedding":[0.1,0.2]}]}`)) //nolint:errcheck // test fixture
+	}))
+	defer srv.Close()
+	e, err := NewVoyageEmbedder(VoyageConfig{APIKey: "k", BaseURL: srv.URL, HTTPClient: srv.Client(), Dims: 3})
+	require.NoError(t, err)
+	_, err = e.Embed(context.Background(), []string{"a"})
+	assert.ErrorContains(t, err, "2 dims")
+}
+
 func TestVoyageModelDims_AllKnown(t *testing.T) {
 	for _, m := range []string{"voyage-3-lite", "voyage-3", "voyage-3-large", "voyage-code-3"} {
 		assert.Positive(t, voyageModelDims(m), m)
