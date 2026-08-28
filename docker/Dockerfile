@@ -76,6 +76,7 @@ RUN apk upgrade --no-cache \
       git \
       github-cli \
       openssh-client \
+      gnupg \
       curl \
       jq \
       ripgrep \
@@ -98,6 +99,9 @@ RUN apk upgrade --no-cache \
       py3-pip \
       pipx \
  && rm -rf /var/cache/apk/*
+# gnupg lets `git commit -S` verify signatures and the container's
+# git flows call out to whatever key material the operator mounts
+# (see the Quadlet drop-in for the .ssh / .gnupg bind mounts).
 
 # NOTE: Go and Rust are installed via mise later (see `mise use -g` step).
 # Do NOT `apk add go rust cargo` here — that installs system-wide Rust
@@ -158,7 +162,16 @@ RUN mkdir -p /home/rousseau/.local/share/rousseau \
  && ln -sfn /workspace /home/seb/team-rousseau-workspace \
  && ln -sfn /home/rousseau/.config /home/seb/.config \
  && ln -sfn /home/rousseau/.ssh    /home/seb/.ssh \
+ && ln -sfn /home/rousseau/.local/share/rousseau/keys/ssh   /home/rousseau/.ssh \
+ && ln -sfn /home/rousseau/.local/share/rousseau/keys/gnupg /home/rousseau/.gnupg \
  && chown -R rousseau:rousseau /home/rousseau /workspace /home/seb
+# The two trailing symlinks are the load-bearing bits for the copy-
+# script approach: /home/rousseau/.ssh and /home/rousseau/.gnupg
+# point at subdirs of the state volume that
+# docker/scripts/rousseau-agent-copy-host-keys.sh populates on the
+# host before container start. Read-only root filesystem means the
+# symlinks must exist at build time; the *targets* materialise at
+# container start via the ExecStartPre hook in the Quadlet unit.
 
 # Ship the curated skills bundle at /etc/rousseau/skills/ — the
 # skills loader treats this as a system-wide fallback when the user
