@@ -332,10 +332,11 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 		observability.ToolCalls.WithLabelValues(use.Name, "allow").Inc()
 
 		a.logger.Info("tool.execute", slog.String("name", use.Name), slog.String("id", use.ID))
-		a.emitEvent(ctx, progress.Event{Kind: progress.KindToolStarted, Tool: use.Name})
+		detail := summarizeToolInput(use.Name, use.Input)
+		a.emitEvent(ctx, progress.Event{Kind: progress.KindToolStarted, Tool: use.Name, Detail: detail})
 		toolStart := time.Now()
 		out, err := tool.Execute(ctx, use.Input)
-		done := progress.Event{Kind: progress.KindToolFinished, Tool: use.Name, Elapsed: time.Since(toolStart)}
+		done := progress.Event{Kind: progress.KindToolFinished, Tool: use.Name, Detail: detail, Elapsed: time.Since(toolStart)}
 		result := &ToolResult{ToolUseID: use.ID, Output: out}
 		if err != nil {
 			result.IsError = true

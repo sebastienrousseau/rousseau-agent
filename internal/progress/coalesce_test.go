@@ -239,6 +239,66 @@ func TestCoalescer_FastTurnNeverPostsAnything(t *testing.T) {
 	assert.Equal(t, 0, c.Emitted())
 }
 
+func TestCoalescer_ToolBulletsCarryToolAndDetail(t *testing.T) {
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindToolStarted, Tool: "Read", Detail: "foo.go"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read", Detail: "foo.go"})
+	c.Absorb(Event{Kind: KindToolStarted, Tool: "Bash", Detail: "go test"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Bash", Detail: "go test", Err: "exit 1"})
+	c.Absorb(Event{Kind: KindToolDenied, Tool: "Write", Detail: "danger.go"})
+
+	got := c.State().Bullets
+	require.Len(t, got, 3)
+	assert.Equal(t, Bullet{Text: "Read foo.go"}, got[0])
+	assert.Equal(t, Bullet{Text: "Bash go test", Failed: true}, got[1])
+	assert.Equal(t, Bullet{Text: "Write danger.go", Denied: true}, got[2])
+}
+
+func TestCoalescer_ToolBulletsFallBackToToolNameOnly(t *testing.T) {
+	// When the publisher didn't attach a Detail, the bullet is still
+	// meaningful — the tool name alone reads as "● Read".
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read"})
+	got := c.State().Bullets
+	require.Len(t, got, 1)
+	assert.Equal(t, "Read", got[0].Text)
+}
+
+func TestCoalescer_SubagentBullets(t *testing.T) {
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindSubagentStarted})
+	c.Absorb(Event{Kind: KindSubagentFinished, Detail: "explore repo layout"})
+	c.Absorb(Event{Kind: KindSubagentFinished, Err: "sub-agent hit timeout"})
+
+	got := c.State().Bullets
+	require.Len(t, got, 2)
+	assert.Equal(t, "sub-agent explore repo layout", got[0].Text)
+	assert.True(t, got[1].Failed)
+}
+
+func TestCoalescer_EmptyToolNameDropsBullet(t *testing.T) {
+	// A malformed event without a Tool must not blow up the log with
+	// an empty bullet.
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindToolFinished})
+	assert.Empty(t, c.State().Bullets)
+}
+
+func TestCoalescer_BulletsTrimmedFromFront(t *testing.T) {
+	c := NewCoalescer("k", Policy{MaxBullets: 3}, base)
+	for i, name := range []string{"a", "b", "c", "d", "e"} {
+		c.Absorb(Event{Kind: KindToolFinished, Tool: name})
+		assert.LessOrEqual(t, len(c.State().Bullets), 3, "after event %d", i)
+	}
+
+	st := c.State()
+	require.Len(t, st.Bullets, 3)
+	assert.Equal(t, "c", st.Bullets[0].Text, "oldest bullet should be dropped, newest kept")
+	assert.Equal(t, "d", st.Bullets[1].Text)
+	assert.Equal(t, "e", st.Bullets[2].Text)
+	assert.True(t, st.bulletsTrimmed, "trim flag must be set for the renderer")
+}
+
 func TestRemoveFirst(t *testing.T) {
 	tests := []struct {
 		name string

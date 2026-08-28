@@ -3,7 +3,11 @@
 // this file carries no build tag and no whatsmeow imports.
 package whatsapp
 
-import "context"
+import (
+	"context"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
+)
 
 // Transcriber converts an audio payload into text. Implementations are
 // free to shell out (whisper.cpp), call a remote service, or return
@@ -33,6 +37,13 @@ type Config struct {
 	// Transcriber, when non-nil, turns inbound voice notes into text
 	// before the router sees them.
 	Transcriber Transcriber
+	// Progress, when non-nil, is the bus the transport subscribes its
+	// live-update reporter to. The daemon shares one bus between this
+	// Config (sink side) and agent.Options (publisher side) so per-tool
+	// progress events flow end-to-end. Empty falls back to a per-Client
+	// internal bus — useful for tests and embedded use where nothing
+	// on the publisher side exists.
+	Progress *progress.Bus
 }
 
 // DefaultReplyHeader is the string prepended to every outbound reply

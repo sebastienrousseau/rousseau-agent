@@ -12,6 +12,7 @@ import (
 	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
@@ -27,6 +28,15 @@ import (
 // be duplicated blocks in each cobra RunE closure so a new transport
 // only needs a Deliver() function to plug in.
 type daemonWiring struct {
+	// Progress is the shared progress-event bus. Every transport-side
+	// Supervisor uses it as its Registry.Bus, so the agent's per-turn
+	// progress events (tool_use, text_delta) flow back to the
+	// transport's live-update reporter. The agent's Options.Progress
+	// is set to the same bus for calls that skip the Supervisor
+	// (cron, tests) — either half alone is enough to make events
+	// arrive.
+	Progress *progress.Bus
+
 	Provider    agent.Provider
 	Agent       *agent.Agent
 	Registry    *tools.Registry
@@ -189,6 +199,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
+	progressBus := progress.NewBus(progress.BusOptions{})
+
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
 		SystemPrompt:   systemPrompt(cfg.Agent.SystemPrompt),
@@ -198,6 +210,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		RecallProvider: buildRecallProvider(concrete),
 		CostRecorder:   sqlitestore.NewCostRecorder(costStore, nil),
 		Hooks:          buildHooks(cfg.Hooks, opts.Logger),
+		Progress:       progressBus,
 	})
 
 	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, transport.RouterOptions{
@@ -225,6 +238,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		MCPClients:   mcpClients,
 		RateLimiters: rateLimiters,
 		Logger:       opts.Logger,
+		Progress:     progressBus,
 	}, nil
 }
 
@@ -267,13 +281,15 @@ func (w *daemonWiring) supervisorFor(name string, logger *slog.Logger) *transpor
 	if w.supervisors == nil {
 		w.supervisors = map[string]*transport.Supervisor{}
 	}
-	// The Bus is left nil for now: live-progress delivery back to the
-	// transport is per-transport wiring that lives on the Client
-	// (whatsapp.Client.Bus()) and is not routed through the daemon.
-	// Serialisation and control verbs still work; a follow-up commit
-	// can plumb bus events through the Registry so /status renders the
-	// same view the live reporter shows.
-	sup := transport.NewSupervisor(control.NewRegistry(control.RegistryOptions{}), logger)
+	// Wire the shared progress bus into the Registry so each Turn's
+	// Publish forwards events to it. The transport-side reporter
+	// (whatsapp.startProgress → progress.Reporter → editingProgressSink)
+	// subscribes on the same bus for its key, so the agent's per-tool
+	// events reach the WhatsApp live-update message directly.
+	sup := transport.NewSupervisor(
+		control.NewRegistry(control.RegistryOptions{Bus: w.Progress}),
+		logger,
+	)
 	w.supervisors[name] = sup
 	return sup
 }

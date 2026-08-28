@@ -110,10 +110,14 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	bus := cfg.Progress
+	if bus == nil {
+		bus = progress.NewBus(progress.BusOptions{})
+	}
 	return &Client{
 		cfg:      cfg,
 		logger:   logger,
-		bus:      progress.NewBus(progress.BusOptions{}),
+		bus:      bus,
 		dispatch: func(f func()) { f() },
 	}, nil
 }

@@ -169,7 +169,7 @@ func TestReporter_PostsFirstUpdateThenEditsInPlace(t *testing.T) {
 	assert.Equal(t, Handle("msg-1"), sink.handles[0])
 	last := sink.edits[len(sink.edits)-1]
 	assert.True(t, last.Terminal)
-	assert.Contains(t, last.Text, "✅ done in")
+	assert.Contains(t, last.Text, GlyphBullet+" done in")
 	assert.Equal(t, 3, h.rep.Sent())
 }
 
@@ -193,7 +193,7 @@ func TestReporter_PostsNewMessagesWhenTheSinkCannotEdit(t *testing.T) {
 	got := sink.sends()
 	require.Len(t, got, 3)
 	assert.False(t, got[2].Replace)
-	assert.Contains(t, got[2].Text, "⚠️ failed after")
+	assert.Contains(t, got[2].Text, GlyphFailed+" failed after")
 	assert.Contains(t, got[2].Text, "provider blew up")
 }
 
@@ -264,7 +264,7 @@ func TestReporter_SurfacesDroppedEvents(t *testing.T) {
 	}
 	h.pulse(30 * time.Second)
 	require.NotEmpty(t, sink.sends())
-	assert.Contains(t, sink.sends()[0].Text, "…")
+	assert.Contains(t, sink.sends()[0].Text, "events dropped")
 }
 
 func TestReporter_StopsWhenContextIsCancelled(t *testing.T) {

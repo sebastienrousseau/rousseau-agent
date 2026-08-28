@@ -283,7 +283,11 @@ func TestTurn_StatusRendersTheLiveView(t *testing.T) {
 	status := turn.StatusText()
 	assert.Contains(t, status, "1m12s")
 	assert.Contains(t, status, "running `read`")
-	assert.Contains(t, status, "1 tool")
+	// The live view now surfaces each completed tool as its own
+	// bullet rather than a "N tools" rollup — the rollup only
+	// appears on the terminal line where the bullet log may have
+	// been trimmed.
+	assert.Contains(t, status, progress.GlyphBullet+" bash")
 
 	explain := turn.ExplainText()
 	assert.Contains(t, explain, status)
