@@ -31,6 +31,11 @@ const (
 	// DefaultPreviewChars caps how much streamed assistant text is
 	// echoed back as a preview.
 	DefaultPreviewChars = 120
+	// DefaultMaxBullets caps the per-turn bullet log the renderer draws
+	// above the spinner. Long turns keep only the most recent entries;
+	// dropped-from-the-front is signalled by a leading "…" bullet so
+	// the reader knows history was trimmed.
+	DefaultMaxBullets = 12
 )
 
 // Policy is the coalescing + throttling configuration. The zero value
@@ -54,6 +59,9 @@ type Policy struct {
 	MaxUpdates int
 	// PreviewChars caps the streamed-text preview length.
 	PreviewChars int
+	// MaxBullets caps the per-turn bullet log. Zero uses
+	// DefaultMaxBullets; negative means unlimited (only sane in tests).
+	MaxBullets int
 	// PreferEdit tells the coalescer that updates after the first will
 	// be delivered by editing the first message in place, which
 	// relaxes the throttle to MinEditInterval. The Reporter sets this
@@ -87,6 +95,9 @@ func (p Policy) Normalise() Policy {
 	}
 	if p.PreviewChars <= 0 {
 		p.PreviewChars = DefaultPreviewChars
+	}
+	if p.MaxBullets == 0 {
+		p.MaxBullets = DefaultMaxBullets
 	}
 	return p
 }

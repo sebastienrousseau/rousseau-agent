@@ -6,47 +6,124 @@ import (
 	"time"
 )
 
-// Render turns a coalesced State into the message body a chat client
-// will show. Output is deliberately compact — three short lines at
-// most — because it may be edited in place a dozen times and sits in
-// the same thread as real answers.
-//
-// Rendering is a pure function of (State, elapsed) so a test can
-// assert the exact text without constructing a transport.
-func Render(st State, elapsed time.Duration) string {
-	if st.Terminal {
-		return renderTerminal(st, elapsed)
-	}
+// Glyphs used by the renderer. Kept as named constants so the styling
+// is trivially auditable in one place. Every glyph is a single Unicode
+// codepoint that renders as a clean monochrome mark on WhatsApp,
+// iMessage, Signal, Telegram, terminal — no emoji variation selectors,
+// no colour, no line-height surprises. The set intentionally mirrors
+// what the Claude CLI draws in the terminal so the multi-transport UX
+// feels like one product.
+const (
+	// GlyphBullet marks a completed action.
+	GlyphBullet = "●"
+	// GlyphFailed marks an action that returned an error.
+	GlyphFailed = "✗"
+	// GlyphDenied marks an action that was blocked by an approver or hook.
+	GlyphDenied = "⊘"
+	// GlyphWorking is the "spinner" mark on the live-status line.
+	GlyphWorking = "✻"
+	// GlyphPreview leads a streamed-text preview line.
+	GlyphPreview = "⎿"
+	// GlyphTrim leads the marker bullet drawn when older bullets were
+	// dropped to keep the log bounded.
+	GlyphTrim = "…"
+)
 
+// Render turns a coalesced State into the message body a chat client
+// will show. The layout mirrors the Claude CLI's terminal feed:
+//
+//	● Read foo.go
+//	● Bash go test
+//	● Editing bar.go
+//	✻ Working… 30s · running `find`
+//	⎿ the streamed answer so far
+//
+// Terminal turns swap the spinner for a summary bullet:
+//
+//	● Read foo.go
+//	● Bash go test
+//	● done in 42s · 3 tools
+//
+// Rendering is a pure function of (State, elapsed) so tests assert on
+// exact text without constructing a transport.
+func Render(st State, elapsed time.Duration) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "⏳ %s · %s", FormatDuration(elapsed), headline(st))
-	if stats := renderStats(st); stats != "" {
-		b.WriteString("\n" + stats)
+	writeBullets(&b, st)
+	if st.Terminal {
+		writeTerminalLine(&b, st, elapsed)
+	} else {
+		writeLiveLine(&b, st, elapsed)
 	}
-	if preview := oneLine(st.Preview); preview != "" {
-		b.WriteString("\n… " + preview)
+	if meta := renderMeta(st); meta != "" {
+		b.WriteString("\n")
+		b.WriteString(meta)
+	}
+	if !st.Terminal {
+		if preview := oneLine(st.Preview); preview != "" {
+			b.WriteString("\n")
+			b.WriteString(GlyphPreview)
+			b.WriteString(" ")
+			b.WriteString(preview)
+		}
 	}
 	return b.String()
 }
 
-// renderTerminal renders the closing update of a turn.
-func renderTerminal(st State, elapsed time.Duration) string {
+// writeBullets writes each accumulated bullet on its own line, followed
+// by a trailing newline separator so the live/terminal line lands on a
+// fresh line. Emits nothing (not even a newline) when the log is empty.
+func writeBullets(b *strings.Builder, st State) {
+	if st.bulletsTrimmed {
+		b.WriteString(GlyphTrim)
+		b.WriteString(" (earlier steps trimmed)\n")
+	}
+	for _, bl := range st.Bullets {
+		b.WriteString(bulletGlyph(bl))
+		b.WriteString(" ")
+		b.WriteString(bl.Text)
+		b.WriteString("\n")
+	}
+}
+
+// bulletGlyph picks the mark for one bullet.
+func bulletGlyph(b Bullet) string {
+	switch {
+	case b.Failed:
+		return GlyphFailed
+	case b.Denied:
+		return GlyphDenied
+	default:
+		return GlyphBullet
+	}
+}
+
+// writeLiveLine writes the spinner line for a non-terminal state.
+func writeLiveLine(b *strings.Builder, st State, elapsed time.Duration) {
+	fmt.Fprintf(b, "%s %s · %s", GlyphWorking, FormatDuration(elapsed), headline(st))
+}
+
+// writeTerminalLine writes the closing bullet — same glyph as a done
+// tool, so the whole feed reads as one uninterrupted list of actions
+// ending with "done in …".
+func writeTerminalLine(b *strings.Builder, st State, elapsed time.Duration) {
 	switch st.Outcome {
 	case KindCancelled:
-		return "⏹️ cancelled after " + FormatDuration(elapsed) + suffix(st)
+		fmt.Fprintf(b, "%s stopped after %s%s", GlyphBullet, FormatDuration(elapsed), suffix(st))
 	case KindError:
-		msg := "⚠️ failed after " + FormatDuration(elapsed) + suffix(st)
+		fmt.Fprintf(b, "%s failed after %s%s", GlyphFailed, FormatDuration(elapsed), suffix(st))
 		if st.Err != "" {
-			msg += " — " + oneLine(st.Err)
+			b.WriteString(" — ")
+			b.WriteString(oneLine(st.Err))
 		}
-		return msg
 	default:
-		return "✅ done in " + FormatDuration(elapsed) + suffix(st)
+		fmt.Fprintf(b, "%s done in %s%s", GlyphBullet, FormatDuration(elapsed), suffix(st))
 	}
 }
 
 // suffix appends the tool/sub-agent tally to a terminal line, or
-// nothing when the turn used neither.
+// nothing when the turn used neither. The bullets above the summary
+// already list each tool; the tally is a rollup that also captures
+// entries that fell off the front of the bullet log.
 func suffix(st State) string {
 	parts := countParts(st)
 	if len(parts) == 0 {
@@ -76,21 +153,24 @@ func headline(st State) string {
 	}
 }
 
-// renderStats is the second line: the running tallies.
-func renderStats(st State) string {
-	parts := make([]string, 0, 6)
+// renderMeta is the optional line under the spinner: metadata that
+// isn't visible from the bullet feed (cron, plan cursor, mid-flight
+// steers, dropped-event notice). The per-tool tallies live in the
+// suffix() of terminal lines only — repeating them in live output
+// would just duplicate the bullets above.
+func renderMeta(st State) string {
+	parts := make([]string, 0, 4)
 	if st.Cron != "" {
 		parts = append(parts, "cron: "+st.Cron)
 	}
 	if st.Of > 0 {
 		parts = append(parts, fmt.Sprintf("step %d/%d", st.Step, st.Of))
 	}
-	parts = append(parts, countParts(st)...)
 	if st.Steers > 0 {
 		parts = append(parts, fmt.Sprintf("%d note%s from you", st.Steers, plural(st.Steers)))
 	}
 	if st.Dropped > 0 {
-		parts = append(parts, "…")
+		parts = append(parts, fmt.Sprintf("%d event%s dropped", st.Dropped, plural(st.Dropped)))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -98,8 +178,9 @@ func renderStats(st State) string {
 	return strings.Join(parts, " · ")
 }
 
-// countParts renders the tool + sub-agent tallies shared by the live
-// and terminal renderers.
+// countParts renders the tool + sub-agent tallies used by suffix() on
+// terminal lines. Kept separate from renderMeta because live output
+// deliberately does NOT repeat the per-tool counts (the bullets say it).
 func countParts(st State) []string {
 	var parts []string
 	if st.ToolsDone > 0 {

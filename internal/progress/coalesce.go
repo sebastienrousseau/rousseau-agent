@@ -40,6 +40,28 @@ type State struct {
 	Outcome Kind
 	// Err carries the failure text for a terminal KindError.
 	Err string
+	// Bullets is the ordered log of one action per line the turn has
+	// taken so far — the render draws them with a leading glyph
+	// (● success, ✗ failure, ⊘ denied) above the spinner, mirroring
+	// the Claude CLI feed. Bounded by Policy.MaxBullets; a trim leaves
+	// a leading "…" marker bullet so the reader knows history is
+	// incomplete.
+	Bullets []Bullet
+	// bulletsTrimmed is true once at least one bullet has fallen off
+	// the front of the log. The renderer uses it to draw a "…" marker.
+	bulletsTrimmed bool
+}
+
+// Bullet is one entry in State.Bullets.
+type Bullet struct {
+	// Text is the human-readable action ("Read foo.go", "Bash go test",
+	// "Grep for `handleTextMessage`"). Never carries a leading glyph —
+	// the renderer picks the right one from Failed/Denied.
+	Text string
+	// Failed is true when the action returned an error.
+	Failed bool
+	// Denied is true when the action was blocked by an approver or hook.
+	Denied bool
 }
 
 // Update is one rendered progress message ready for a Sink.
@@ -126,9 +148,11 @@ func (c *Coalescer) Absorb(ev Event) {
 		if ev.Err != "" {
 			c.st.ToolsFailed++
 		}
+		c.appendBullet(Bullet{Text: bulletText(ev), Failed: ev.Err != ""})
 	case KindToolDenied:
 		c.st.Running = removeFirst(c.st.Running, ev.Tool)
 		c.st.ToolsDenied++
+		c.appendBullet(Bullet{Text: bulletText(ev), Denied: true})
 	case KindSubagentStarted:
 		c.st.SubagentsRunning++
 	case KindSubagentFinished:
@@ -136,6 +160,7 @@ func (c *Coalescer) Absorb(ev Event) {
 			c.st.SubagentsRunning--
 		}
 		c.st.SubagentsDone++
+		c.appendBullet(Bullet{Text: subagentBulletText(ev), Failed: ev.Err != ""})
 	case KindPlanStep:
 		c.st.Step, c.st.Of = ev.Step, ev.Of
 	case KindCronStarted:
@@ -223,6 +248,44 @@ func (c *Coalescer) build(now time.Time, terminal bool) Update {
 		Replace:  c.pol.PreferEdit && c.emitted > 1,
 		Terminal: terminal,
 	}
+}
+
+// appendBullet appends b to State.Bullets and trims to MaxBullets by
+// dropping from the front so the newest entries always survive.
+func (c *Coalescer) appendBullet(b Bullet) {
+	if b.Text == "" {
+		return
+	}
+	c.st.Bullets = append(c.st.Bullets, b)
+	cap := c.pol.MaxBullets
+	if cap > 0 && len(c.st.Bullets) > cap {
+		drop := len(c.st.Bullets) - cap
+		c.st.Bullets = append(c.st.Bullets[:0:0], c.st.Bullets[drop:]...)
+		c.st.bulletsTrimmed = true
+	}
+}
+
+// bulletText builds the human-readable line for a tool event. Prefers
+// Event.Detail (which callers may set to "foo.go", "go test", etc.);
+// falls back to just the tool name. Empty tool means empty bullet —
+// appendBullet will drop it.
+func bulletText(ev Event) string {
+	if ev.Tool == "" {
+		return ""
+	}
+	if d := oneLine(ev.Detail); d != "" {
+		return ev.Tool + " " + d
+	}
+	return ev.Tool
+}
+
+// subagentBulletText builds the bullet for a finished sub-agent. The
+// Detail field carries the task label when the publisher supplies one.
+func subagentBulletText(ev Event) string {
+	if d := oneLine(ev.Detail); d != "" {
+		return "sub-agent " + d
+	}
+	return "sub-agent"
 }
 
 // removeFirst drops the first occurrence of name from xs, preserving
