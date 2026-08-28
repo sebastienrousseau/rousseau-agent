@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mau.fi/whatsmeow/types"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
 
 // heartbeatSender is fakeSender + MessageEditor. Records every send
@@ -246,11 +248,14 @@ func TestFormatHeartbeatDuration(t *testing.T) {
 	}
 }
 
-// TestDispatch_HeartbeatUpgradedInPlaceToReply drives the end-to-end
-// happy path through Dispatch: the reply lands as an EDIT to the
-// heartbeat placeholder, not a fresh SendText. The plain-sent
-// message list stays empty because the edit path handled it.
-func TestDispatch_HeartbeatUpgradedInPlaceToReply(t *testing.T) {
+// TestDispatch_HeartbeatClosesAndReplyLandsAsNewMessage drives the
+// end-to-end happy path through Dispatch: the placeholder is closed
+// with a "● done" marker so it stays in the thread as history, and
+// the reply lands as its OWN new message. The reply is never edited
+// into the placeholder — that would (a) lose the visual history of
+// what the bot did during the turn and (b) go out silently since
+// WhatsApp does not push a notification on an edit.
+func TestDispatch_HeartbeatClosesAndReplyLandsAsNewMessage(t *testing.T) {
 	own := jid("15551234567", 21)
 	sender := jid("15551234567", 0)
 	evt := msgEvent(sender, sender.ToNonAD(), false, false, "hi")
@@ -271,11 +276,16 @@ func TestDispatch_HeartbeatUpgradedInPlaceToReply(t *testing.T) {
 	// so the placeholder body is the bare glyph + label.
 	require.Len(t, send.sendWithID, 1)
 	assert.Equal(t, "✻ working on it", send.sendWithID[0])
-	// Reply landed as an edit, not a new send.
-	assert.Empty(t, send.sent, "reply must be delivered via edit, not SendText")
+
+	// Placeholder was edited to the "done" marker on completion —
+	// stays in the thread as a record that the turn ran.
 	edits := send.editSnapshot()
 	require.NotEmpty(t, edits)
-	assert.Equal(t, "hello back", edits[len(edits)-1].Body)
+	assert.Equal(t, "● done", edits[len(edits)-1].Body)
+
+	// Reply landed as its own fresh SendText, not an edit.
+	require.Len(t, send.sent, 1, "reply must be its own new message")
+	assert.Equal(t, "hello back", send.sent[0])
 }
 
 // TestDispatch_HeartbeatAbortedOnHandlerError verifies the failure
@@ -327,19 +337,22 @@ func TestDispatch_HeartbeatAbortedOnEmptyReply(t *testing.T) {
 	assert.Equal(t, "● done", edits[len(edits)-1].Body)
 }
 
-// TestDispatch_HeartbeatFinishFailureFallsBackToSendText — when the
-// final edit call fails (typically because WhatsApp's 15-min edit
-// window closed on a very long turn), the reply is still delivered
-// via a fresh SendText. The user sees BOTH the placeholder (frozen
-// as "✻ working on it") AND the reply; a lingering placeholder is a
-// worse UX than a duplicated message.
-func TestDispatch_HeartbeatFinishFailureFallsBackToSendText(t *testing.T) {
+// TestDispatch_HeartbeatEditFailureDoesNotHideReply — when EVERY
+// EditText fails (typically WhatsApp's 15-min edit window has
+// closed on a very long turn), the placeholder is frozen at
+// "✻ working on it" but the reply still lands as a fresh SendText.
+// The reply's independence from the placeholder is now unconditional
+// — the "fall-back to SendText on edit-failure" branch that used to
+// exist is no longer needed because SendText is always the delivery
+// path.
+func TestDispatch_HeartbeatEditFailureDoesNotHideReply(t *testing.T) {
 	own := jid("15551234567", 21)
 	sender := jid("15551234567", 0)
 	evt := msgEvent(sender, sender.ToNonAD(), false, false, "hi")
 	evt.Info.ID = "wamid.HBFAIL"
 
-	// editErr fires on EVERY EditText — including finish's final edit.
+	// editErr fires on EVERY EditText — the placeholder-close attempt
+	// via abort() also fails; the reply must survive that.
 	send := &heartbeatSender{editErr: errors.New("edit-window closed")}
 	Dispatch(context.Background(), DispatchInput{
 		Event:   evt,
@@ -351,7 +364,7 @@ func TestDispatch_HeartbeatFinishFailureFallsBackToSendText(t *testing.T) {
 	})
 
 	require.Len(t, send.sendWithID, 1, "the placeholder still went out")
-	require.Len(t, send.sent, 1, "edit failure → fresh SendText fallback")
+	require.Len(t, send.sent, 1, "reply is always a fresh SendText")
 	assert.Equal(t, "late reply", send.sent[0])
 }
 
@@ -376,4 +389,37 @@ func TestDispatch_HeartbeatFallsBackWhenSenderLacksEditor(t *testing.T) {
 
 	require.Len(t, send.sent, 1)
 	assert.Equal(t, "plain reply", send.sent[0])
+}
+
+// TestDispatch_HeartbeatSkippedWhenProgressBusWired — when a tier-3
+// progress bus is supplied on DispatchInput, the tier-1 heartbeat is
+// suppressed so the two systems never send duelling placeholders.
+// The reply is still its own new message; only the placeholder is
+// gone (its role is now the tier-3 feed's).
+func TestDispatch_HeartbeatSkippedWhenProgressBusWired(t *testing.T) {
+	own := jid("15551234567", 21)
+	sender := jid("15551234567", 0)
+	evt := msgEvent(sender, sender.ToNonAD(), false, false, "hi")
+
+	bus := progress.NewBus(progress.BusOptions{})
+	defer bus.Close()
+
+	send := &heartbeatSender{}
+	Dispatch(context.Background(), DispatchInput{
+		Event:    evt,
+		OwnID:    &own,
+		Sender:   send,
+		Handler:  handlerReturning("proper reply", nil),
+		Header:   " ",
+		Logger:   silentLogger(),
+		Progress: bus,
+	})
+
+	// No heartbeat placeholder went out because the tier-3 bus owns
+	// that slot. The tier-3 reporter only sends a placeholder when
+	// its Coalescer fires — a synchronous unit-test handler returns
+	// before the FirstDelay elapses, so no placeholder here either.
+	assert.Empty(t, send.sendWithID, "tier-1 placeholder must be suppressed when Progress bus is wired")
+	require.Len(t, send.sent, 1, "reply still lands as its own message")
+	assert.Equal(t, "proper reply", send.sent[0])
 }

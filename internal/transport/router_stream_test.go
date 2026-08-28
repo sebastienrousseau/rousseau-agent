@@ -40,6 +40,10 @@ func (s *streamingRunner) Turn(_ context.Context, sess *agent.Session) (agent.Me
 }
 
 func (s *streamingRunner) TurnStream(_ context.Context, sess *agent.Session, events chan<- agent.StreamEvent) (agent.Message, error) {
+	// Sender owns the close. Mirrors internal/agent/stream_turn.go's
+	// `defer close(events)` in the real TurnStream — the Router relies
+	// on this contract and does not close the channel itself.
+	defer close(events)
 	s.mu.Lock()
 	s.streamCalls++
 	s.mu.Unlock()
@@ -124,6 +128,29 @@ func TestRouter_StreamingRunnerErrorSurfaces(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "provider down")
 	assert.Equal(t, 1, runner.streamCalls)
+}
+
+func TestRouter_RunnerClosingEventsDoesNotDoubleClose(t *testing.T) {
+	// Regression: the Router used to also `close(events)` after
+	// TurnStream returned, which panicked with "close of closed
+	// channel" against a runner that (correctly) closed it itself.
+	// This test is the streamingRunner (which does close events)
+	// exercised through the full Router.Handle → runTurn path,
+	// asserting no panic surfaces.
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &streamingRunner{
+		reply:        agent.NewAssistantText("closed cleanly"),
+		streamEvents: []agent.StreamEvent{{Kind: agent.StreamStart}},
+	}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{})
+
+	ctx := progress.WithPublisher(context.Background(), discardPublisher{})
+	assert.NotPanics(t, func() {
+		reply, err := r.Handle(ctx, IncomingMessage{From: "wa:1", Body: "hi"})
+		require.NoError(t, err)
+		assert.Equal(t, "closed cleanly", reply)
+	})
 }
 
 func TestRouter_StreamEventsDrainedEvenWhenManyFired(t *testing.T) {

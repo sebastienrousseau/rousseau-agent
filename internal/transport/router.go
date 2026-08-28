@@ -279,6 +279,13 @@ func firstText(m agent.Message) string {
 // path insists on a place to send events so the provider goroutine
 // does not block. Draining in a small goroutine keeps the memory
 // footprint bounded to one buffered slot per event.
+//
+// Channel-close ownership: TurnStream is the sender and closes
+// events itself (`defer close(events)` in stream_turn.go's exported
+// entry point). runTurn does NOT close it — a second close would
+// panic ("close of closed channel"). The drain goroutine's range
+// loop exits naturally when TurnStream closes the channel, and the
+// <-drained wait synchronises with that exit.
 func (r *Router) runTurn(ctx context.Context, sess *agent.Session) (agent.Message, error) {
 	streamer, ok := r.runner.(StreamingTurnRunner)
 	if !ok || progress.PublisherFrom(ctx) == nil {
@@ -292,7 +299,6 @@ func (r *Router) runTurn(ctx context.Context, sess *agent.Session) (agent.Messag
 		}
 	}()
 	final, err := streamer.TurnStream(ctx, sess, events)
-	close(events)
 	<-drained
 	return final, err
 }
