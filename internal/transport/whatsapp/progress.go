@@ -71,8 +71,17 @@ func startProgress(ctx context.Context, bus *progress.Bus, sender Sender, chat t
 	}
 	sub := bus.Subscribe(key)
 	rep := progress.NewReporter(progress.ReporterConfig{
-		Sub:    sub,
-		Sink:   newProgressSink(sender, chat),
+		Sub:  sub,
+		Sink: newProgressSink(sender, chat),
+		// Sequential mode: one WhatsApp message per action, matching the
+		// chronological "each tool as its own line" feel of the Claude
+		// CLI's terminal output. Bursts inside SequentialInterval (2s)
+		// still collapse into a single message so a rapid tool-chain
+		// does not spam the thread. Editing the running placeholder
+		// (the cumulative mode) reads as the bot silently rewriting
+		// itself on WhatsApp — no notification, no chronology —
+		// which is the opposite of what a chat client's users expect.
+		Policy: progress.Policy{Sequential: true},
 		Logger: logger,
 	})
 	done := make(chan struct{})

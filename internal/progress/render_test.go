@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -44,50 +45,65 @@ func TestRender_LiveHeadlines(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Render(tc.st, 30*time.Second)
-			assert.Contains(t, got, "⏳ 30s · "+tc.want)
+			assert.Contains(t, got, GlyphWorking+" 30s · "+tc.want)
 		})
 	}
 }
 
-func TestRender_StatsLine(t *testing.T) {
+func TestRender_LiveNoBulletsIsSpinnerOnly(t *testing.T) {
+	assert.Equal(t, GlyphWorking+" 10s · working on it", Render(State{}, 10*time.Second))
+}
+
+func TestRender_LiveWithBulletsDrawsFeed(t *testing.T) {
 	st := State{
-		Cron:             "nightly",
-		Step:             2,
-		Of:               5,
-		ToolsDone:        9,
-		ToolsFailed:      1,
-		ToolsDenied:      2,
-		SubagentsRunning: 1,
-		SubagentsDone:    1,
-		Steers:           1,
-		Dropped:          4,
-		Running:          []string{"bash"},
+		Bullets: []Bullet{
+			{Text: "Read foo.go"},
+			{Text: "Bash go test", Failed: true},
+			{Text: "Write bar.go", Denied: true},
+		},
+		Running: []string{"grep"},
+	}
+	got := Render(st, 30*time.Second)
+	want := strings.Join([]string{
+		GlyphBullet + " Read foo.go",
+		GlyphFailed + " Bash go test",
+		GlyphDenied + " Write bar.go",
+		GlyphWorking + " 30s · running `grep`",
+	}, "\n")
+	assert.Equal(t, want, got)
+}
+
+func TestRender_LiveMetaLineHasNonToolContextOnly(t *testing.T) {
+	// The bullets above already say "9 tools done" — the meta line
+	// deliberately does NOT repeat tool counts to avoid noise.
+	st := State{
+		Cron:      "nightly",
+		Step:      2,
+		Of:        5,
+		ToolsDone: 9, // MUST NOT appear on the meta line
+		Steers:    2,
+		Dropped:   4,
+		Running:   []string{"bash"},
 	}
 	got := Render(st, 90*time.Second)
-	assert.Contains(t, got, "cron: nightly")
-	assert.Contains(t, got, "step 2/5")
-	assert.Contains(t, got, "9 tools")
-	assert.Contains(t, got, "1 failed")
-	assert.Contains(t, got, "2 blocked")
-	assert.Contains(t, got, "2 sub-agents")
-	assert.Contains(t, got, "1 note from you")
-	assert.Contains(t, got, "…")
+	assert.Contains(t, got, "cron: nightly · step 2/5 · 2 notes from you · 4 events dropped")
+	// The live line must not carry the "9 tools" rollup — that lives
+	// on terminal lines where the bullet log may have been trimmed.
+	assert.NotContains(t, got, "9 tools")
 }
 
-func TestRender_SingularAndPluralTallies(t *testing.T) {
-	got := Render(State{ToolsDone: 1, SubagentsDone: 1, Steers: 2}, time.Minute)
-	assert.Contains(t, got, "1 tool ·")
-	assert.Contains(t, got, "1 sub-agent")
-	assert.Contains(t, got, "2 notes from you")
-}
-
-func TestRender_PreviewIsCollapsedToOneLine(t *testing.T) {
+func TestRender_LivePreviewLineTrailsBelow(t *testing.T) {
 	got := Render(State{Preview: "line one\n\n  line two "}, 10*time.Second)
-	assert.Contains(t, got, "… line one line two")
+	assert.Contains(t, got, "\n"+GlyphPreview+" line one line two")
 }
 
-func TestRender_NoStatsLineWhenNothingToReport(t *testing.T) {
-	assert.Equal(t, "⏳ 10s · working on it", Render(State{}, 10*time.Second))
+func TestRender_LiveTrimmedBulletsAreSignalled(t *testing.T) {
+	st := State{
+		Bullets:        []Bullet{{Text: "Grep"}},
+		bulletsTrimmed: true,
+	}
+	got := Render(st, 30*time.Second)
+	assert.True(t, strings.HasPrefix(got, GlyphTrim+" (earlier steps trimmed)\n"+GlyphBullet+" Grep\n"))
 }
 
 func TestRender_Terminal(t *testing.T) {
@@ -97,29 +113,29 @@ func TestRender_Terminal(t *testing.T) {
 		want string
 	}{
 		{
-			"success with tally",
+			"success with tally and no prior bullets",
 			State{Terminal: true, Outcome: KindTurnFinished, ToolsDone: 9},
-			"✅ done in 4m12s · 9 tools",
+			GlyphBullet + " done in 4m12s · 9 tools",
 		},
 		{
 			"success with nothing to tally",
 			State{Terminal: true, Outcome: KindTurnFinished},
-			"✅ done in 4m12s",
+			GlyphBullet + " done in 4m12s",
 		},
 		{
 			"cancelled",
 			State{Terminal: true, Outcome: KindCancelled, ToolsDone: 3},
-			"⏹️ cancelled after 4m12s · 3 tools",
+			GlyphBullet + " stopped after 4m12s · 3 tools",
 		},
 		{
 			"failed with a reason",
 			State{Terminal: true, Outcome: KindError, Err: "provider:\n timeout"},
-			"⚠️ failed after 4m12s — provider: timeout",
+			GlyphFailed + " failed after 4m12s — provider: timeout",
 		},
 		{
 			"failed without a reason",
 			State{Terminal: true, Outcome: KindError},
-			"⚠️ failed after 4m12s",
+			GlyphFailed + " failed after 4m12s",
 		},
 	}
 	for _, tc := range tests {
@@ -127,4 +143,56 @@ func TestRender_Terminal(t *testing.T) {
 			assert.Equal(t, tc.want, Render(tc.st, 4*time.Minute+12*time.Second))
 		})
 	}
+}
+
+func TestRender_TerminalWithBulletsDrawsWholeFeed(t *testing.T) {
+	st := State{
+		Terminal:  true,
+		Outcome:   KindTurnFinished,
+		ToolsDone: 2,
+		Bullets: []Bullet{
+			{Text: "Read foo.go"},
+			{Text: "Bash go test"},
+		},
+	}
+	want := strings.Join([]string{
+		GlyphBullet + " Read foo.go",
+		GlyphBullet + " Bash go test",
+		GlyphBullet + " done in 42s · 2 tools",
+	}, "\n")
+	assert.Equal(t, want, Render(st, 42*time.Second))
+}
+
+func TestRender_TerminalSuffixIncludesEveryTally(t *testing.T) {
+	// countParts is the source of truth for the "· N tools · M failed
+	// · … · P sub-agents" rollup on the closing line.
+	st := State{
+		Terminal:         true,
+		Outcome:          KindTurnFinished,
+		ToolsDone:        5,
+		ToolsFailed:      2,
+		ToolsDenied:      1,
+		SubagentsRunning: 1,
+		SubagentsDone:    1,
+	}
+	got := Render(st, 30*time.Second)
+	assert.Contains(t, got, "5 tools")
+	assert.Contains(t, got, "2 failed")
+	assert.Contains(t, got, "1 blocked")
+	assert.Contains(t, got, "2 sub-agents")
+}
+
+func TestRender_TerminalDoesNotDrawPreview(t *testing.T) {
+	// The preview belongs on live updates only — on the terminal line
+	// the assistant's final text will follow as its own message.
+	got := Render(State{Terminal: true, Outcome: KindTurnFinished, Preview: "half-written"}, 5*time.Second)
+	assert.NotContains(t, got, "half-written")
+}
+
+func TestBulletGlyph(t *testing.T) {
+	assert.Equal(t, GlyphBullet, bulletGlyph(Bullet{}))
+	assert.Equal(t, GlyphFailed, bulletGlyph(Bullet{Failed: true}))
+	assert.Equal(t, GlyphDenied, bulletGlyph(Bullet{Denied: true}))
+	assert.Equal(t, GlyphFailed, bulletGlyph(Bullet{Failed: true, Denied: true}),
+		"failure ranks above denial when both flags are set")
 }

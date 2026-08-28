@@ -239,6 +239,146 @@ func TestCoalescer_FastTurnNeverPostsAnything(t *testing.T) {
 	assert.Equal(t, 0, c.Emitted())
 }
 
+func TestCoalescer_ToolBulletsCarryToolAndDetail(t *testing.T) {
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindToolStarted, Tool: "Read", Detail: "foo.go"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read", Detail: "foo.go"})
+	c.Absorb(Event{Kind: KindToolStarted, Tool: "Bash", Detail: "go test"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Bash", Detail: "go test", Err: "exit 1"})
+	c.Absorb(Event{Kind: KindToolDenied, Tool: "Write", Detail: "danger.go"})
+
+	got := c.State().Bullets
+	require.Len(t, got, 3)
+	assert.Equal(t, Bullet{Text: "Read foo.go"}, got[0])
+	assert.Equal(t, Bullet{Text: "Bash go test", Failed: true}, got[1])
+	assert.Equal(t, Bullet{Text: "Write danger.go", Denied: true}, got[2])
+}
+
+func TestCoalescer_ToolBulletsFallBackToToolNameOnly(t *testing.T) {
+	// When the publisher didn't attach a Detail, the bullet is still
+	// meaningful — the tool name alone reads as "● Read".
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read"})
+	got := c.State().Bullets
+	require.Len(t, got, 1)
+	assert.Equal(t, "Read", got[0].Text)
+}
+
+func TestCoalescer_SubagentBullets(t *testing.T) {
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindSubagentStarted})
+	c.Absorb(Event{Kind: KindSubagentFinished, Detail: "explore repo layout"})
+	c.Absorb(Event{Kind: KindSubagentFinished, Err: "sub-agent hit timeout"})
+
+	got := c.State().Bullets
+	require.Len(t, got, 2)
+	assert.Equal(t, "sub-agent explore repo layout", got[0].Text)
+	assert.True(t, got[1].Failed)
+}
+
+func TestCoalescer_EmptyToolNameDropsBullet(t *testing.T) {
+	// A malformed event without a Tool must not blow up the log with
+	// an empty bullet.
+	c := NewCoalescer("k", Policy{}, base)
+	c.Absorb(Event{Kind: KindToolFinished})
+	assert.Empty(t, c.State().Bullets)
+}
+
+func TestCoalescer_BulletsTrimmedFromFront(t *testing.T) {
+	c := NewCoalescer("k", Policy{MaxBullets: 3}, base)
+	for i, name := range []string{"a", "b", "c", "d", "e"} {
+		c.Absorb(Event{Kind: KindToolFinished, Tool: name})
+		assert.LessOrEqual(t, len(c.State().Bullets), 3, "after event %d", i)
+	}
+
+	st := c.State()
+	require.Len(t, st.Bullets, 3)
+	assert.Equal(t, "c", st.Bullets[0].Text, "oldest bullet should be dropped, newest kept")
+	assert.Equal(t, "d", st.Bullets[1].Text)
+	assert.Equal(t, "e", st.Bullets[2].Text)
+	assert.True(t, st.bulletsTrimmed, "trim flag must be set for the renderer")
+}
+
+func TestCoalescer_SequentialEmitsDeltaBulletsOnly(t *testing.T) {
+	c := NewCoalescer("k", Policy{
+		Sequential:         true,
+		SequentialInterval: time.Second,
+	}, base)
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read", Detail: "foo.go"})
+	_, ok := c.Next(at(0))
+	assert.False(t, ok, "must wait for SequentialInterval")
+
+	u, ok := c.Next(at(1))
+	require.True(t, ok)
+	assert.Equal(t, GlyphBullet+" Read foo.go", u.Text)
+	assert.False(t, u.Replace, "sequential updates must never be edits")
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Bash", Detail: "go test"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Grep", Detail: "handleMessage", Err: "no matches"})
+	_, ok = c.Next(at(1))
+	assert.False(t, ok, "not yet — SequentialInterval has not elapsed since last emit")
+
+	u, ok = c.Next(at(2))
+	require.True(t, ok)
+	assert.Equal(t, GlyphBullet+" Bash go test\n"+GlyphFailed+" Grep handleMessage", u.Text)
+	assert.False(t, u.Replace)
+}
+
+func TestCoalescer_SequentialStaysSilentWithNoNewBullets(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second}, base)
+	c.Absorb(Event{Kind: KindThinking, Iteration: 3})
+	c.Absorb(Event{Kind: KindLLMDelta, Text: "some streamed text"})
+	_, ok := c.Next(at(60))
+	assert.False(t, ok, "no new bullet, no emit — sequential mode has no heartbeat")
+}
+
+func TestCoalescer_SequentialTerminalCarriesLastBurstAndSummary(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second}, base)
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Read", Detail: "foo.go"})
+	_, ok := c.Next(at(1))
+	require.True(t, ok)
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Bash", Detail: "go test"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "Grep", Detail: "handleMessage"})
+	c.Absorb(Event{Kind: KindTurnFinished})
+
+	u, ok := c.Next(at(2))
+	require.True(t, ok)
+	assert.Contains(t, u.Text, GlyphBullet+" Bash go test")
+	assert.Contains(t, u.Text, GlyphBullet+" Grep handleMessage")
+	assert.Contains(t, u.Text, GlyphBullet+" done in ")
+	assert.True(t, u.Terminal)
+	assert.False(t, u.Replace)
+}
+
+func TestCoalescer_SequentialFastTurnStillSuppressesEpitaph(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second}, base)
+	c.Absorb(Event{Kind: KindTurnStarted})
+	c.Absorb(Event{Kind: KindTurnFinished})
+	_, ok := c.Next(at(2))
+	assert.False(t, ok)
+	assert.Equal(t, 0, c.Emitted())
+}
+
+func TestCoalescer_SequentialTrimMarkerAppearsOnFirstDeltaOnly(t *testing.T) {
+	c := NewCoalescer("k", Policy{Sequential: true, SequentialInterval: time.Second, MaxBullets: 2}, base)
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "a"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "b"})
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "c"}) // trims "a"
+
+	u1, ok := c.Next(at(1))
+	require.True(t, ok)
+	assert.Contains(t, u1.Text, GlyphTrim+" (earlier steps trimmed)")
+
+	c.Absorb(Event{Kind: KindToolFinished, Tool: "d"}) // trims "b"
+	u2, ok := c.Next(at(3))
+	require.True(t, ok)
+	assert.NotContains(t, u2.Text, "trimmed", "trim marker fires once, not on every delta")
+	assert.Equal(t, GlyphBullet+" d", u2.Text)
+}
+
 func TestRemoveFirst(t *testing.T) {
 	tests := []struct {
 		name string

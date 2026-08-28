@@ -1,0 +1,42 @@
+# rousseau-agent-copy-host-keys allowlist.
+#
+# Each line names a host file to copy into the container's key
+# staging area at container-start. Only paths under $HOME/.ssh/ or
+# $HOME/.gnupg/ are permitted — the copy script rejects anything
+# else with a diagnostic.
+#
+# The container symlinks ~/.ssh and ~/.gnupg to the staging area
+# (see Dockerfile), so files copied here show up where SSH, git,
+# and GPG expect them inside the container.
+#
+# Install:
+#   install -m 0644 -D docker/host-keys.list.example \
+#                       ~/.config/rousseau/host-keys.list
+#   $EDITOR ~/.config/rousseau/host-keys.list
+#
+# Restart the agent after editing:
+#   systemctl --user restart rousseau-agent
+
+# --- SSH ---
+# Private + public halves of the primary key. Used for git push over
+# ssh://, and for `git commit -S` when gpg.format=ssh.
+~/.ssh/id_ed25519
+~/.ssh/id_ed25519.pub
+
+# Known-hosts prevents the first-connection MITM prompt on every push.
+~/.ssh/known_hosts
+
+# Client config (aliases, per-host User/Port/IdentityFile). Optional.
+~/.ssh/config
+
+# --- GPG (uncomment if you use gpg-based signing) ---
+# GPG's keyring layout: pubring for public halves, trustdb for the web
+# of trust, private-keys-v1.d/*.key for secret halves. Copying only
+# the public ring lets the container verify signatures without carrying
+# any secret material. Add the .key files as well only if the
+# container actually needs to sign / decrypt.
+# ~/.gnupg/pubring.kbx
+# ~/.gnupg/trustdb.gpg
+# ~/.gnupg/gpg.conf
+# ~/.gnupg/gpg-agent.conf
+# ~/.gnupg/private-keys-v1.d/YOUR-KEY-KEYGRIP.key

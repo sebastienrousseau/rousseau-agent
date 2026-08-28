@@ -96,5 +96,17 @@ Restart=on-failure
 RestartSec=10s
 TimeoutStartSec=90s
 
+# Refresh the host-side key staging area before every container
+# start. The script reads ~/.config/rousseau/host-keys.list, copies
+# each named file from ~/.ssh or ~/.gnupg into
+# ~/.local/share/rousseau/keys/{ssh,gnupg}/, and exits 0 even when
+# the config file is missing (nothing to copy is not an error).
+# Container-side symlinks (see Dockerfile) point ~/.ssh and ~/.gnupg
+# at that staging area. Install the script once:
+#   install -m 0755 docker/scripts/rousseau-agent-copy-host-keys.sh \
+#                    ~/.local/bin/rousseau-agent-copy-host-keys
+# then customise ~/.config/rousseau/host-keys.list.
+ExecStartPre=-%h/.local/bin/rousseau-agent-copy-host-keys
+
 [Install]
 WantedBy=default.target

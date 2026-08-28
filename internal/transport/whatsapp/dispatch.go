@@ -136,6 +136,28 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 	react := reactorFor(in)
 	react(ctx, "👀")
 
+	// Live placeholder + progress feed. Two exclusive sources of the
+	// "working" placeholder exist; when both are available they would
+	// send two separate messages and fight over edits, which reads as
+	// the bot editing itself repeatedly:
+	//
+	//   * tier-3 progress feed (startProgress, when in.Progress is set):
+	//     sends a placeholder on first bus event and edits it with the
+	//     Claude-CLI-style bullet feed. Its own terminal render is the
+	//     "● done in Ns · N tools" summary.
+	//   * tier-1 heartbeat (startHeartbeat): sends a plain "✻ working
+	//     on it" placeholder and edits the elapsed-time counter every
+	//     15s. Only meaningful when there is no tier-3 feed to do
+	//     something better.
+	//
+	// Precedence: whichever is available. If both are available the
+	// tier-3 feed wins — its output is strictly more informative and
+	// its lifetime already spans the turn.
+	var hb *heartbeat
+	if in.Progress == nil {
+		hb = startHeartbeat(ctx, in.Sender, res.Chat, in.Header, log)
+	}
+
 	// Typing indicator — best-effort, never blocks the reply flow.
 	setPresence(ctx, in.Sender, res.Chat, types.ChatPresenceComposing, log)
 	defer setPresence(ctx, in.Sender, res.Chat, types.ChatPresencePaused, log)
@@ -155,11 +177,13 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 		log.Error("whatsapp.handler_failed",
 			slog.String("err", err.Error()),
 			slog.Duration("elapsed", elapsed))
+		hb.abort(context.Background())
 		react(context.Background(), "❌")
 		return
 	}
 	if reply == "" {
 		log.Info("whatsapp.empty_reply", slog.Duration("elapsed", elapsed))
+		hb.abort(context.Background())
 		react(context.Background(), "✅")
 		return
 	}
@@ -167,6 +191,23 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 		slog.Duration("elapsed", elapsed),
 		slog.Int("reply_len", len(reply)))
 
+	// The reply is always its own message, never an edit of a
+	// placeholder. Reasons:
+	//
+	//   * Editing loses the running placeholder from the thread
+	//     history, which is where the user reads back what the bot
+	//     actually did during the turn (bullets or elapsed counter).
+	//   * Edits do not push a notification, so an edited reply looks
+	//     to the user like the bot went silent.
+	//   * The user's mental model is "each message from the bot is a
+	//     new message" — matching WhatsApp's normal chat pattern
+	//     rather than a live-updating widget.
+	//
+	// The placeholder is closed independently: tier-1 heartbeat's
+	// abort() leaves a "● done" marker; the tier-3 progress feed
+	// emits its own terminal render ("● done in Ns · N tools") via
+	// the bus when the turn's Publisher fires KindTurnFinished.
+	hb.abort(context.Background())
 	if err := in.Sender.SendText(ctx, res.Chat, PrependHeader(reply, in.Header)); err != nil {
 		log.Error("whatsapp.send_failed", slog.String("err", err.Error()))
 		react(context.Background(), "❌")

@@ -76,6 +76,7 @@ RUN apk upgrade --no-cache \
       git \
       github-cli \
       openssh-client \
+      gnupg \
       curl \
       jq \
       ripgrep \
@@ -98,6 +99,9 @@ RUN apk upgrade --no-cache \
       py3-pip \
       pipx \
  && rm -rf /var/cache/apk/*
+# gnupg lets `git commit -S` verify signatures and the container's
+# git flows call out to whatever key material the operator mounts
+# (see the Quadlet drop-in for the .ssh / .gnupg bind mounts).
 
 # NOTE: Go and Rust are installed via mise later (see `mise use -g` step).
 # Do NOT `apk add go rust cargo` here — that installs system-wide Rust
@@ -159,6 +163,10 @@ RUN mkdir -p /home/rousseau/.local/share/rousseau \
  && ln -sfn /home/rousseau/.config /home/seb/.config \
  && ln -sfn /home/rousseau/.ssh    /home/seb/.ssh \
  && chown -R rousseau:rousseau /home/rousseau /workspace /home/seb
+# ~/.ssh / ~/.gnupg symlinks are created LATER (after chezmoi init)
+# — see the final RUN step. chezmoi's dotfiles include an
+# ~/.ssh/config, so chezmoi mkdir'd ~/.ssh as a real directory and
+# overwrote any symlink we tried to put there earlier.
 
 # Ship the curated skills bundle at /etc/rousseau/skills/ — the
 # skills loader treats this as a system-wide fallback when the user
@@ -217,6 +225,20 @@ RUN chezmoi init --apply --no-tty --branch main \
 # lean and avoid tripping the runtime tmpfs size limit at container
 # create.
 RUN rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true
+
+# Point ~/.ssh and ~/.gnupg at the state-volume subtree the copy
+# script populates on the host. Must run AFTER chezmoi init — chezmoi
+# creates ~/.ssh as a real directory (for its ssh config templates)
+# and would otherwise clobber the symlink.
+#
+# Anything chezmoi dropped inside ~/.ssh is discarded: the state
+# volume is bind-mounted at container start, so whatever is baked
+# into the image at ~/.local/share/rousseau/keys/ssh/ gets hidden
+# by the host's copy anyway. The operator's real ssh config comes
+# from the host via the copy script (see host-keys.list.example).
+RUN rm -rf /home/rousseau/.ssh /home/rousseau/.gnupg \
+ && ln -sfn /home/rousseau/.local/share/rousseau/keys/ssh   /home/rousseau/.ssh \
+ && ln -sfn /home/rousseau/.local/share/rousseau/keys/gnupg /home/rousseau/.gnupg
 
 # rousseau has no HTTP surface — no ports to expose. Health is the
 # process being alive; podman restart policy handles crashes.

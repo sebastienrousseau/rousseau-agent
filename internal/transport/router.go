@@ -10,6 +10,7 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
 
 // SessionStore is the subset of state.Store the Router needs. Declared
@@ -32,6 +33,20 @@ type JIDMapper interface {
 // TurnRunner runs a single agent turn against a Session.
 type TurnRunner interface {
 	Turn(ctx context.Context, s *agent.Session) (agent.Message, error)
+}
+
+// StreamingTurnRunner is the OPTIONAL streaming twin of TurnRunner.
+// Runners that also implement this let the Router unlock the
+// progress-event flow: each provider tool_use / text_delta emitted
+// by TurnStream reaches agent.emit(ctx, ...) → the context publisher
+// installed by transport.Supervisor → the transport's progress Bus →
+// the WhatsApp reporter → live message edits.
+//
+// Kept as a separate optional interface so mock TurnRunners in
+// existing tests (and any non-streaming runner) keep compiling
+// without emitting the extra method.
+type StreamingTurnRunner interface {
+	TurnStream(ctx context.Context, s *agent.Session, events chan<- agent.StreamEvent) (agent.Message, error)
 }
 
 // RouterOptions configures a Router.
@@ -115,7 +130,7 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 	}
 
 	sess.Append(agent.NewUserText(msg.Body))
-	final, err := r.runner.Turn(ctx, sess)
+	final, err := r.runTurn(ctx, sess)
 	if err != nil {
 		return "", fmt.Errorf("router: turn: %w", err)
 	}
@@ -248,4 +263,45 @@ func firstText(m agent.Message) string {
 		}
 	}
 	return ""
+}
+
+// runTurn is the streaming-aware dispatch. It uses TurnStream when
+// the runner supports it AND the context carries a progress
+// publisher (typically installed by transport.Supervisor's per-turn
+// Registry.Begin) — that combination is what makes the per-tool
+// progress feed reach a transport reporter. Otherwise it falls back
+// to the plain Turn, keeping the code path used by every
+// non-supervised call site (cron scheduler, embedded API,
+// integration tests) unchanged.
+//
+// The StreamEvent channel is a discard drain: the router itself only
+// cares about the final Message, but the underlying agent stream
+// path insists on a place to send events so the provider goroutine
+// does not block. Draining in a small goroutine keeps the memory
+// footprint bounded to one buffered slot per event.
+//
+// Channel-close ownership: TurnStream is the sender and closes
+// events itself (`defer close(events)` in stream_turn.go's exported
+// entry point). runTurn does NOT close it — a second close would
+// panic ("close of closed channel"). The drain goroutine's range
+// loop exits naturally when TurnStream closes the channel, and the
+// <-drained wait synchronises with that exit.
+func (r *Router) runTurn(ctx context.Context, sess *agent.Session) (agent.Message, error) {
+	streamer, ok := r.runner.(StreamingTurnRunner)
+	if !ok || progress.PublisherFrom(ctx) == nil {
+		return r.runner.Turn(ctx, sess)
+	}
+	events := make(chan agent.StreamEvent, 16)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		// Drain the channel — the useful copy of every event lives on the
+		// progress bus; this loop just prevents TurnStream from blocking
+		// on a full buffer.
+		for range events {
+		}
+	}()
+	final, err := streamer.TurnStream(ctx, sess, events)
+	<-drained
+	return final, err
 }
