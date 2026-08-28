@@ -92,16 +92,16 @@ func writeBullets(b *strings.Builder, st State) {
 //
 // Two exit paths:
 //
-//   Terminal: draws the closing summary line ("● done in Ns · N tools",
-//             "✗ failed after …", "● stopped after …"). Any bullets
-//             that landed since the previous emit precede it on their
-//             own lines so a burst-then-done still shows what ran.
+//	Terminal: draws the closing summary line ("● done in Ns · N tools",
+//	          "✗ failed after …", "● stopped after …"). Any bullets
+//	          that landed since the previous emit precede it on their
+//	          own lines so a burst-then-done still shows what ran.
 //
-//   Non-terminal: just the new bullets, one per line. No spinner —
-//                 a delta with zero new bullets never reaches this
-//                 function (Coalescer.readySequential gates it), and
-//                 a spinner line would be redundant noise in a
-//                 chronological feed.
+//	Non-terminal: just the new bullets, one per line. No spinner —
+//	              a delta with zero new bullets never reaches this
+//	              function (Coalescer.readySequential gates it), and
+//	              a spinner line would be redundant noise in a
+//	              chronological feed.
 //
 // Trimmed-bullet marker: the "… (earlier steps trimmed)" line only
 // appears on the FIRST delta after a trim, so the reader sees the

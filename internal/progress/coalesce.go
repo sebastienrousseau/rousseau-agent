@@ -193,29 +193,29 @@ func (c *Coalescer) Absorb(ev Event) {
 //
 // Two emit models, selected by Policy.Sequential:
 //
-//   Cumulative (Sequential = false, default):
-//     One live message per turn that grows over time via EditText.
-//     Rules:
-//      1. Once the terminal update has been produced, never emit again.
-//      2. A terminal state flushes immediately — but ONLY if at least
-//         one progress update was already sent.
-//      3. The first update waits FirstDelay from the turn's start.
-//      4. Later updates wait MinEditInterval (PreferEdit) or MinInterval.
-//      5. With no new events, updates wait HeartbeatInterval instead.
-//      6. Past MaxUpdates, only heartbeats survive.
+//	Cumulative (Sequential = false, default):
+//	  One live message per turn that grows over time via EditText.
+//	  Rules:
+//	   1. Once the terminal update has been produced, never emit again.
+//	   2. A terminal state flushes immediately — but ONLY if at least
+//	      one progress update was already sent.
+//	   3. The first update waits FirstDelay from the turn's start.
+//	   4. Later updates wait MinEditInterval (PreferEdit) or MinInterval.
+//	   5. With no new events, updates wait HeartbeatInterval instead.
+//	   6. Past MaxUpdates, only heartbeats survive.
 //
-//   Sequential (Sequential = true):
-//     One message per action; each emit carries the bullets accumulated
-//     since the last emit. Rules:
-//      1. Same terminal handling as cumulative.
-//      2. Emit ONLY when there is a new bullet and SequentialInterval
-//         has elapsed since the last emit. A burst of bullets that
-//         fires inside SequentialInterval collapses into one message.
-//      3. No FirstDelay wait past SequentialInterval for the first
-//         bullet — the first tool that finishes lands as its own
-//         message on the next tick.
-//      4. No HeartbeatInterval, no MaxUpdates cap — an empty update
-//         (no new bullets) would be pure noise in sequential mode.
+//	Sequential (Sequential = true):
+//	  One message per action; each emit carries the bullets accumulated
+//	  since the last emit. Rules:
+//	   1. Same terminal handling as cumulative.
+//	   2. Emit ONLY when there is a new bullet and SequentialInterval
+//	      has elapsed since the last emit. A burst of bullets that
+//	      fires inside SequentialInterval collapses into one message.
+//	   3. No FirstDelay wait past SequentialInterval for the first
+//	      bullet — the first tool that finishes lands as its own
+//	      message on the next tick.
+//	   4. No HeartbeatInterval, no MaxUpdates cap — an empty update
+//	      (no new bullets) would be pure noise in sequential mode.
 func (c *Coalescer) Next(now time.Time) (Update, bool) {
 	if c.finalSent {
 		return Update{}, false
@@ -274,12 +274,12 @@ func (c *Coalescer) readySequential(now time.Time) bool {
 // build renders the current state and advances the emit bookkeeping.
 // The rendered body differs between the two emit models:
 //
-//   Cumulative: Render — the full State (bullets + spinner + preview),
-//               edited into one live message.
-//   Sequential: RenderDelta — only the bullets accumulated since the
-//               last emit (or the terminal summary line), sent as a
-//               fresh message. Update.Replace is always false in this
-//               mode so the Reporter's editor branch is not taken.
+//	Cumulative: Render — the full State (bullets + spinner + preview),
+//	            edited into one live message.
+//	Sequential: RenderDelta — only the bullets accumulated since the
+//	            last emit (or the terminal summary line), sent as a
+//	            fresh message. Update.Replace is always false in this
+//	            mode so the Reporter's editor branch is not taken.
 func (c *Coalescer) build(now time.Time, terminal bool) Update {
 	c.emitted++
 	c.lastEmit = now

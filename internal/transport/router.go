@@ -295,7 +295,10 @@ func (r *Router) runTurn(ctx context.Context, sess *agent.Session) (agent.Messag
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		for range events { //nolint:revive // drain — the progress bus is where the useful copy lives
+		// Drain the channel — the useful copy of every event lives on the
+		// progress bus; this loop just prevents TurnStream from blocking
+		// on a full buffer.
+		for range events {
 		}
 	}()
 	final, err := streamer.TurnStream(ctx, sess, events)
