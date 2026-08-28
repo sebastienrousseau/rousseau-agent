@@ -46,6 +46,8 @@ type Client struct {
 	cfg        Config
 	logger     *slog.Logger
 	bus        *progress.Bus
+	allow      map[string]struct{} // pre-computed from cfg.Allowlist
+	openAll    bool                // true when allowlist is empty
 	mu         sync.Mutex
 	wm         *whatsmeow.Client
 	sender     Sender
@@ -114,10 +116,20 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if bus == nil {
 		bus = progress.NewBus(progress.BusOptions{})
 	}
+	// Pre-compute the allowlist as a set so dispatch does O(1) lookups
+	// per inbound message. Empty allowSet with openAll = true means "no
+	// restriction" — sensible for unit tests, dangerous in prod (the
+	// operator has been warned via `whatsapp --allow` help text).
+	allowSet := make(map[string]struct{}, len(cfg.Allowlist))
+	for _, jid := range cfg.Allowlist {
+		allowSet[jid] = struct{}{}
+	}
 	return &Client{
 		cfg:      cfg,
 		logger:   logger,
 		bus:      bus,
+		allow:    allowSet,
+		openAll:  len(allowSet) == 0,
 		dispatch: func(f func()) { f() },
 	}, nil
 }
@@ -259,7 +271,21 @@ func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Down
 		Header:      c.cfg.ReplyHeader,
 		Logger:      c.logger,
 		Progress:    c.bus,
+		IsAllowed:   c.isAllowed,
 	})
+}
+
+// isAllowed reports whether from is on the transport's allowlist.
+// Empty allowlist means unrestricted (openAll). Dispatch calls this
+// BEFORE any user-visible action (emoji reactions, typing indicators,
+// placeholder messages) so a stranger messaging the number sees
+// nothing back — no signal that a bot is watching.
+func (c *Client) isAllowed(from string) bool {
+	if c.openAll {
+		return true
+	}
+	_, ok := c.allow[from]
+	return ok
 }
 
 // Compile-time interface satisfaction check.

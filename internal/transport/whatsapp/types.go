@@ -44,6 +44,17 @@ type Config struct {
 	// internal bus — useful for tests and embedded use where nothing
 	// on the publisher side exists.
 	Progress *progress.Bus
+	// Allowlist restricts which sender JIDs the transport reacts to
+	// with visible receipt / completion markers. A message from any
+	// JID NOT on this list is silently dropped inside Dispatch — no
+	// emoji reactions, no typing indicator, no placeholder message.
+	// The daemon-scoped Router still applies its own allowlist as a
+	// second gate; this list exists so the WhatsApp UX never leaks
+	// the fact that the number is bot-monitored to strangers.
+	//
+	// Empty means "no restriction" (the transport reacts to everyone
+	// it hears from — sensible for unit tests, dangerous in prod).
+	Allowlist []string
 }
 
 // DefaultReplyHeader is the string prepended to every outbound reply

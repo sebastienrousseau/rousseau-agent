@@ -68,6 +68,13 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				// transport's live-update reporter → WhatsApp message
 				// edits with Claude-CLI-style detail.
 				Progress: wiring.Progress,
+				// Same allowlist the Router applies, handed to the
+				// transport so it can silently drop messages from
+				// non-allowlisted senders BEFORE any user-visible
+				// reaction. Without this, strangers who message the
+				// number receive 👀 + ✅ reactions revealing that a
+				// bot watches this line.
+				Allowlist: allowlist,
 			}, opts.Logger)
 			if err != nil {
 				return err

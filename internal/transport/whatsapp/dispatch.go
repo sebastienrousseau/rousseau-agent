@@ -54,6 +54,14 @@ type DispatchInput struct {
 	// runs. Always populated by Client; nil only in unit tests that
 	// exercise the plain reply path.
 	Progress *progress.Bus
+	// IsAllowed, when non-nil, is consulted BEFORE any user-visible
+	// action for an inbound message (emoji reactions, typing
+	// indicators, placeholder). A false verdict silently drops the
+	// message — the sender sees nothing, no signal that a bot is
+	// watching the number. Nil means "no pre-filter" — sensible for
+	// unit tests, dangerous in prod (privacy leak: the ✅ ack tells
+	// strangers the number is bot-monitored).
+	IsAllowed func(from string) bool
 }
 
 // Dispatch processes a single inbound whatsmeow message: resolves it
@@ -128,6 +136,17 @@ func resolveFrom(evt *events.Message, ownID *types.JID) types.JID {
 }
 
 func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log *slog.Logger) {
+	// Pre-reaction allowlist gate. Runs BEFORE the receipt emoji so a
+	// stranger who happens across the number sees nothing back — no
+	// signal that a bot is watching. Without this the ✅ (empty-reply
+	// path) and 👀 (immediate ack) both leaked to non-allowlisted
+	// senders because the daemon-side Router silently returns ("", nil)
+	// for rejected messages, which dispatch treated as an ordinary
+	// empty reply and acked with ✅.
+	if in.IsAllowed != nil && !in.IsAllowed(res.Msg.From) {
+		log.Info("whatsapp.dropped_pre_reaction", slog.String("from", res.Msg.From))
+		return
+	}
 	log.Info("whatsapp.incoming", slog.String("from", res.Msg.From))
 
 	// Immediate emoji-reaction ack: sub-second confirmation of receipt,
