@@ -102,7 +102,7 @@ func TestStartHeartbeat_SendsInitialPlaceholder(t *testing.T) {
 	hb := startHeartbeat(context.Background(), ed, testChat(t), "H: ", silentLogger())
 	require.NotNil(t, hb)
 	require.Len(t, ed.sendWithID, 1)
-	assert.Equal(t, "H: 🟡 working…", ed.sendWithID[0])
+	assert.Equal(t, "H: ✻ working on it", ed.sendWithID[0])
 	hb.abort(context.Background())
 }
 
@@ -139,7 +139,7 @@ func TestHeartbeat_AbortLeavesDoneMarker(t *testing.T) {
 	hb.abort(context.Background())
 	edits := ed.editSnapshot()
 	require.NotEmpty(t, edits)
-	assert.Equal(t, "✅ done", edits[len(edits)-1].Body, "abort must overwrite the placeholder with the done marker")
+	assert.Equal(t, "● done", edits[len(edits)-1].Body, "abort must overwrite the placeholder with the done marker")
 }
 
 func TestHeartbeat_AbortSwallowsEditError(t *testing.T) {
@@ -194,13 +194,13 @@ func TestHeartbeat_TickerEditsBeforeFinish(t *testing.T) {
 
 	edits := ed.editSnapshot()
 	require.NotEmpty(t, edits)
-	// One of the edits must be the ticker-generated "working…"
-	// counter with an elapsed time (empty Header defaults to
-	// DefaultReplyHeader, so match on the body substring instead of a
-	// prefix).
+	// One of the edits must be the ticker-generated spinner line
+	// (`✻ <elapsed> · working on it`) with an elapsed time. Empty
+	// Header defaults to DefaultReplyHeader, so match on body
+	// substrings rather than a prefix.
 	var sawTicker bool
 	for _, e := range edits[:len(edits)-1] {
-		if strings.Contains(e.Body, "🟡 working… ") {
+		if strings.Contains(e.Body, "✻ ") && strings.Contains(e.Body, "· working on it") {
 			sawTicker = true
 			break
 		}
@@ -268,9 +268,9 @@ func TestDispatch_HeartbeatUpgradedInPlaceToReply(t *testing.T) {
 
 	// Initial heartbeat placeholder sent. Header=" " (single space)
 	// is the "disable prefix" sentinel per PrependHeader's contract,
-	// so the placeholder body is the bare emoji + label.
+	// so the placeholder body is the bare glyph + label.
 	require.Len(t, send.sendWithID, 1)
-	assert.Equal(t, "🟡 working…", send.sendWithID[0])
+	assert.Equal(t, "✻ working on it", send.sendWithID[0])
 	// Reply landed as an edit, not a new send.
 	assert.Empty(t, send.sent, "reply must be delivered via edit, not SendText")
 	edits := send.editSnapshot()
@@ -299,13 +299,13 @@ func TestDispatch_HeartbeatAbortedOnHandlerError(t *testing.T) {
 	assert.Empty(t, send.sent, "handler error must not push a fresh reply")
 	edits := send.editSnapshot()
 	require.NotEmpty(t, edits)
-	assert.Equal(t, "✅ done", edits[len(edits)-1].Body)
+	assert.Equal(t, "● done", edits[len(edits)-1].Body)
 }
 
 // TestDispatch_HeartbeatAbortedOnEmptyReply — same shape, empty
-// (not errored) reply. Emoji reaction alone would leave the "🟡
-// working…" placeholder in the thread; abort() rewrites it to a
-// short "done" marker.
+// (not errored) reply. Emoji reaction alone would leave the
+// "✻ working on it" placeholder in the thread; abort() rewrites it
+// to a short "done" marker.
 func TestDispatch_HeartbeatAbortedOnEmptyReply(t *testing.T) {
 	own := jid("15551234567", 21)
 	sender := jid("15551234567", 0)
@@ -324,14 +324,14 @@ func TestDispatch_HeartbeatAbortedOnEmptyReply(t *testing.T) {
 	assert.Empty(t, send.sent)
 	edits := send.editSnapshot()
 	require.NotEmpty(t, edits)
-	assert.Equal(t, "✅ done", edits[len(edits)-1].Body)
+	assert.Equal(t, "● done", edits[len(edits)-1].Body)
 }
 
 // TestDispatch_HeartbeatFinishFailureFallsBackToSendText — when the
 // final edit call fails (typically because WhatsApp's 15-min edit
 // window closed on a very long turn), the reply is still delivered
 // via a fresh SendText. The user sees BOTH the placeholder (frozen
-// as "🟡 working…") AND the reply; a lingering placeholder is a
+// as "✻ working on it") AND the reply; a lingering placeholder is a
 // worse UX than a duplicated message.
 func TestDispatch_HeartbeatFinishFailureFallsBackToSendText(t *testing.T) {
 	own := jid("15551234567", 21)

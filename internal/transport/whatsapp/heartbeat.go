@@ -26,12 +26,19 @@ var heartbeatInterval = 15 * time.Second
 // heartbeatInitial is the body sent immediately after the emoji-ack
 // reaction. It sits in the thread until the turn finishes; the
 // ticker rewrites it with a live elapsed-time counter each interval.
-const heartbeatInitial = "🟡 working…"
+//
+// The glyph and phrasing mirror the tier-3 progress renderer's
+// empty-state line (`✻ <elapsed> · working on it`) so when the
+// progress feed's first bullet lands via EditText, the spinner line
+// simply changes its headline instead of jumping to a different
+// visual voice. Glyph audit: internal/progress/render.go GlyphWorking.
+const heartbeatInitial = "✻ working on it"
 
 // heartbeatFinal is the fallback body used when abort() runs — a
 // short, unambiguous marker so a stopped placeholder does not linger
-// as "working…".
-const heartbeatFinal = "✅ done"
+// as "working on it". Same bullet glyph as the tier-3 terminal line
+// (internal/progress/render.go GlyphBullet).
+const heartbeatFinal = "● done"
 
 // heartbeatEditTimeout bounds every edit call so a slow network
 // cannot wedge the ticker goroutine or the finish path.
@@ -103,7 +110,7 @@ func (h *heartbeat) run(header string) {
 			return
 		case now := <-t.C:
 			elapsed := now.Sub(h.start)
-			body := PrependHeader(fmt.Sprintf("🟡 working… %s", formatHeartbeatDuration(elapsed)), header)
+			body := PrependHeader(fmt.Sprintf("✻ %s · working on it", formatHeartbeatDuration(elapsed)), header)
 			ectx, cancel := context.WithTimeout(context.Background(), heartbeatEditTimeout)
 			if err := h.ed.EditText(ectx, h.chat, h.msgID, body); err != nil {
 				h.log.Debug("whatsapp.heartbeat_edit_failed", slog.String("err", err.Error()))
@@ -141,7 +148,7 @@ func (h *heartbeat) finish(ctx context.Context, finalText string) bool {
 // short "done" marker. Used when the handler returned an empty reply
 // or an error and there is no meaningful reply text to insert; the
 // emoji reaction on the user's message carries the outcome, and a
-// lingering "working…" placeholder would misinform.
+// lingering "working on it" placeholder would misinform.
 func (h *heartbeat) abort(ctx context.Context) {
 	if h == nil {
 		return
