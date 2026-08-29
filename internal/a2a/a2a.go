@@ -69,8 +69,11 @@ type Task struct {
 	// is set, this may be templated per the skill's parameter shape.
 	Prompt string `json:"prompt"`
 	// InputArtifacts are references to files/blobs the receiving
-	// agent will need. TODO: define fetch semantics — inline blob,
-	// signed URL, or A2A-native transport?
+	// agent will need. FUTURE: pick a fetch mechanism (inline blob,
+	// pre-signed URL, or A2A-native transport). The Artifact type is
+	// designed to carry any of the three; consumers currently pass
+	// pre-signed URLs by convention. Formal choice deferred until a
+	// second implementer starts using A2A and forces the discussion.
 	InputArtifacts []Artifact `json:"input_artifacts,omitempty"`
 }
 

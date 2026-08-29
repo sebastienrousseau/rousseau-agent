@@ -26,6 +26,12 @@ var (
 	buildDate = "unknown"
 )
 
+// Version returns the stamped build version. Callers that need to
+// thread the daemon's own version through to a subsystem (e.g. the
+// MCP client's ClientInfo.Version) should read it here rather than
+// hardcoding.
+func Version() string { return version }
+
 // Options bundles cross-command runtime state.
 type Options struct {
 	ConfigPath string

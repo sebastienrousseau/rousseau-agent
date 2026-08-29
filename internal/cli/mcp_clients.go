@@ -61,6 +61,7 @@ func startMCPClients(ctx context.Context, cfg config.MCPConfig, registry *tools.
 			StartTimeout:   time.Duration(spec.StartTimeoutSeconds) * time.Second,
 			RequestTimeout: time.Duration(spec.RequestTimeoutSeconds) * time.Second,
 			Logger:         logger,
+			ClientVersion:  version,
 		}
 
 		cl, err := mcpclient.New(ctx, clientCfg)

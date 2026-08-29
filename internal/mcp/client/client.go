@@ -51,6 +51,12 @@ type Config struct {
 	RequestTimeout time.Duration
 	// Logger is used for lifecycle + error logs. Nil uses slog.Default.
 	Logger *slog.Logger
+	// ClientVersion is the rousseau daemon's own build version, sent
+	// on the InitializeParams so MCP servers can distinguish clients
+	// (e.g. for compatibility warnings). Empty falls back to
+	// "unknown" — callers should thread the daemon's stamped version
+	// through so operator diagnostics on the server side are useful.
+	ClientVersion string
 }
 
 // Client is a running MCP server subprocess connection. All methods
@@ -58,6 +64,7 @@ type Config struct {
 // ID via an internal pending-response map.
 type Client struct {
 	name    string
+	version string // rousseau daemon version, sent on initialize.
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	logger  *slog.Logger
@@ -127,6 +134,10 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	stderrBuf := newBoundedBuffer(8 * 1024)
+	clientVersion := cfg.ClientVersion
+	if clientVersion == "" {
+		clientVersion = "unknown"
+	}
 	c := &Client{
 		name:      cfg.Name,
 		cmd:       cmd,
@@ -135,6 +146,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		timeout:   requestTimeout,
 		done:      make(chan struct{}),
 		stderrBuf: stderrBuf,
+		version:   clientVersion,
 	}
 
 	// Drain stderr into the bounded buffer so we can surface it in
@@ -229,7 +241,7 @@ func (c *Client) initialize(ctx context.Context) error {
 		ProtocolVersion: mcp.ProtocolVersion,
 	}
 	params.ClientInfo.Name = "rousseau-agent"
-	params.ClientInfo.Version = "0.0.1" // TODO: thread the daemon version through
+	params.ClientInfo.Version = c.version
 	var result mcp.InitializeResult
 	if err := c.request(ctx, mcp.MethodInitialize, params, &result); err != nil {
 		return err
