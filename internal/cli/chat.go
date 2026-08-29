@@ -51,10 +51,20 @@ func newChatCmd(opts *Options) *cobra.Command {
 			// spawn_subagent — see daemon.go for the policy rationale.
 			registry.MustRegister(builtin.NewSpawnSubagentTool(subagent.Policy{}))
 
-			approver, err := buildApprover(cfg.Agent.Approver)
+			// Interactive-approver default for `chat`: the user IS
+			// present, so per-tool prompts are the right UX. The
+			// remembered "always allow / deny" answers within a
+			// session make it non-annoying after the first prompt per
+			// tool. Config can still supply a PatternApprover — when
+			// present it wraps the interactive approver so
+			// pre-approved calls skip the prompt entirely.
+			interactive := tui.NewApprover()
+			configured, err := buildApprover(cfg.Agent.Approver)
 			if err != nil {
 				return err
 			}
+			approver := chainApprovers(configured, interactive)
+
 			compressor := buildCompressor(cfg.Agent.Compression, provider)
 			ag := agent.New(provider, registry, opts.Logger, agent.Options{
 				MaxIterations: cfg.Agent.MaxIterations,
@@ -70,6 +80,13 @@ func newChatCmd(opts *Options) *cobra.Command {
 
 			model := tui.New(ag, store, opts.Logger, session)
 			program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+			// Bind the approver to the program's Send after the
+			// program exists but before Run — Send is safe on any
+			// goroutine and messages are buffered until Run starts
+			// draining. Doing it here (not in NewApprover) avoids the
+			// chicken-and-egg between approver-goes-to-agent and
+			// program-needs-model.
+			interactive.Bind(program.Send)
 			_, err = program.Run()
 			return err
 		},
