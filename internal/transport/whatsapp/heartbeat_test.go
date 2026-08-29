@@ -391,6 +391,86 @@ func TestDispatch_HeartbeatFallsBackWhenSenderLacksEditor(t *testing.T) {
 	assert.Equal(t, "plain reply", send.sent[0])
 }
 
+// TestDispatch_PreReactionAllowlistDropsWithNoSideEffects verifies
+// the load-bearing privacy gate: a message from a JID NOT on the
+// allowlist must produce NO emoji reactions, NO placeholder, NO
+// typing indicator, NO reply — the sender sees absolutely nothing.
+// Before this gate landed, non-allowlisted senders got 👀 (immediate
+// ack) plus ✅ (empty-reply ack) because the Router silently returns
+// ("", nil) for rejected messages and dispatch treated that as an
+// ordinary empty reply.
+func TestDispatch_PreReactionAllowlistDropsWithNoSideEffects(t *testing.T) {
+	own := jid("15551234567", 21)
+	stranger := jid("14155550001", 0)
+	evt := msgEvent(stranger, stranger.ToNonAD(), false, false, "hey")
+	evt.Info.ID = "wamid.STRANGER"
+
+	send := &reactingSender{}
+	// Handler MUST NOT be called for a pre-filtered stranger.
+	panicOnCall := handlerReturning("", nil) // if reached, sent stays empty; we assert Empty below
+
+	Dispatch(context.Background(), DispatchInput{
+		Event:     evt,
+		OwnID:     &own,
+		Sender:    send,
+		Handler:   panicOnCall,
+		Header:    " ",
+		Logger:    silentLogger(),
+		IsAllowed: func(_ string) bool { return false }, // stranger denied
+	})
+
+	assert.Empty(t, send.sent, "no reply text — dispatch dropped pre-Handler")
+	assert.Empty(t, send.snapshot(), "no emoji reactions — bot presence must not leak to strangers")
+}
+
+// TestDispatch_PreReactionAllowlistAllowsListedSender — an allowlisted
+// sender still gets the full flow (reactions + reply).
+func TestDispatch_PreReactionAllowlistAllowsListedSender(t *testing.T) {
+	own := jid("15551234567", 21)
+	friend := jid("15551234567", 0)
+	evt := msgEvent(friend, friend.ToNonAD(), false, false, "hi")
+	evt.Info.ID = "wamid.FRIEND"
+
+	send := &reactingSender{}
+	Dispatch(context.Background(), DispatchInput{
+		Event:     evt,
+		OwnID:     &own,
+		Sender:    send,
+		Handler:   handlerReturning("hey back", nil),
+		Header:    " ",
+		Logger:    silentLogger(),
+		IsAllowed: func(_ string) bool { return true }, // friend allowed
+	})
+
+	require.Len(t, send.sent, 1, "reply lands as its own message")
+	assert.Equal(t, "hey back", send.sent[0])
+	assert.NotEmpty(t, send.snapshot(), "at least the 👀 receipt reaction fires")
+}
+
+// TestDispatch_NilIsAllowedIsUnrestricted — when IsAllowed is nil
+// (unit tests, embedded use), dispatch runs the full flow for any
+// sender. Only prod wiring supplies IsAllowed.
+func TestDispatch_NilIsAllowedIsUnrestricted(t *testing.T) {
+	own := jid("15551234567", 21)
+	anyone := jid("15551234567", 0)
+	evt := msgEvent(anyone, anyone.ToNonAD(), false, false, "hi")
+	evt.Info.ID = "wamid.ANY"
+
+	send := &reactingSender{}
+	Dispatch(context.Background(), DispatchInput{
+		Event:   evt,
+		OwnID:   &own,
+		Sender:  send,
+		Handler: handlerReturning("ok", nil),
+		Header:  " ",
+		Logger:  silentLogger(),
+		// IsAllowed: nil — no pre-filter
+	})
+
+	require.Len(t, send.sent, 1)
+	assert.NotEmpty(t, send.snapshot())
+}
+
 // TestDispatch_HeartbeatSkippedWhenProgressBusWired — when a tier-3
 // progress bus is supplied on DispatchInput, the tier-1 heartbeat is
 // suppressed so the two systems never send duelling placeholders.
