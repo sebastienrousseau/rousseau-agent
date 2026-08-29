@@ -54,6 +54,14 @@ type Model struct {
 	// turn. Rendered under the persisted history and cleared when the
 	// turn completes.
 	streamBuf strings.Builder
+
+	// pending holds the current tool-approval prompt when one is
+	// waiting for the user. Non-nil disables the message textarea's
+	// enter/type keys and routes y/n/a/d directly to the approver.
+	pending *approvalRequestedMsg
+	// stickyNote is a short toast-style line shown once when a
+	// remembered "always allow / deny" decision auto-answers a call.
+	stickyNote string
 }
 
 // New constructs a Model bound to a Session.
@@ -105,6 +113,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// Approval prompt intercepts single-key answers (y / n / a / d)
+		// so the user does not have to type into the textarea to
+		// respond. Ctrl+C still quits (fires a deny + exits).
+		if m.pending != nil {
+			switch msg.String() {
+			case "ctrl+c":
+				m.pending.respond <- approvalResponse{decision: agent.DecisionDeny, reason: "user quit during approval"}
+				m.pending = nil
+				return m, tea.Quit
+			case "y":
+				m.pending.respond <- approvalResponse{decision: agent.DecisionAllow}
+				m.pending, m.stickyNote = nil, ""
+				return m, nil
+			case "n":
+				m.pending.respond <- approvalResponse{decision: agent.DecisionDeny, reason: "denied by user"}
+				m.pending, m.stickyNote = nil, ""
+				return m, nil
+			case "a":
+				m.pending.respond <- approvalResponse{decision: agent.DecisionAllow, remember: true}
+				m.stickyNote = "always allowing `" + m.pending.req.ToolName + "` for this session"
+				m.pending = nil
+				return m, nil
+			case "d":
+				m.pending.respond <- approvalResponse{decision: agent.DecisionDeny, reason: "denied by session policy", remember: true}
+				m.stickyNote = "always denying `" + m.pending.req.ToolName + "` for this session"
+				m.pending = nil
+				return m, nil
+			}
+			// Any other key while pending: swallow. No typing into the
+			// textarea, no viewport scroll — the prompt is modal.
+			return m, nil
+		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			return m, tea.Quit
@@ -156,6 +196,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case approvalRequestedMsg:
+		// New prompt from the Approver. Store it; the render loop and
+		// keyboard handler take it from here.
+		m.pending = &msg
+		return m, nil
+
+	case approvalStickyMsg:
+		// The Approver auto-decided a tool call from a remembered
+		// policy. Show a one-line note so the user is not surprised
+		// that a bash call went through with no prompt.
+		verb := "auto-allowed"
+		if msg.decision == agent.DecisionDeny {
+			verb = "auto-denied"
+		}
+		m.stickyNote = verb + " `" + msg.tool + "` (session policy)"
+		return m, nil
 	}
 
 	var vpCmd, taCmd tea.Cmd
@@ -168,10 +225,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	header := styleHeader.Render(fmt.Sprintf(" rousseau · %s ", truncate(m.session.Title, 60)))
 	status := ""
-	if m.busy {
+	switch {
+	case m.pending != nil:
+		status = m.renderApproval()
+	case m.busy:
 		status = " " + m.spinner.View() + " thinking…"
-	} else if m.err != nil {
+	case m.err != nil:
 		status = styleError.Render(" ! " + m.err.Error())
+	case m.stickyNote != "":
+		status = styleSticky.Render(" · " + m.stickyNote)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
@@ -179,6 +241,15 @@ func (m Model) View() string {
 		m.textarea.View(),
 		status,
 	)
+}
+
+// renderApproval draws the modal-ish prompt beneath the textarea.
+// Kept compact — one label line + one hotkey hint line — because a
+// bigger block would cover the streaming reply and history.
+func (m Model) renderApproval() string {
+	label := "❓ approve `" + m.pending.summary + "` ?"
+	hint := "  [y]es · [n]o · [a]lways allow · [d]eny always"
+	return styleApproval.Render(label) + "\n" + styleApprovalHint.Render(hint)
 }
 
 // doTurn returns the tea.Cmd(s) that advance a user turn. When the
@@ -250,11 +321,14 @@ func streamPreview(text string) string {
 }
 
 var (
-	styleHeader = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F5A623")).Padding(0, 1)
-	styleUser   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8"))
-	styleAgent  = lipgloss.NewStyle().Foreground(lipgloss.Color("#C5E1A5"))
-	styleTool   = lipgloss.NewStyle().Foreground(lipgloss.Color("#B39DDB")).Italic(true)
-	styleError  = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF9A9A")).Bold(true)
+	styleHeader       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#F5A623")).Padding(0, 1)
+	styleUser         = lipgloss.NewStyle().Foreground(lipgloss.Color("#8AB4F8"))
+	styleAgent        = lipgloss.NewStyle().Foreground(lipgloss.Color("#C5E1A5"))
+	styleTool         = lipgloss.NewStyle().Foreground(lipgloss.Color("#B39DDB")).Italic(true)
+	styleError        = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF9A9A")).Bold(true)
+	styleApproval     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD54F")).Bold(true)
+	styleApprovalHint = lipgloss.NewStyle().Foreground(lipgloss.Color("#B0BEC5"))
+	styleSticky       = lipgloss.NewStyle().Foreground(lipgloss.Color("#90A4AE")).Italic(true)
 )
 
 func renderHistory(s *agent.Session, width int) string {

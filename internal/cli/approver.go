@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -45,4 +46,40 @@ func toRules(in []config.PatternEntry) []agent.PatternRule {
 		out = append(out, agent.PatternRule{ToolName: e.Tool, Match: e.Match})
 	}
 	return out
+}
+
+// chainApprovers runs first, and only consults second when first
+// returns DecisionAllow. This lets the CLI wrap the config-driven
+// PatternApprover (or AllowAll / DenyAll) around the interactive
+// TUI approver so:
+//
+//   - a Deny from first (e.g. blanket-deny `bash`) short-circuits
+//     the interactive prompt entirely — the user never sees a
+//     question they can only answer one way.
+//   - an Allow from first still prompts the user (interactive
+//     approver runs second) so the operator retains veto over
+//     specific inputs even for tools that policy pre-approves in
+//     principle. To auto-approve without prompting, users answer
+//     [a] on the first interactive prompt for that tool.
+//
+// When first is AllowAll (the config default), the behaviour reduces
+// to "always prompt via second" — matching the CLI's stated intent
+// that the interactive user is the authority in a TUI session.
+func chainApprovers(first, second agent.Approver) agent.Approver {
+	if first == nil {
+		return second
+	}
+	if second == nil {
+		return first
+	}
+	if _, ok := first.(agent.AllowAllApprover); ok {
+		// Fast path: no policy → just the interactive approver.
+		return second
+	}
+	return agent.ApproverFunc(func(ctx context.Context, req agent.ApprovalRequest) (agent.Decision, string) {
+		if d, reason := first.Approve(ctx, req); d == agent.DecisionDeny {
+			return d, reason
+		}
+		return second.Approve(ctx, req)
+	})
 }
