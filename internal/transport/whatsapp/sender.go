@@ -122,16 +122,16 @@ type wmDownloader struct{ wm *whatsmeow.Client }
 
 func newWMDownloader(wm *whatsmeow.Client) *wmDownloader { return &wmDownloader{wm: wm} }
 
-// Download satisfies Downloader.
-func (d *wmDownloader) Download(ctx context.Context, msg DownloadableAudio) ([]byte, string, error) {
-	// The whatsmeow Download method accepts anything satisfying
-	// its whatsmeow.DownloadableMessage interface. *waProto.AudioMessage
-	// satisfies both DownloadableAudio (ours) and whatsmeow's.
-	audio, ok := msg.(whatsmeow.DownloadableMessage)
+// Download satisfies Downloader. Accepts any Downloadable so audio
+// (*waProto.AudioMessage) and image (*waProto.ImageMessage) both flow
+// through the same call — whatsmeow itself keys off the concrete
+// proto type internally.
+func (d *wmDownloader) Download(ctx context.Context, msg Downloadable) ([]byte, string, error) {
+	dm, ok := msg.(whatsmeow.DownloadableMessage)
 	if !ok {
 		return nil, "", fmt.Errorf("whatsapp: message is not whatsmeow.DownloadableMessage")
 	}
-	b, err := d.wm.Download(ctx, audio)
+	b, err := d.wm.Download(ctx, dm)
 	if err != nil {
 		return nil, msg.GetMimetype(), err
 	}

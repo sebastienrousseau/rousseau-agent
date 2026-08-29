@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
@@ -129,7 +130,9 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		return "", fmt.Errorf("router: session: %w", err)
 	}
 
-	sess.Append(agent.NewUserText(msg.Body))
+	if userMsg, ok := buildUserMessage(msg, r.transport); ok {
+		sess.Append(userMsg)
+	}
 	final, err := r.runTurn(ctx, sess)
 	if err != nil {
 		return "", fmt.Errorf("router: turn: %w", err)
@@ -304,4 +307,39 @@ func (r *Router) runTurn(ctx context.Context, sess *agent.Session) (agent.Messag
 	final, err := streamer.TurnStream(ctx, sess, events)
 	<-drained
 	return final, err
+}
+
+// buildUserMessage folds the inbound text plus every downloaded
+// attachment into a single user Message. Returns ok=false when the
+// message has neither text nor attachments — the caller should skip
+// the Append+Turn round-trip because there is nothing to say. The
+// transport tag records the source (whatsapp / signal / …) on each
+// image so downstream audit trails and per-provider adapters know
+// where the bytes came from.
+func buildUserMessage(msg IncomingMessage, transport string) (agent.Message, bool) {
+	contents := make([]agent.Content, 0, 1+len(msg.Attachments))
+	if msg.Body != "" {
+		contents = append(contents, agent.Content{Kind: agent.ContentText, Text: msg.Body})
+	}
+	for _, att := range msg.Attachments {
+		if len(att.Data) == 0 {
+			continue
+		}
+		contents = append(contents, agent.Content{
+			Kind: agent.ContentImage,
+			Image: &agent.Image{
+				MediaType: att.MediaType,
+				Data:      att.Data,
+				Source:    transport,
+			},
+		})
+	}
+	if len(contents) == 0 {
+		return agent.Message{}, false
+	}
+	return agent.Message{
+		Role:      agent.RoleUser,
+		Content:   contents,
+		CreatedAt: time.Now().UTC(),
+	}, true
 }
