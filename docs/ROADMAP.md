@@ -120,47 +120,46 @@ Landed since the campaign closed:
 - **Container OAuth token wiring** — `EnvironmentFile=%h/.config/rousseau/agent.env` on the Quadlet drop-in surfaces `GITHUB_TOKEN` inside the container so its `gh` and `git` operations authenticate as the operator.
 - **Router streaming double-close fix** — `TurnStream` owns the events channel close (Go sender convention); Router.runTurn no longer double-closes. Fixed a per-turn panic that was silently swallowed by the resilience wrapper.
 - **`rousseau-agent-claude-creds.path` narrowing** — watches only `.credentials.json`, not `~/.claude.json`. The latter is rewritten by every host-side Claude Code action and was killing in-flight WhatsApp turns every few seconds.
+- **Interactive TUI approver** (`internal/tui/approver.go`) — `rousseau chat` prompts the user per tool call with `y / n / a / d` (allow / deny / always-allow / always-deny). Session-scoped memory means the second `bash` call after `[a]` runs without a prompt (with a small toast note). Chains under any config-driven `PatternApprover` (deny short-circuits; allow falls through to interactive). Daemon transports unchanged.
+- **MCP client daemon version thread-through** — `mcpclient.Config.ClientVersion` populated from `cli.Version()`; MCP servers log the real rousseau version instead of hardcoded `"0.0.1"`.
+- **Code hygiene: TODO → FUTURE for deferrals** — three multi-week deferrals in sandbox + A2A relabelled with named blockers; `grep -rn 'TODO' internal/ pkg/` now returns zero hits in production code.
+- **Tag `v0.0.2`** cut against this state (per convention: only ever +0.0.1 increments).
 
 ---
 
 ## 2. What is next
 
-The Q3 + Q4 quarterly plan and the 5-week competitor-gap campaign have both shipped in full. The list below is what remains on the wishlist — all small, all optional, none blocking anything.
+The Q3 + Q4 quarterly plan and the 5-week competitor-gap campaign both shipped in full; §1.12 above covers post-campaign polish through v0.0.2. What remains is genuinely optional — all small, all deferred behind an explicit blocker.
 
-### 2.1 Interactive approver (TUI)
-
-Deferred from §1.10 approval gate. `PatternApprover` covers the daemon case, but the TUI has no way to prompt the operator for a one-off `allow`/`deny` on a specific tool call. The UX challenge is doing it without breaking streaming (which paints below the approval prompt).
-
-**Estimate:** 1–2 days once the UX is designed.
-
-### 2.2 Google Vertex + AWS Bedrock providers
+### 2.1 Google Vertex + AWS Bedrock providers
 
 Deferred from §1.10 multi-provider registry. Both use SigV4 / OAuth flows the OpenAI-compatible shape does not cover. Add when there's a concrete user request; low priority because OpenRouter already serves Anthropic/OpenAI/Gemini/Bedrock-Claude behind an OpenAI-compatible façade.
 
 **Estimate:** 2 days each provider (Vertex ≈ 2, Bedrock ≈ 2).
 
-### 2.3 libsignal-net Go bindings
+### 2.2 libsignal-net Go bindings
 
 Deferred from §1.10 Signal transport. Current implementation shells out to `signal-cli`; a direct binding removes the JVM + JSON-RPC hop. Waiting on upstream libsignal-net Go stability.
 
 **Estimate:** 3–5 days once bindings are stable; skip until then.
 
-### 2.4 Skill marketplace + agent-authored skills
+### 2.3 Skill marketplace + agent-authored skills
 
 Deferred from `docs/IMPLEMENTATION_PLAN_2026_07_16.md §12`. Requires (a) a signed manifest format for community skills, (b) a `~/.local/share/rousseau/skills/community/` sandbox with review-on-first-run semantics, (c) an agent-side pattern for writing a new skill from a repeated interaction. All three are separate design problems.
 
 **Estimate:** ~1 week end-to-end; deferred until there's a genuine user pull.
 
-### 2.5 Code TODOs
+### 2.4 Sandbox hardening (gvisor / nsjail argv sets)
 
-Four `TODO` markers remain in production Go code — all cosmetic or hardening notes:
+`FUTURE(sandbox.gvisor)` and `FUTURE(sandbox.nsjail)` markers in `internal/tools/sandbox/{gvisor,nsjail}.go` name the deferred argv shape (`--network=none`, `--root`, `--rootless` for gvisor; `--mode o`, resource limits, bindmount template for nsjail). Blocked on (a) standardising the shape across both backends and (b) landing a per-invocation tmpdir template shared by both.
 
-- `internal/mcp/client/client.go:232` — hardcoded `"0.0.1"` on `ClientInfo.Version`; thread the daemon build version through.
-- `internal/tools/sandbox/gvisor.go:41` — `--network=none` as a hardening default.
-- `internal/tools/sandbox/nsjail.go:35` — `--mode o` + user-namespace hardening.
-- `internal/a2a/a2a.go:72` — define fetch semantics for A2A blobs (inline vs. by-reference).
+**Estimate:** 2–3 days end-to-end once the argv shape is decided.
 
-Each is ≤1 hour once picked up.
+### 2.5 A2A blob fetch semantics
+
+`FUTURE` marker in `internal/a2a/a2a.go`. `Task.InputArtifacts` is defined to carry references; the choice between inline blob, pre-signed URL, or A2A-native transport is deferred until a second A2A implementer forces the discussion. Current consumers pass pre-signed URLs by convention.
+
+**Estimate:** 1–2 days plus interop testing.
 
 ---
 
