@@ -69,11 +69,13 @@ type Task struct {
 	// is set, this may be templated per the skill's parameter shape.
 	Prompt string `json:"prompt"`
 	// InputArtifacts are references to files/blobs the receiving
-	// agent will need. FUTURE: pick a fetch mechanism (inline blob,
-	// pre-signed URL, or A2A-native transport). The Artifact type is
-	// designed to carry any of the three; consumers currently pass
-	// pre-signed URLs by convention. Formal choice deferred until a
-	// second implementer starts using A2A and forces the discussion.
+	// agent will need. Fetched via [Fetcher] (see fetch.go).
+	// Three canonical URI schemes are supported:
+	//   * data:...        inline base64/percent-encoded blob (< ~1 MiB)
+	//   * http(s)://...   pre-signed URL fetched with cross-origin
+	//                     redirect refusal + a bounded size cap
+	//   * artifact://...  A2A-native reference resolved via the
+	//                     caller-supplied Resolver
 	InputArtifacts []Artifact `json:"input_artifacts,omitempty"`
 }
 
