@@ -32,9 +32,12 @@ func (n *NSJail) Run(ctx context.Context, cmd Command) (Result, error) {
 	if _, err := exec.LookPath(bin); err != nil {
 		return Result{}, ErrUnavailable
 	}
-	// TODO(sandbox.nsjail): pass --mode o (once), --disable_clone_newuser=false,
-	// --time_limit, --rlimit_as, --rlimit_cpu, --bindmount from a
-	// tmpdir template. Full argv landing in a follow-up ticket.
+	// FUTURE(sandbox.nsjail): pass --mode o (once),
+	// --disable_clone_newuser=false, --time_limit, --rlimit_as,
+	// --rlimit_cpu, --bindmount from a tmpdir template. Deferred
+	// until nsjail is pinned against a specific release and the
+	// per-invocation tmpdir template lands (shared with the gvisor
+	// backend).
 	wrapped := Command{
 		Path:  bin,
 		Args:  append([]string{"--quiet", "--", cmd.Path}, cmd.Args...),

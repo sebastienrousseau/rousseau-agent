@@ -38,10 +38,11 @@ func (g *GVisor) Run(ctx context.Context, cmd Command) (Result, error) {
 	}
 	// Rewrap: runsc do <args...> <cmd> <cmd-args...>
 	//
-	// TODO(sandbox.gvisor): --network=none for by-default no-egress,
+	// FUTURE(sandbox.gvisor): --network=none for by-default no-egress,
 	// --root=<per-invocation-tmpdir> for isolated state, --rootless
-	// for user-namespace mode. See docs/security/sandbox.md for the
-	// full argument set we plan to standardise on.
+	// for user-namespace mode. Deferred until we standardise on a
+	// single argv set across gvisor/nsjail and land per-invocation
+	// tmpdir plumbing. See docs/security/sandbox.md when written.
 	wrapped := Command{
 		Path:  bin,
 		Args:  append([]string{"do"}, append([]string{cmd.Path}, cmd.Args...)...),
