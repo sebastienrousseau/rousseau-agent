@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/sebastienrousseau/rousseau-agent/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sebastienrousseau/rousseau-agent/ci.yml?branch=main&style=for-the-badge&logo=github&label=CI" alt="CI" /></a>
   <a href="https://github.com/sebastienrousseau/rousseau-agent/actions/workflows/slsa.yml"><img src="https://img.shields.io/badge/SLSA-Level%203-blueviolet?style=for-the-badge" alt="SLSA Level 3" /></a>
-  <a href="#development"><img src="https://img.shields.io/badge/coverage-98.81%25-66c2a5?style=for-the-badge&labelColor=555555" alt="Coverage 98.81%" /></a>
+  <a href="#development"><img src="https://img.shields.io/badge/coverage-98.1%25-66c2a5?style=for-the-badge&labelColor=555555" alt="Coverage 98.1%" /></a>
   <a href="https://pkg.go.dev/github.com/sebastienrousseau/rousseau-agent"><img src="https://img.shields.io/badge/pkg.go.dev-reference-informational?style=for-the-badge&logo=go" alt="Go reference" /></a>
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26" />
   <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue?style=for-the-badge" alt="Apache-2.0 OR MIT" /></a>
@@ -32,7 +32,7 @@
 
 - [Transports](#transports) — nine chat surfaces behind one interface
 - [LLM providers](#llm-providers) — six backends, one `Provider` contract
-- [Tools and integrations](#tools-and-integrations) — five built-ins, 26 native integration tools, Composio
+- [Tools and integrations](#tools-and-integrations) — six built-ins, 26 native integration tools, Composio
 - [MCP](#mcp) — server and client, spec revision 2024-11-05
 - [Skills](#skills) — Markdown skills, optional SSH signature enforcement
 - [Recall, scheduling, and sub-agents](#recall-scheduling-and-sub-agents) — memory, cron, fan-out
@@ -201,7 +201,7 @@ The full command tree:
 | **Agent loop** | Multi-turn planner with structured tool use, streaming responses, per-session context, LLM-backed session compression, plan mode with checkpoints (`internal/agent/plan`), lifecycle hooks (`internal/agent/hooks`). |
 | **Sub-agent fan-out** | `subagent.Spawn(ctx, parent, provider, tasks, policy)` runs N detached-copy tasks with bounded concurrency, per-task timeout, and an aggregate token budget. Two aggregators ship (human-readable and JSON). Also exposed to the model as the `spawn_subagent` tool. |
 | **Memory and recall** | FTS5 keyword search across every stored session, plus hybrid vector recall (`internal/recall`) — SQLite blob store, cosine similarity, weighted blend against the keyword score. Letta-style self-editing memory in `internal/memory/letta`. |
-| **Tool registry** | Concurrency-safe registry. Five built-ins (`read`, `write`, `edit`, `grep`, `bash`) plus `spawn_subagent`, 26 native integration tools, tools imported from external MCP servers, and the opt-in Composio adapter. |
+| **Tool registry** | Concurrency-safe registry. Six built-ins (`read`, `write`, `edit`, `grep`, `bash`, `spawn_subagent`), 26 native integration tools, tools imported from external MCP servers, and the opt-in Composio adapter. |
 | **Approval policy** | `allow_all`, `deny_all`, or `pattern` mode with per-tool allow and deny regular expressions over a configurable default verdict. |
 | **Bash sandbox** | Four backends selected by `tools.bash.sandbox`: `none`, `nsjail`, `gvisor`, `firecracker` (`internal/tools/sandbox`). |
 | **OAuth broker and vault** | `internal/auth/oauth` — provider-agnostic broker with an XChaCha20-Poly1305 vault. Master key from `$ROUSSEAU_TOKEN_KEY`, the OS keyring, or a mode-0600 file. Key rotation preserves plaintext. |

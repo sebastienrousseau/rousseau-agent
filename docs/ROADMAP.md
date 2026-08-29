@@ -26,7 +26,7 @@ Sections:
 ### 1.2 Tools
 
 - Registry with sorted `Names`, `Definitions`, safe concurrent registration.
-- Five built-in tools: `read`, `write`, `edit`, `grep`, `bash`. All with strict JSON-schema inputs. `edit` refuses non-unique `old_string`; `grep` skips `.git`/`node_modules`/`vendor`/binary files and caps result count with an explicit truncation notice.
+- Six built-in tools: `read`, `write`, `edit`, `grep`, `bash`, `spawn_subagent`. All with strict JSON-schema inputs. `edit` refuses non-unique `old_string`; `grep` skips `.git`/`node_modules`/`vendor`/binary files and caps result count with an explicit truncation notice; `spawn_subagent` is exposed via the sub-agent fan-out shipped with §1.11 (see below).
 
 ### 1.3 Storage
 
@@ -122,7 +122,9 @@ Landed since the campaign closed:
 - **`rousseau-agent-claude-creds.path` narrowing** — watches only `.credentials.json`, not `~/.claude.json`. The latter is rewritten by every host-side Claude Code action and was killing in-flight WhatsApp turns every few seconds.
 - **Interactive TUI approver** (`internal/tui/approver.go`) — `rousseau chat` prompts the user per tool call with `y / n / a / d` (allow / deny / always-allow / always-deny). Session-scoped memory means the second `bash` call after `[a]` runs without a prompt (with a small toast note). Chains under any config-driven `PatternApprover` (deny short-circuits; allow falls through to interactive). Daemon transports unchanged.
 - **MCP client daemon version thread-through** — `mcpclient.Config.ClientVersion` populated from `cli.Version()`; MCP servers log the real rousseau version instead of hardcoded `"0.0.1"`.
-- **Code hygiene: TODO → FUTURE for deferrals** — three multi-week deferrals in sandbox + A2A relabelled with named blockers; `grep -rn 'TODO' internal/ pkg/` now returns zero hits in production code.
+- **Code hygiene: TODO → FUTURE for deferrals** — subsequently closed: sandbox and A2A design decisions landed as §1.12 items below. `grep -rn 'TODO' internal/ pkg/` returns zero hits in production code.
+- **Sandbox argv policy** (`internal/tools/sandbox/{gvisor,nsjail}.go` + `Policy` struct in `sandbox.go`) — closes the deferred gvisor/nsjail argv shape. Both backends translate a `Policy` (NoNetwork, TmpdirRoot, Wallclock, CPUSeconds, MemoryBytes, Readonly, Writable) into their native flag surface. `DefaultPolicy()` ships the safe disposition (deny egress). Per-invocation tmpdir helper shared across backends. 95.7 % coverage on the sandbox package.
+- **A2A artifact `Fetcher`** (`internal/a2a/fetch.go`) — closes the deferred `Task.InputArtifacts` fetch semantics. Three canonical URI schemes handled: `data:` (RFC 2397 parser), `http(s)://` (bounded GET with cross-origin redirect refusal), and `artifact://` (dispatched to caller-supplied `Resolver`). Per-artifact size cap (default 32 MiB) enforced on every branch.
 - **Tag `v0.0.2`** cut against this state (per convention: only ever +0.0.1 increments).
 
 ---
@@ -149,17 +151,11 @@ Deferred from `docs/IMPLEMENTATION_PLAN_2026_07_16.md §12`. Requires (a) a sign
 
 **Estimate:** ~1 week end-to-end; deferred until there's a genuine user pull.
 
-### 2.4 Sandbox hardening (gvisor / nsjail argv sets)
+### 2.4 Wiring the sandbox into `bash`
 
-`FUTURE(sandbox.gvisor)` and `FUTURE(sandbox.nsjail)` markers in `internal/tools/sandbox/{gvisor,nsjail}.go` name the deferred argv shape (`--network=none`, `--root`, `--rootless` for gvisor; `--mode o`, resource limits, bindmount template for nsjail). Blocked on (a) standardising the shape across both backends and (b) landing a per-invocation tmpdir template shared by both.
+`internal/tools/builtin/bash.go` still does a direct `exec.CommandContext`; the sandbox package (§1.12) exists but no built-in tool consults it yet. Turning sandboxing on is a design decision, not a bug — it changes the default trust model for the bash tool. Blockers: (a) opt-in config surface (`tools.bash.sandbox: {kind, no_network, ...}`), (b) deprecation window for operators running today's un-sandboxed bash, (c) per-tool sandbox kind (a lightweight read/write/edit should not pay gvisor's syscall overhead).
 
-**Estimate:** 2–3 days end-to-end once the argv shape is decided.
-
-### 2.5 A2A blob fetch semantics
-
-`FUTURE` marker in `internal/a2a/a2a.go`. `Task.InputArtifacts` is defined to carry references; the choice between inline blob, pre-signed URL, or A2A-native transport is deferred until a second A2A implementer forces the discussion. Current consumers pass pre-signed URLs by convention.
-
-**Estimate:** 1–2 days plus interop testing.
+**Estimate:** 2–3 days end-to-end.
 
 ---
 
