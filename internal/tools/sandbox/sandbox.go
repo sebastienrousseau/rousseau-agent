@@ -38,7 +38,69 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"time"
 )
+
+// Policy is the operator-supplied guardrail set that shapes each
+// backend's argv. Zero-value Policy is safe: NoNetwork defaults on
+// (deny egress), other knobs default to backend-native "no limit"
+// so an empty policy on gvisor is the pre-policy behaviour minus
+// network — matching the "protect against accidental exfiltration"
+// baseline in docs/security/sandbox.md.
+//
+// Backends translate Policy fields into their own flag surface:
+//
+//   - gvisor  → --network=none, --rootless, --root=<per-invocation-tmpdir>
+//   - nsjail  → --mode o (once), --disable_clone_newuser=false,
+//     --time_limit, --rlimit_as, --rlimit_cpu,
+//     --bindmount / --bindmount_ro
+//   - none    → policy is advisory; None does not enforce anything.
+//     Included in the interface so callers do not need to
+//     branch on backend kind when supplying a policy.
+type Policy struct {
+	// NoNetwork blocks all outbound traffic from the sandboxed
+	// process. Enforced by the backend's native network isolation
+	// (gvisor --network=none; nsjail creates a fresh netns).
+	// Defaults on. Set false only when the sandboxed command needs
+	// network by design (e.g. a HTTP-driven tool the operator has
+	// explicitly whitelisted).
+	NoNetwork bool
+	// TmpdirRoot is the parent directory under which each invocation
+	// gets a fresh sub-directory. Empty uses os.TempDir(). The
+	// sub-directory is created before Run and removed after, so a
+	// crashing subprocess cannot leak state across invocations.
+	TmpdirRoot string
+	// Wallclock caps the subprocess elapsed time. Zero uses the
+	// context's deadline (the exec.CommandContext already enforces
+	// that). Nonzero is passed through to the backend as its own
+	// timeout for defence in depth against a runaway that ignores
+	// SIGTERM.
+	Wallclock time.Duration
+	// CPUSeconds caps consumed CPU time. Backends that support it
+	// (nsjail --rlimit_cpu) translate directly. Zero disables.
+	CPUSeconds int
+	// MemoryBytes caps address-space size. Backends translate to
+	// --rlimit_as (nsjail) or --memory (gvisor via runsc-config).
+	// Zero disables.
+	MemoryBytes int64
+	// Readonly is a list of host paths bind-mounted RO into the
+	// sandbox at the same path. Backends that don't isolate the
+	// filesystem (None) ignore this. Empty falls back to the
+	// backend's default read-only set (typically /usr, /lib, /bin).
+	Readonly []string
+	// Writable is a list of host paths bind-mounted RW into the
+	// sandbox at the same path. The per-invocation tmpdir is always
+	// writable (added by the backend); Writable adds to that.
+	Writable []string
+}
+
+// DefaultPolicy returns the shipped "safe-by-default" policy: no
+// network, no limits beyond the caller's ctx deadline, no extra
+// bindmounts. Suitable for `bash`-tool-style commands that read and
+// write within the workspace.
+func DefaultPolicy() Policy {
+	return Policy{NoNetwork: true}
+}
 
 // Backend is the sandboxing strategy for a single subprocess
 // invocation.
@@ -93,14 +155,34 @@ var ErrUnavailable = errors.New("sandbox: backend runtime is not installed")
 // [None]. Unknown kinds return an error. Backends that require an
 // external binary fail at first Run, not at New, so daemons can be
 // configured to prefer a backend without every host having it.
+//
+// Kept for callers that don't need the policy surface. New callers
+// should prefer [NewWithPolicy] so operator-configured guardrails
+// (network isolation, tmpdir root, resource limits) can be threaded
+// through to the backend.
+//
+// The resulting backend is initialised with [DefaultPolicy] — a
+// safe disposition (NoNetwork on, no extra bindmounts, no limits
+// beyond the caller's context deadline). Callers who want an
+// escape hatch (e.g. tools that legitimately need network) MUST
+// use [NewWithPolicy] with an explicit Policy so a code review can
+// spot the deviation.
 func New(kind string) (Backend, error) {
+	return NewWithPolicy(kind, DefaultPolicy())
+}
+
+// NewWithPolicy returns the backend named kind, configured with the
+// given policy. Empty kind resolves to [None]; unknown kinds return
+// an error. See [Policy] for what each field means and which
+// backend honours it.
+func NewWithPolicy(kind string, pol Policy) (Backend, error) {
 	switch kind {
 	case "", "none":
 		return &None{}, nil
 	case "gvisor":
-		return newGVisor(), nil
+		return &GVisor{Policy: pol}, nil
 	case "nsjail":
-		return newNSJail(), nil
+		return &NSJail{Policy: pol}, nil
 	case "firecracker":
 		return newFirecracker(), nil
 	default:
