@@ -99,3 +99,37 @@ func TestFirecracker_AlwaysUnavailable(t *testing.T) {
 	_, err = f.Run(context.Background(), sandbox.Command{Path: "/bin/true"})
 	assert.True(t, errors.Is(err, sandbox.ErrUnavailable), "firecracker scaffold must return ErrUnavailable")
 }
+
+func TestDefaultPolicy_NoNetworkOn(t *testing.T) {
+	// The shipped default is the safe disposition: deny egress.
+	// Callers that need a network-enabled sandbox override
+	// NoNetwork explicitly, so a code-review can spot it.
+	p := sandbox.DefaultPolicy()
+	assert.True(t, p.NoNetwork, "DefaultPolicy must deny egress by default")
+	assert.Zero(t, p.CPUSeconds, "no CPU cap by default (caller's ctx bounds it)")
+	assert.Zero(t, p.MemoryBytes, "no memory cap by default")
+	assert.Empty(t, p.TmpdirRoot, "empty falls back to os.TempDir()")
+}
+
+func TestNewWithPolicy_ThreadsPolicyThroughToBackend(t *testing.T) {
+	pol := sandbox.Policy{NoNetwork: true, CPUSeconds: 42}
+	// gvisor + nsjail carry the Policy; none + firecracker don't
+	// need it (None is a straight exec; firecracker isn't
+	// implemented).
+	g, err := sandbox.NewWithPolicy("gvisor", pol)
+	require.NoError(t, err)
+	gv, ok := g.(*sandbox.GVisor)
+	require.True(t, ok, "gvisor backend must be *GVisor")
+	assert.Equal(t, pol, gv.Policy)
+
+	n, err := sandbox.NewWithPolicy("nsjail", pol)
+	require.NoError(t, err)
+	ns, ok := n.(*sandbox.NSJail)
+	require.True(t, ok, "nsjail backend must be *NSJail")
+	assert.Equal(t, pol, ns.Policy)
+}
+
+func TestNewWithPolicy_UnknownKind(t *testing.T) {
+	_, err := sandbox.NewWithPolicy("wat", sandbox.Policy{})
+	assert.Error(t, err)
+}

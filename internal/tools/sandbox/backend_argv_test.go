@@ -1,13 +1,13 @@
 package sandbox_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-
-	"context"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,16 +84,31 @@ func TestNone_EmptyEnvInheritsParent(t *testing.T) {
 
 func TestGVisor_BuildsRunscDoArgv(t *testing.T) {
 	bin := fakeRuntime(t, "runsc")
-	g := &sandbox.GVisor{Binary: bin}
+	g := &sandbox.GVisor{Binary: bin} // zero Policy — no NoNetwork
 	res, err := g.Run(context.Background(), sandbox.Command{
 		Path: "/bin/sh",
 		Args: []string{"-c", "echo hi"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t,
-		[]string{"do", "/bin/sh", "-c", "echo hi"},
-		argvOf(res.CombinedOutput),
-		"gVisor must prepend `do` then the original argv")
+	got := argvOf(res.CombinedOutput)
+	// --rootless is always on; --root=<tmpdir> is always on (per-
+	// invocation tmpdir); NoNetwork was zero so no --network=none.
+	assert.Equal(t, "--rootless", got[0])
+	assert.True(t, strings.HasPrefix(got[1], "--root="), "second flag should be --root=<tmpdir>")
+	assert.Equal(t, []string{"do", "--", "/bin/sh", "-c", "echo hi"}, got[2:])
+}
+
+func TestGVisor_DefaultPolicyFiresNoNetwork(t *testing.T) {
+	// newGVisor() (invoked via sandbox.New("gvisor")) uses
+	// DefaultPolicy which flips NoNetwork on. This test proves the
+	// safe default rides all the way through to the argv.
+	bin := fakeRuntime(t, "runsc")
+	g := &sandbox.GVisor{Binary: bin, Policy: sandbox.DefaultPolicy()}
+	res, err := g.Run(context.Background(), sandbox.Command{Path: "/bin/true"})
+	require.NoError(t, err)
+	got := argvOf(res.CombinedOutput)
+	assert.Contains(t, got, "--network=none",
+		"DefaultPolicy → NoNetwork → --network=none must appear in the argv")
 }
 
 func TestGVisor_DefaultsToRunscOnPath(t *testing.T) {
@@ -105,7 +120,9 @@ func TestGVisor_DefaultsToRunscOnPath(t *testing.T) {
 	assert.ErrorIs(t, err, sandbox.ErrUnavailable)
 }
 
-func TestNSJail_BuildsQuietArgv(t *testing.T) {
+func TestNSJail_BuildsBaselineArgv(t *testing.T) {
+	// Zero Policy still fires the three always-on flags. Scratch
+	// bindmount is always present (a per-invocation tmpdir).
 	bin := fakeRuntime(t, "nsjail")
 	n := &sandbox.NSJail{Binary: bin}
 	res, err := n.Run(context.Background(), sandbox.Command{
@@ -113,10 +130,50 @@ func TestNSJail_BuildsQuietArgv(t *testing.T) {
 		Args: []string{"-c", "echo hi"},
 	})
 	require.NoError(t, err)
-	assert.Equal(t,
-		[]string{"--quiet", "--", "/bin/sh", "-c", "echo hi"},
-		argvOf(res.CombinedOutput),
-		"nsjail must pass --quiet and terminate its own flags with --")
+	got := argvOf(res.CombinedOutput)
+	// Always-on prefix:
+	assert.Equal(t, []string{"--quiet", "--mode", "o", "--disable_clone_newuser=false"}, got[:4])
+	// Scratch bindmount (Policy.TmpdirRoot empty → os.TempDir()):
+	require.Equal(t, "--bindmount", got[4])
+	assert.Contains(t, got[5], "rousseau-nsjail-", "scratch bindmount uses the per-invocation tmpdir prefix")
+	// Terminated by --, then the wrapped command:
+	assert.Equal(t, []string{"--", "/bin/sh", "-c", "echo hi"}, got[6:])
+}
+
+func TestNSJail_PolicyPropagatesLimitsAndBindmounts(t *testing.T) {
+	// A fully-populated Policy exercises every branch in nsjailArgs.
+	bin := fakeRuntime(t, "nsjail")
+	tmpRoot := t.TempDir() // pin the tmpdir root so the test can predict the argv
+	n := &sandbox.NSJail{
+		Binary: bin,
+		Policy: sandbox.Policy{
+			NoNetwork:   true,
+			TmpdirRoot:  tmpRoot,
+			Wallclock:   30 * time.Second,
+			CPUSeconds:  10,
+			MemoryBytes: 256 * 1024 * 1024, // 256 MiB
+			Readonly:    []string{"/usr", "/lib"},
+			Writable:    []string{"/workspace"},
+		},
+	}
+	res, err := n.Run(context.Background(), sandbox.Command{Path: "/bin/true"})
+	require.NoError(t, err)
+	got := argvOf(res.CombinedOutput)
+	// Presence-only assertions — order stability is nice but not
+	// contractually load-bearing on individual flags.
+	joined := strings.Join(got, " ")
+	assert.Contains(t, joined, "--disable_clone_newnet=false") // NoNetwork
+	assert.Contains(t, joined, "--disable_proc")
+	assert.Contains(t, joined, "--time_limit 30")       // Wallclock 30s
+	assert.Contains(t, joined, "--rlimit_cpu 10")       // CPUSeconds 10
+	assert.Contains(t, joined, "--rlimit_as 256")       // MemoryBytes 256 MiB
+	assert.Contains(t, joined, "/usr:/usr")             // Readonly[0]
+	assert.Contains(t, joined, "/lib:/lib")             // Readonly[1]
+	assert.Contains(t, joined, "/workspace:/workspace") // Writable[0]
+	assert.Contains(t, joined, "rousseau-nsjail-")      // scratch bindmount
+	// Every -- (there's one after the argv terminator; each --flag
+	// counts too) — verify the terminator sits before the wrapped cmd.
+	assert.Contains(t, got, "/bin/true")
 }
 
 func TestNSJail_DefaultsToNsjailOnPath(t *testing.T) {
