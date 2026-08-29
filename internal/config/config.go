@@ -268,15 +268,16 @@ type ComposioToolsConfig struct {
 type RecallConfig struct {
 	// Enabled toggles the entire subsystem.
 	Enabled bool `mapstructure:"enabled"`
-	// Embedder chooses the backend. Supported: "noop", "voyage".
-	// "noop" produces zero-vectors — useful in tests + when the
-	// operator is exercising storage without embedding cost.
+	// Embedder chooses the backend. Supported: "noop", "voyage",
+	// "openai". "noop" produces zero-vectors — useful in tests + when
+	// the operator is exercising storage without embedding cost.
 	Embedder string `mapstructure:"embedder"`
 	// EmbedderModel overrides the backend's default model.
 	EmbedderModel string `mapstructure:"embedder_model"`
 	// EmbedderAPIKey supplies credentials to the backend. Empty falls
-	// back to the backend-specific env var
-	// (ROUSSEAU_VOYAGE_API_KEY for voyage).
+	// back to the backend-specific env var (ROUSSEAU_VOYAGE_API_KEY
+	// for voyage; ROUSSEAU_OPENAI_API_KEY then OPENAI_API_KEY for
+	// openai).
 	EmbedderAPIKey string `mapstructure:"embedder_api_key"`
 	// EmbedderDims overrides auto-detected dimensionality; required
 	// for non-well-known models.
