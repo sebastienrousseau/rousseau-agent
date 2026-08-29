@@ -1,5 +1,14 @@
 # Implementation plan — closing the 2026-07-12 competitor gaps (2026-07-16)
 
+> **STATUS (2026-08-29): shipped in full.** All 11 work items (§1–§11) landed
+> between 2026-07-16 and 2026-08-29. This doc is retained for historical
+> reference and for the engineer-level detail (file paths, function
+> signatures, effort estimates, dependency ordering) that fed the reviews.
+> The summary + code locations live in [`docs/ROADMAP.md §1.11`](ROADMAP.md).
+>
+> Do NOT open new PRs against this doc. Post-campaign work planning lives
+> in `docs/ROADMAP.md §2`.
+
 Companion to [`docs/COMPETITORS_2026_07_12.md`](COMPETITORS_2026_07_12.md).
 That doc identifies where OpenClaw, TrustClaw, and ZeroClaw are ahead and
 prescribes the fixes at bullet-point level. This doc is the engineer-level
