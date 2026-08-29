@@ -47,7 +47,11 @@ func newChatCmd(opts *Options) *cobra.Command {
 			registry.MustRegister(builtin.NewWriteTool())
 			registry.MustRegister(builtin.NewEditTool())
 			registry.MustRegister(builtin.NewGrepTool(0, 0))
-			registry.MustRegister(builtin.NewBashTool(60 * time.Second))
+			bash, err := buildBashTool(cfg.Tools.Bash)
+			if err != nil {
+				return fmt.Errorf("cli: build bash tool: %w", err)
+			}
+			registry.MustRegister(bash)
 			// spawn_subagent — see daemon.go for the policy rationale.
 			registry.MustRegister(builtin.NewSpawnSubagentTool(subagent.Policy{}))
 

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -146,7 +147,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	registry.MustRegister(builtin.NewWriteTool())
 	registry.MustRegister(builtin.NewEditTool())
 	registry.MustRegister(builtin.NewGrepTool(0, 0))
-	registry.MustRegister(builtin.NewBashTool(60 * time.Second))
+	bash, err := buildBashTool(opts.Config.Tools.Bash)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, fmt.Errorf("cli: build bash tool: %w", err)
+	}
+	registry.MustRegister(bash)
 	// spawn_subagent exposes the sub-agent parallelism primitive
 	// (subagent.Spawn) to the model. Zero-value Policy uses the
 	// defaults documented on subagent.Policy (MaxConcurrent=4,
