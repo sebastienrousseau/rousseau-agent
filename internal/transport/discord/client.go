@@ -27,6 +27,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/media"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -68,6 +69,10 @@ type Config struct {
 	// MaxAudioBytes caps per-attachment downloads to protect the
 	// process from a maliciously large file. Zero uses 32 MiB.
 	MaxAudioBytes int64
+	// MediaPolicy governs which image attachments are accepted (MIME
+	// allowlist, per-image and per-turn byte caps). Zero-value falls
+	// back to the media.Policy defaults documented on that package.
+	MediaPolicy media.Policy
 }
 
 // WSConn is the narrow subset of the WebSocket API the transport uses.
@@ -265,17 +270,20 @@ func (c *Client) dispatch(ctx context.Context, frame gatewayFrame, handler trans
 		if body == "" {
 			body = c.transcribeAudio(ctx, &m)
 		}
-		if body == "" {
+		attachments := c.collectImageAttachments(ctx, m.Attachments)
+		if body == "" && len(attachments) == 0 {
 			return nil
 		}
 		msg := transport.IncomingMessage{
-			From: m.Author.ID,
-			Body: body,
-			At:   time.Now().UTC(),
+			From:        m.Author.ID,
+			Body:        body,
+			At:          time.Now().UTC(),
+			Attachments: attachments,
 		}
 		c.logger.Info("discord.incoming",
 			slog.String("from", msg.From),
-			slog.String("channel", m.ChannelID))
+			slog.String("channel", m.ChannelID),
+			slog.Int("attachments", len(attachments)))
 		reply, err := handler.Handle(ctx, msg)
 		if err != nil {
 			c.logger.Error("discord.handler_failed", slog.String("err", err.Error()))
@@ -430,6 +438,63 @@ func (c *Client) transcribeAudio(ctx context.Context, m *discordMessage) string 
 		return ""
 	}
 	return transcript
+}
+
+// collectImageAttachments walks the message attachments, downloads
+// each image, and applies MediaPolicy against the sniffed bytes.
+// Failures per attachment are logged and dropped: one bad image must
+// not swallow a whole message. Non-image envelope MIMEs
+// short-circuit before any network I/O — Discord CDN egress is
+// metered against the bot's rate limit.
+func (c *Client) collectImageAttachments(ctx context.Context, atts []discordAttachment) []transport.Attachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]transport.Attachment, 0, len(atts))
+	totalSoFar := 0
+	for i := range atts {
+		att := atts[i]
+		if !isImageContentType(att.ContentType) {
+			continue
+		}
+		if att.URL == "" {
+			continue
+		}
+		data, err := c.downloadAttachment(ctx, att.URL)
+		if err != nil {
+			c.logger.Warn("discord.image.download_failed",
+				slog.String("id", att.ID),
+				slog.String("err", err.Error()))
+			continue
+		}
+		sniffed, err := c.cfg.MediaPolicy.Accept(data, totalSoFar)
+		if err != nil {
+			c.logger.Info("discord.image.dropped",
+				slog.String("id", att.ID),
+				slog.String("reason", err.Error()),
+				slog.Int("bytes", len(data)))
+			continue
+		}
+		if sniffed != att.ContentType {
+			c.logger.Warn("discord.image.mime_lied",
+				slog.String("id", att.ID),
+				slog.String("envelope", att.ContentType),
+				slog.String("sniffed", sniffed))
+		}
+		out = append(out, transport.Attachment{MediaType: sniffed, Data: data})
+		totalSoFar += len(data)
+	}
+	return out
+}
+
+// isImageContentType returns true when the envelope-reported MIME is
+// image/*. Kept alongside the audio detection in transcribeAudio so
+// both media branches share the same tiny prefix-check pattern.
+func isImageContentType(ct string) bool {
+	if len(ct) < 6 {
+		return false
+	}
+	return ct[:6] == "image/"
 }
 
 // downloadAttachment GETs the attachment URL — Discord CDN URLs are
