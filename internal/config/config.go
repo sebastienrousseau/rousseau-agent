@@ -48,6 +48,54 @@ type Config struct {
 	Router        RouterConfig        `mapstructure:"router"`
 	Hooks         HooksConfig         `mapstructure:"hooks"`
 	Media         MediaConfig         `mapstructure:"media"`
+	Tools         ToolsConfig         `mapstructure:"tools"`
+}
+
+// ToolsConfig groups per-built-in-tool configuration. Today only
+// `bash` has knobs (sandbox selection); more tools may follow.
+type ToolsConfig struct {
+	Bash BashConfig `mapstructure:"bash"`
+}
+
+// BashConfig configures the bash built-in tool. Zero value is the
+// pre-sandbox behaviour: direct exec, no isolation.
+type BashConfig struct {
+	// TimeoutSeconds caps a single command. Zero uses 60s.
+	TimeoutSeconds int `mapstructure:"timeout_seconds"`
+	// Sandbox selects the execution backend. Zero value uses "none"
+	// (direct exec) to keep pre-existing configs working. Set
+	// `kind: gvisor` / `kind: nsjail` / `kind: firecracker` to
+	// isolate; policy fields below shape the argv the backend runs.
+	Sandbox BashSandboxConfig `mapstructure:"sandbox"`
+}
+
+// BashSandboxConfig maps 1:1 to internal/tools/sandbox.Policy. Kept
+// as its own config type so the config package does not import the
+// sandbox package (loading order + test-isolation reasons).
+type BashSandboxConfig struct {
+	// Kind is the backend to use: "" or "none" (default, no
+	// isolation), "gvisor", "nsjail", "firecracker".
+	Kind string `mapstructure:"kind"`
+	// NoNetwork enables the backend's network isolation. Ignored
+	// when Kind is "none". Defaults ON for isolating backends —
+	// see cli/bash_sandbox.go for the default resolution.
+	NoNetwork *bool `mapstructure:"no_network"`
+	// TmpdirRoot is the parent directory for per-invocation
+	// tmpdirs. Empty falls back to os.TempDir().
+	TmpdirRoot string `mapstructure:"tmpdir_root"`
+	// WallclockSeconds caps subprocess elapsed time inside the
+	// backend (defence in depth on top of the tool's own timeout).
+	// Zero disables.
+	WallclockSeconds int `mapstructure:"wallclock_seconds"`
+	// CPUSeconds caps consumed CPU. Zero disables.
+	CPUSeconds int `mapstructure:"cpu_seconds"`
+	// MemoryMB caps address-space in MiB. Zero disables.
+	MemoryMB int `mapstructure:"memory_mb"`
+	// Readonly bindmounts (host paths, mounted at the same path RO
+	// inside the sandbox).
+	Readonly []string `mapstructure:"readonly"`
+	// Writable bindmounts.
+	Writable []string `mapstructure:"writable"`
 }
 
 // MediaConfig configures inbound media handling. Today only
