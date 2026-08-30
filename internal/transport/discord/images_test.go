@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,7 +33,9 @@ func newCDNServer(t *testing.T, body []byte) *cdnServer {
 	c.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		c.callCount++
 		w.WriteHeader(c.status)
-		_, _ = w.Write(c.body)
+		if _, err := w.Write(c.body); err != nil {
+			log.Printf("discord cdnserver: body write: %v", err)
+		}
 	}))
 	t.Cleanup(c.srv.Close)
 	return c
