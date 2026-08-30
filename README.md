@@ -203,7 +203,7 @@ The full command tree:
 | **Memory and recall** | FTS5 keyword search across every stored session, plus hybrid vector recall (`internal/recall`) — SQLite blob store, cosine similarity, weighted blend against the keyword score. Letta-style self-editing memory in `internal/memory/letta`. |
 | **Tool registry** | Concurrency-safe registry. Six built-ins (`read`, `write`, `edit`, `grep`, `bash`, `spawn_subagent`), 26 native integration tools, tools imported from external MCP servers, and the opt-in Composio adapter. |
 | **Approval policy** | `allow_all`, `deny_all`, or `pattern` mode with per-tool allow and deny regular expressions over a configurable default verdict. |
-| **Bash sandbox** | Four backends selected by `tools.bash.sandbox`: `none`, `nsjail`, `gvisor`, `firecracker` (`internal/tools/sandbox`). |
+| **Bash sandbox** | Four backends selected by `tools.bash.sandbox.kind`: `none` (default), `nsjail`, `gvisor`, `firecracker` (`internal/tools/sandbox`). Zero config = direct exec (byte-for-byte identical to pre-sandbox); opt in per-deployment. Policy fields cover network isolation, per-invocation tmpdir, wallclock / CPU / memory caps, and bindmount lists. |
 | **OAuth broker and vault** | `internal/auth/oauth` — provider-agnostic broker with an XChaCha20-Poly1305 vault. Master key from `$ROUSSEAU_TOKEN_KEY`, the OS keyring, or a mode-0600 file. Key rotation preserves plaintext. |
 | **Session store** | SQLite via `modernc.org/sqlite` (pure Go, embedded). WAL journaling, `busy_timeout=15s`, checkpoint on `Close`. Tables cover sessions, JID mapping, cron jobs, OAuth tokens, recall vectors, and `session_costs`. |
 | **Resilience** | Per-JID token bucket (`internal/ratelimit`), panic-recovery middleware, and a circuit breaker per provider (`internal/resilience`, `sony/gobreaker/v2`). |
@@ -494,6 +494,28 @@ recall:
   embedder: voyage
   hybrid_weight: 0.7
   retrieval_k: 6
+
+# Per-built-in-tool configuration. Only bash has knobs today (the
+# other five built-ins run in-process). Zero ToolsConfig = the
+# pre-config behaviour (60s timeout, direct exec, no isolation).
+tools:
+  bash:
+    timeout_seconds: 60          # zero → 60s
+    sandbox:
+      # Kind picks the backend. "" or "none" = direct exec
+      # (no isolation, byte-for-byte identical to legacy).
+      # "gvisor" | "nsjail" | "firecracker" enable isolation.
+      kind: none
+      # NoNetwork is safe-by-default when kind is not "none".
+      # Set false explicitly to permit outbound traffic from
+      # inside the sandbox.
+      no_network: true
+      # Optional resource + filesystem limits, honoured by the
+      # backend that supports each field (see internal/tools/sandbox).
+      cpu_seconds: 30
+      memory_mb: 256
+      readonly: [/usr, /lib]
+      writable: [/workspace]
 
 slack: {app_token: "", bot_token: "", allowlist: []}
 email:
