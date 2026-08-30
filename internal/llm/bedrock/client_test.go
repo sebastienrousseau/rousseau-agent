@@ -182,3 +182,28 @@ func TestMapStop(t *testing.T) {
 	assert.Equal(t, agent.StopMaxTokens, mapStop("max_tokens"))
 	assert.Equal(t, agent.StopOther, mapStop("weird"))
 }
+
+func TestComplete_BuildBodyFailureShortCircuits(t *testing.T) {
+	// A malformed tool_use input (invalid JSON) makes
+	// buildBedrockBody fail — Complete must surface that error
+	// WITHOUT invoking the runtime. Locks the "fail fast on bad
+	// request shape" invariant so a broken build never turns into
+	// an AWS bill.
+	stub := &stubInvoke{}
+	p, err := New(context.Background(), Config{Region: "us-west-2", Model: "m", Runtime: stub})
+	require.NoError(t, err)
+
+	req := agent.Request{Messages: []agent.Message{{
+		Role: agent.RoleUser,
+		Content: []agent.Content{{
+			Kind: agent.ContentToolUse,
+			ToolUse: &agent.ToolUse{
+				ID: "call1", Name: "x",
+				Input: []byte(`{not json`), // invalid JSON → buildBedrockBody fails
+			},
+		}},
+	}}}
+	_, err = p.Complete(context.Background(), req)
+	require.Error(t, err)
+	assert.Nil(t, stub.seen, "runtime must not be called when the body failed to build")
+}
