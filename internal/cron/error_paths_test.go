@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
@@ -222,4 +223,53 @@ func TestScheduler_PollLoopKeepsRunningWhenResyncFails(t *testing.T) {
 	entries := len(s.entries)
 	s.mu.Unlock()
 	assert.Equal(t, 1, entries)
+}
+
+// recorderPub captures every progress.Event so tests can assert what
+// the scheduler emits.
+type recorderPub struct {
+	mu     sync.Mutex
+	events []progress.Event
+}
+
+func (r *recorderPub) Publish(ev progress.Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, ev)
+}
+
+func TestPublish_NoBusIsNoop(t *testing.T) {
+	// Config.Progress unset → publish() must not blow up on nil
+	// deref, and (by construction) publishes nothing.
+	s := &Scheduler{cfg: Config{}}
+	// Should not panic.
+	s.publish(context.Background(),
+		sqlitestore.CronJob{DeliverTo: "wa:1"},
+		progress.Event{Kind: progress.KindCronStarted})
+}
+
+func TestPublish_NoDeliverToIsNoop(t *testing.T) {
+	// A job with no DeliverTo has no destination to route progress
+	// to; publish() must NOT emit a keyless event onto the bus (no
+	// subscriber would receive it and the leak would confuse
+	// operators reading a firehose).
+	rec := &recorderPub{}
+	s := &Scheduler{cfg: Config{Progress: rec}}
+	s.publish(context.Background(),
+		sqlitestore.CronJob{DeliverTo: ""},
+		progress.Event{Kind: progress.KindCronStarted})
+	assert.Empty(t, rec.events)
+}
+
+func TestPublish_RoutesToDeliverToKey(t *testing.T) {
+	// The happy path: publish() stamps Key from DeliverTo so the
+	// subscribed transport actually gets the event.
+	rec := &recorderPub{}
+	s := &Scheduler{cfg: Config{Progress: rec}}
+	s.publish(context.Background(),
+		sqlitestore.CronJob{DeliverTo: "wa:1"},
+		progress.Event{Kind: progress.KindCronStarted})
+	require.Len(t, rec.events, 1)
+	assert.Equal(t, "wa:1", rec.events[0].Key)
+	assert.Equal(t, progress.KindCronStarted, rec.events[0].Kind)
 }

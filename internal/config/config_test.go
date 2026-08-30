@@ -92,6 +92,21 @@ this_key_will_never_exist:
 	assert.Equal(t, "claudecli", cfg.Provider)
 }
 
+func TestLoad_UnmarshalTypeMismatchErrors(t *testing.T) {
+	// A YAML value that cannot decode into the struct target
+	// (integer where an object is expected) forces the
+	// v.Unmarshal error path — covers the last non-defensive
+	// branch of Load().
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+state: 42
+`), 0o600))
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal")
+}
+
 func TestIsNotExist_Variants(t *testing.T) {
 	// Direct exercise of the helper. Covers all three branches
 	// (nil → false, os.IsNotExist match → true, viper's textual

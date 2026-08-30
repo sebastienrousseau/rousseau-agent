@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // These tests exercise the unexported helpers (splitEnv, mergeEnv,
@@ -108,4 +109,38 @@ func TestClient_NameGetter(t *testing.T) {
 	// The Name() getter is trivial but part of the public API surface.
 	c := &Client{name: "test-name"}
 	assert.Equal(t, "test-name", c.Name())
+}
+
+func TestBuildRequest_ParamsMarshalFailureSurfaces(t *testing.T) {
+	// A channel cannot be JSON-marshalled — buildRequest must
+	// surface the error rather than silently produce a malformed
+	// Envelope that the server would reject with a confusing
+	// "parse error" downstream.
+	_, err := buildRequest(1, "m", make(chan struct{}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "marshal params for m")
+}
+
+func TestMergeEnv_UnsetRemovesPreExistingEntry(t *testing.T) {
+	// The "" override for a key present in base means "remove it
+	// from the merged env" — matches exec.Cmd's own convention.
+	// Distinct from the "override replaces" branch: here the
+	// override key never survives into the output.
+	got := mergeEnv([]string{"KEEP=1", "GONE=old"}, map[string]string{"GONE": ""})
+	assert.Contains(t, got, "KEEP=1")
+	// Neither the base entry nor the empty-value override should
+	// appear:
+	for _, e := range got {
+		assert.NotContains(t, e, "GONE=", "GONE must be unset, not present with any value")
+	}
+}
+
+func TestMergeEnv_NoOverridesReturnsBase(t *testing.T) {
+	// Fast path: empty overrides returns base unchanged (no
+	// allocation, no copy). Prevents a regression where a caller
+	// might see a re-ordered / re-allocated env when they passed
+	// nil overrides.
+	base := []string{"A=1", "B=2"}
+	got := mergeEnv(base, nil)
+	assert.Equal(t, base, got)
 }
