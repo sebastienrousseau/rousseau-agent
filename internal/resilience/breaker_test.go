@@ -3,6 +3,7 @@ package resilience
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,4 +137,27 @@ func TestNonRetryable_Unwrap(t *testing.T) {
 	wrapped := NonRetryable(base)
 	assert.ErrorIs(t, wrapped, base)
 	assert.Equal(t, "underlying", wrapped.Error())
+}
+
+func TestStateFloat_AllStates(t *testing.T) {
+	// The Prometheus gauge mapping is a stable ABI — bumping any of
+	// these values changes what an existing dashboard displays.
+	assert.Equal(t, float64(0), stateFloat(gobreaker.StateClosed))
+	assert.Equal(t, float64(1), stateFloat(gobreaker.StateHalfOpen))
+	assert.Equal(t, float64(2), stateFloat(gobreaker.StateOpen))
+	// Unknown states (future gobreaker additions) fall back to
+	// "closed = 0" rather than panicking or exporting NaN.
+	assert.Equal(t, float64(0), stateFloat(gobreaker.State(99)))
+}
+
+func TestIsNonRetryable_ContextCancelBypassesBreaker(t *testing.T) {
+	// Two ways to surface a caller-side abort: context.Canceled and
+	// context.DeadlineExceeded. Neither should count as a provider
+	// failure — the breaker would otherwise open on a slow client
+	// rather than a misbehaving upstream.
+	assert.True(t, isNonRetryable(context.Canceled))
+	assert.True(t, isNonRetryable(context.DeadlineExceeded))
+	assert.True(t, isNonRetryable(fmt.Errorf("wrap: %w", context.Canceled)))
+	assert.False(t, isNonRetryable(errors.New("provider blew up")))
+	assert.False(t, isNonRetryable(nil))
 }

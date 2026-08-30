@@ -219,3 +219,36 @@ func TestWrappedBackends_ForwardEnvDirStdin(t *testing.T) {
 		})
 	}
 }
+
+func TestGVisor_TmpdirFailureSurfaces(t *testing.T) {
+	// TmpdirRoot pointing at a non-writable path makes
+	// os.MkdirTemp fail — surface as an error rather than crash
+	// or fall through to the wrapped exec.
+	bin := fakeRuntime(t, "runsc")
+	g := &sandbox.GVisor{Binary: bin, Policy: sandbox.Policy{TmpdirRoot: "/proc/nonwriteable/subdir/that/does/not/exist"}}
+	_, err := g.Run(context.Background(), sandbox.Command{Path: "/bin/true"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tmpdir")
+}
+
+func TestNSJail_TmpdirFailureSurfaces(t *testing.T) {
+	bin := fakeRuntime(t, "nsjail")
+	n := &sandbox.NSJail{Binary: bin, Policy: sandbox.Policy{TmpdirRoot: "/proc/nonwriteable/subdir/that/does/not/exist"}}
+	_, err := n.Run(context.Background(), sandbox.Command{Path: "/bin/true"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tmpdir")
+}
+
+func TestNSJail_SubMiBMemoryClampedUpToOne(t *testing.T) {
+	// MemoryBytes < 1 MiB is a real footgun — the operator likely
+	// meant KB, not bytes. Rather than pass a rlimit_as of 0 (which
+	// nsjail interprets as "no limit"), clamp UP to 1 MiB so the
+	// operator's intent (a small limit) is preserved instead of
+	// silently becoming "no limit".
+	bin := fakeRuntime(t, "nsjail")
+	n := &sandbox.NSJail{Binary: bin, Policy: sandbox.Policy{MemoryBytes: 1024}} // 1 KiB
+	res, err := n.Run(context.Background(), sandbox.Command{Path: "/bin/true"})
+	require.NoError(t, err)
+	joined := strings.Join(argvOf(res.CombinedOutput), " ")
+	assert.Contains(t, joined, "--rlimit_as 1")
+}
