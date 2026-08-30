@@ -106,6 +106,10 @@ func TestRenderStatus_ShowsLastActivityWhenSet(t *testing.T) {
 
 func TestDoctorCmd_CleanRunReturnsNil(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	// Clear any inherited ROUSSEAU_LICENSE_KEY so the smoke test
+	// doesn't accidentally consume a real developer licence from
+	// the outer shell.
+	t.Setenv("ROUSSEAU_LICENSE_KEY", "")
 	opts := &Options{
 		Config: &config.Config{
 			Provider:  "claudecli",
@@ -119,10 +123,12 @@ func TestDoctorCmd_CleanRunReturnsNil(t *testing.T) {
 	cmd.SetContext(context.Background())
 	require.NoError(t, cmd.RunE(cmd, nil))
 	assert.Contains(t, buf.String(), "build.version")
+	assert.Contains(t, buf.String(), "identity.license.tier")
 }
 
 func TestDoctorCmd_FailingCheckReturnsError(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("ROUSSEAU_LICENSE_KEY", "")
 	opts := &Options{
 		Config: &config.Config{
 			Provider:  "claudecli",
