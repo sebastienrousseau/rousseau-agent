@@ -3,7 +3,7 @@ package slack
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,7 +32,6 @@ type fileServer struct {
 	seenAuth    string
 	seenPath    string
 	callCount   int
-	failFirstN  int
 	failWithErr bool
 }
 
@@ -54,11 +53,15 @@ func (f *fileServer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimPrefix(f.seenAuth, "Bearer ") != f.wantToken {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`))
+		if _, err := w.Write([]byte(`{"ok":false,"error":"invalid_auth"}`)); err != nil {
+			log.Printf("slack fileserver: forbidden body write: %v", err)
+		}
 		return
 	}
 	w.WriteHeader(f.status)
-	_, _ = w.Write(f.body)
+	if _, err := w.Write(f.body); err != nil {
+		log.Printf("slack fileserver: body write: %v", err)
+	}
 }
 
 // eventEnvelope builds the events_api WebSocket frame for a single
@@ -211,7 +214,7 @@ func TestDispatchEvent_FileShareSubtypeAdmitted(t *testing.T) {
 }
 
 func TestDispatchEvent_FileWithoutURLIsSkipped(t *testing.T) {
-	env := fmt.Sprintf(`{"type":"events_api","envelope_id":"e1","payload":{"event":{"type":"message","subtype":"file_share","user":"U1","text":"hi","channel":"C0","files":[{"id":"F1","mimetype":"image/png"}]}}}`)
+	env := `{"type":"events_api","envelope_id":"e1","payload":{"event":{"type":"message","subtype":"file_share","user":"U1","text":"hi","channel":"C0","files":[{"id":"F1","mimetype":"image/png"}]}}}`
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
 
