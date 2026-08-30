@@ -132,39 +132,113 @@ Landed since the campaign closed:
 - **Interactive TUI approver** (`internal/tui/approver.go`) — `rousseau chat` prompts the user per tool call with `y / n / a / d` (allow / deny / always-allow / always-deny). Session-scoped memory means the second `bash` call after `[a]` runs without a prompt (with a small toast note). Chains under any config-driven `PatternApprover` (deny short-circuits; allow falls through to interactive). Daemon transports unchanged.
 - **MCP client daemon version thread-through** — `mcpclient.Config.ClientVersion` populated from `cli.Version()`; MCP servers log the real rousseau version instead of hardcoded `"0.0.1"`.
 - **Code hygiene: TODO → FUTURE for deferrals** — subsequently closed: sandbox and A2A design decisions landed as §1.12 items below. `grep -rn 'TODO' internal/ pkg/` returns zero hits in production code.
-- **Sandbox argv policy** (`internal/tools/sandbox/{gvisor,nsjail}.go` + `Policy` struct in `sandbox.go`) — closes the deferred gvisor/nsjail argv shape. Both backends translate a `Policy` (NoNetwork, TmpdirRoot, Wallclock, CPUSeconds, MemoryBytes, Readonly, Writable) into their native flag surface. `DefaultPolicy()` ships the safe disposition (deny egress). Per-invocation tmpdir helper shared across backends. 95.7 % coverage on the sandbox package.
-- **A2A artifact `Fetcher`** (`internal/a2a/fetch.go`) — closes the deferred `Task.InputArtifacts` fetch semantics. Three canonical URI schemes handled: `data:` (RFC 2397 parser), `http(s)://` (bounded GET with cross-origin redirect refusal), and `artifact://` (dispatched to caller-supplied `Resolver`). Per-artifact size cap (default 32 MiB) enforced on every branch.
-- **Tag `v0.0.2`** cut against this state (per convention: only ever +0.0.1 increments).
+- **Sandbox argv policy** (`internal/tools/sandbox/{gvisor,nsjail}.go` + `Policy` struct in `sandbox.go`) — closes the deferred gvisor/nsjail argv shape. Both backends translate a `Policy` (NoNetwork, TmpdirRoot, Wallclock, CPUSeconds, MemoryBytes, Readonly, Writable) into their native flag surface. `DefaultPolicy()` ships the safe disposition (deny egress). Per-invocation tmpdir helper shared across backends. 100 % coverage on the sandbox package.
+- **A2A artifact `Fetcher`** (`internal/a2a/fetch.go`) — closes the deferred `Task.InputArtifacts` fetch semantics. Three canonical URI schemes handled: `data:` (RFC 2397 parser), `http(s)://` (bounded GET with cross-origin redirect refusal + max-5-hop same-origin-only redirect policy), and `artifact://` (dispatched to caller-supplied `Resolver`). Per-artifact size cap (default 32 MiB) enforced on every branch.
+- **Bash sandbox wire-up** (`internal/tools/builtin/bash.go` + `internal/cli/bash_sandbox.go`) — `BashTool` gains an optional `Sandbox` field; opt-in via `tools.bash.sandbox.kind` config. Zero config keeps the pre-sandbox behaviour byte-for-byte so nothing breaks on upgrade. Closes the last actionable §2 item that existed before the open-core recut.
+- **Open-core license seam** (`internal/license/` + `docs/COMMERCIAL.md`) — offline Ed25519 signature-check runtime seam that separates the free OSS core from the paid Enterprise / Team Edition **inside the same static binary**. Preserves the "no phone home, no license server, no separate binary distribution" promise. Fails closed: expired / bad-signature / malformed / absent → free tier + `rousseau doctor` prints why. Three feature identifiers defined (`FeatureSSO`, `FeatureAuditEgress`, `FeatureGovernanceAdvanced`); nothing gates on them yet — the seam landed in isolation so downstream gate PRs can be reviewed on their own merits. 99.1 % coverage.
+- **Coverage push to 98.6 % overall** — three targeted rounds lifting `resilience`, `tools/sandbox`, `cron`, `config` to 100 %; `tui` from 83.9 % to 98.2 %; smaller lifts on `a2a`, `llm/bedrock`, `whatsapp`, `mcp/client`. Remaining sub-98 % branches are either defensive guards the public API can't reach or external-service handshakes needing custom stdlib mocks.
+- **Combined dependency bumps** — aws-sdk-go-v2/service/bedrockruntime 1.58.0, otel trace/sdk/otlptracehttp 1.46.0, docker/login-action v4, docker/build-push-action v7, actions/attest-build-provenance v4. Consolidated into one verified PR that superseded five conflicting dependabot PRs.
+- **Doc consistency sweep** — coverage badge 98.81 % → 98.1 %; six-vs-five built-in tool count corrected; sandbox config example added to the README; `tools.bash.sandbox.kind` documented in the Capabilities table.
+- **Tag `v0.0.2`** cut post-#92, **tag `v0.0.3`** cut post-#98 (per convention: only ever +0.0.1 increments).
 
 ---
 
 ## 2. What is next
 
-The Q3 + Q4 quarterly plan and the 5-week competitor-gap campaign both shipped in full; §1.12 above covers post-campaign polish through v0.0.2. What remains is genuinely optional — all small, all deferred behind an explicit blocker.
+Recut on 2026-08-30 through the [open-core lens](COMMERCIAL.md). Each item states whether it lands in the **core** (free OSS) or behind the **licence gate** (paid Team / Enterprise), and why. The Q3 + Q4 quarterly plan and the 5-week competitor-gap campaign have both shipped in full; §1.12 above covers post-campaign polish through v0.0.3.
 
-### 2.1 Google Vertex + AWS Bedrock providers
+**Sequencing:** items below are ordered by the 5-pillar ROI framework — commercial-critical work (§2.1 – §2.4) first because it unblocks paid-tier revenue; core-side quality-of-life follows (§2.5 – §2.7); genuinely-deferred items (§2.8 – §2.10) last.
 
-Deferred from §1.10 multi-provider registry. Both use SigV4 / OAuth flows the OpenAI-compatible shape does not cover. Add when there's a concrete user request; low priority because OpenRouter already serves Anthropic/OpenAI/Gemini/Bedrock-Claude behind an OpenAI-compatible façade.
+---
 
-**Estimate:** 2 days each provider (Vertex ≈ 2, Bedrock ≈ 2).
+### 2.1 First real licence gate — audit-egress pilot 🔒 **paid**
 
-### 2.2 libsignal-net Go bindings
+**Boundary:** `FeatureAuditEgress` (see [`docs/COMMERCIAL.md`](COMMERCIAL.md) §2.2).
 
-Deferred from §1.10 Signal transport. Current implementation shells out to `signal-cli`; a direct binding removes the JVM + JSON-RPC hop. Waiting on upstream libsignal-net Go stability.
+Wire `license.Checker.IsEnabled(FeatureAuditEgress)` into the smallest concrete enterprise-shaped code path so the seam is proven end-to-end. Pilot pick: an OTLP-push audit-log sink under `internal/observability/audit_egress/` — smaller design surface than SSO (§2.2) and touches a package (`internal/observability`) with clean seams already.
+
+The daemon boots; the OTLP sink attempts to start; the licence check fails → the sink logs `audit egress requires an Enterprise licence — see docs/COMMERCIAL.md` at INFO and stays disabled. The daemon proceeds normally. Paying customers set `ROUSSEAU_LICENSE_KEY` and the sink activates.
+
+**Why first:** proves the whole open-core apparatus works before we invest in the bigger gated features. Also the smallest reviewable diff — one config surface, one gate call, one sink.
+
+**Estimate:** 2 days end-to-end.
+
+### 2.2 SSO adapters (OIDC + SAML) 🔒 **paid**
+
+**Boundary:** `FeatureSSO` (see [`docs/COMMERCIAL.md`](COMMERCIAL.md) §2.1).
+
+Add `internal/auth/sso/` with OIDC (via `go-oidc/v3`) and SAML (via `crewjam/saml`) provider adapters, plus a mapping layer that resolves Slack / Matrix / Discord IDs to the identity's canonical `sub`. Gated on `FeatureSSO`. Local SQLite auth + API keys + `claudecli` OAuth stay in the core.
+
+**Why this is the enterprise carrot:** compliance mandates SSO. Teams above ~10 seats will not deploy a chat agent without it. Highest-conversion feature per the framework's "expected returns" pillar.
+
+**Estimate:** 4–5 days end-to-end. Depends on §2.1 landing first (proves the gate pattern).
+
+### 2.3 `rousseau doctor` reports licence status ⚖ **core** (but structural for paid)
+
+Extend `rousseau doctor` to print an `identity.license` row (tier, subject, expiry, warn-window flag, reason when inactive). Reads from `license.Checker.Info()` — no separate storage. Never prints the raw token.
+
+**Why this is core:** paying customers need this to debug "my licence didn't activate" without grepping journalctl. OSS operators see a "tier: core — no licence configured" row that quietly demonstrates the paid tier exists (top-of-funnel awareness with zero friction).
+
+**Estimate:** 1 day. Bundled with the follow-up on §2.1.
+
+### 2.4 Helm chart + HA database backend 🎯 **core** (enterprise ergonomics)
+
+Two deliverables in one workstream because they only matter together:
+
+- **Helm chart** under `deploy/helm/` — the deploy target for every prospective paying customer with a k8s cluster (i.e. all of them).
+- **Postgres backend for `state.Store`** — abstracts the current SQLite-hardcoded store behind a driver interface so multiple daemon replicas can share session state. Redis for the session-cache tier as a follow-up.
+
+Ships free — deployment ergonomics belong in the core because every enterprise trial starts with "can I deploy this in my cluster?". A hard-to-deploy OSS product has no paid conversion funnel.
+
+**Estimate:** 3 days Helm chart + 3 days Postgres driver + 1 day Redis cache adapter = 1 week total.
+
+---
+
+### 2.5 Reframe `internal/tenant` from SaaS to workspaces ⚖ **core** (cleanup)
+
+`internal/tenant` scaffolding exists but was framed for multi-customer SaaS isolation — a model we've explicitly rejected. Rename types and docs to name what it actually is: **logical workspaces / teams within a single on-premise deployment**. No behaviour change; documentation + comment sweep only.
+
+**Why:** stops the confusion. A future contributor reading `internal/tenant` shouldn't be misled into building SaaS-shaped features on top of it.
+
+**Estimate:** 0.5 days.
+
+### 2.6 Google Vertex + AWS Bedrock providers ⚖ **core**
+
+Deferred from §1.10 multi-provider registry. Bedrock already shipped (`internal/llm/bedrock`); Vertex is symmetric. Both use SigV4 / OAuth flows the OpenAI-compatible shape does not cover. Strengthens the "any LLM provider" OSS pitch — top-of-funnel adoption for regulated shops that mandate their cloud's managed-Claude.
+
+**Estimate:** 2 days each (Vertex ≈ 2, Bedrock hardening ≈ 1). Low priority; OpenRouter already serves both behind an OpenAI-compatible façade.
+
+### 2.7 libsignal-net Go bindings ⚖ **core**
+
+Removes the JVM dependency from the Signal transport (currently shells out to `signal-cli`). Waiting on upstream libsignal-net Go stability.
 
 **Estimate:** 3–5 days once bindings are stable; skip until then.
 
-### 2.3 Skill marketplace + agent-authored skills
+---
 
-Deferred from `docs/IMPLEMENTATION_PLAN_2026_07_16.md §12`. Requires (a) a signed manifest format for community skills, (b) a `~/.local/share/rousseau/skills/community/` sandbox with review-on-first-run semantics, (c) an agent-side pattern for writing a new skill from a repeated interaction. All three are separate design problems.
+### 2.8 Signed / verified skills bundle 🔒 **paid** (was: skill marketplace)
+
+**Boundary:** would extend `FeatureGovernanceAdvanced` (see [`docs/COMMERCIAL.md`](COMMERCIAL.md) §2.3).
+
+**Recut from the old §2.3 "skill marketplace".** The marketplace concept as originally framed had commercial gravity but no monetization path if it stayed OSS-only. The re-framed version: agent-authored skills remain a **core** feature (they're a competitive moat for the OSS product), but the **signed / verified skills bundle** — cryptographically-verified skill packages with vendor attestation, an SBOM per skill, and centralised skill-catalogue management — becomes an enterprise feature. Compliance officers pay to know exactly which skill the model just triggered, from whom, and whether it's been tampered with.
 
 **Estimate:** ~1 week end-to-end; deferred until there's a genuine user pull.
 
-### 2.4 Wiring the sandbox into `bash`
+### 2.9 Advanced governance ecosystem (OPA + multi-party approvals) 🔒 **paid**
 
-`internal/tools/builtin/bash.go` still does a direct `exec.CommandContext`; the sandbox package (§1.12) exists but no built-in tool consults it yet. Turning sandboxing on is a design decision, not a bug — it changes the default trust model for the bash tool. Blockers: (a) opt-in config surface (`tools.bash.sandbox: {kind, no_network, ...}`), (b) deprecation window for operators running today's un-sandboxed bash, (c) per-tool sandbox kind (a lightweight read/write/edit should not pay gvisor's syscall overhead).
+**Boundary:** `FeatureGovernanceAdvanced` (see [`docs/COMMERCIAL.md`](COMMERCIAL.md) §2.3).
 
-**Estimate:** 2–3 days end-to-end.
+RBAC with role hierarchies inherited from SSO groups, [Open Policy Agent](https://www.openpolicyagent.org/) integration for Rego-based tool-call policy, and multi-party approval workflows (e.g. "`terraform apply` needs a DevOps rota approval in Slack"). Plugs into the existing `agent.Approver` interface so the seam is clean; the OSS `PatternApprover` + TUI interactive approver stay unchanged.
+
+**Estimate:** ~2 weeks end-to-end. Depends on §2.2 (SSO) landing first so RBAC has a real identity source to hang roles off.
+
+### 2.10 Enterprise redaction rule packs 🔒 **paid**
+
+**Boundary:** `FeatureAuditEgress` (see [`docs/COMMERCIAL.md`](COMMERCIAL.md) §2.2).
+
+Industry preset rule packs for `internal/observability/redact` (HIPAA, PCI-DSS, GDPR) plus a rule-authoring surface (YAML → compiled matcher). The baseline redact rules (credentials, common API-key shapes) stay in the core.
+
+**Estimate:** 3 days per rule pack; deferred until a customer names their compliance regime.
 
 ---
 
