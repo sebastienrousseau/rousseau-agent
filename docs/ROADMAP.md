@@ -167,11 +167,15 @@ The daemon boots; the OTLP sink attempts to start; the licence check fails → t
 
 **Boundary:** `FeatureSSO` (see [`docs/COMMERCIAL.md`](COMMERCIAL.md) §2.1).
 
-Add `internal/auth/sso/` with OIDC (via `go-oidc/v3`) and SAML (via `crewjam/saml`) provider adapters, plus a mapping layer that resolves Slack / Matrix / Discord IDs to the identity's canonical `sub`. Gated on `FeatureSSO`. Local SQLite auth + API keys + `claudecli` OAuth stay in the core.
+Add `internal/auth/sso/` with OIDC and SAML provider adapters, plus a mapping layer that resolves Slack / Matrix / Discord IDs to the identity's canonical `sub`. Gated on `FeatureSSO`. Local SQLite auth + API keys + `claudecli` OAuth stay in the core.
 
 **Why this is the enterprise carrot:** compliance mandates SSO. Teams above ~10 seats will not deploy a chat agent without it. Highest-conversion feature per the framework's "expected returns" pillar.
 
-**Estimate:** 4–5 days end-to-end. Depends on §2.1 landing first (proves the gate pattern).
+**Delivered so far:** OIDC verifier + JWKS cache + license-gated `New()` factory in `internal/auth/sso/` (PR #114). Zero-dep stdlib crypto (no `go-oidc/v3`) so the airgapped-deploy story stays clean. Supports RS256/384/512 + ES256/384; refuses HS* + `none`. `TransportMapping` claims resolve to `Identity.TransportIDs` at verify time.
+
+**Follow-ups:** (a) SAML backend via `crewjam/saml` alongside OIDC; (b) directory-sync source (SCIM 2.0 pull or IdP-native API) so `ResolveTransportID` returns real answers instead of `ErrNotFound`; (c) daemon-assembly wiring so transports actually call `Directory.VerifyToken`.
+
+**Estimate:** OIDC pilot shipped in 1 day. SAML + directory-sync + wiring ≈ 3–4 days.
 
 ### 2.3 `rousseau doctor` reports licence status ⚖ **core** (but structural for paid)
 
