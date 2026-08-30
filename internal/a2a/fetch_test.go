@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -202,4 +203,68 @@ func TestDefaultFetcher_NegativeMaxDisablesCap(t *testing.T) {
 	huge := strings.Repeat("a", 64*1024)
 	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: "data:," + huge})
 	require.NoError(t, err)
+}
+
+func TestDefaultFetcher_DataURI_EncodedSizePreCheckRejects(t *testing.T) {
+	// The base64-encoded payload weighs ~4/3 the decoded size, so
+	// the fast-path check (encoded > cap*2) fires before we spend
+	// the CPU on the actual base64 decode. Payload larger than 2×cap.
+	huge := strings.Repeat("a", 64) // encoded length 64 > 10*2
+	f := &a2a.DefaultFetcher{MaxBytes: 10}
+	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: "data:;base64," + huge})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, a2a.ErrArtifactTooLarge)
+}
+
+func TestDefaultFetcher_DataURI_MediaTypeAndBase64Coexist(t *testing.T) {
+	// "data:text/plain;base64,SGVsbG8=" — mediatype first, then
+	// ;base64. Both correctly picked up.
+	f := &a2a.DefaultFetcher{}
+	data, ct, err := f.Fetch(context.Background(), a2a.Artifact{URI: "data:text/plain;base64,SGVsbG8="})
+	require.NoError(t, err)
+	assert.Equal(t, "Hello", string(data))
+	assert.Equal(t, "text/plain", ct)
+}
+
+func TestDefaultFetcher_DataURI_BadPercentEncoding(t *testing.T) {
+	// data:,%zz — invalid hex after %. Surfaces as a
+	// meaningful error, not a panic.
+	f := &a2a.DefaultFetcher{}
+	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: "data:,%zz"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "percent-encoding")
+}
+
+func TestDefaultFetcher_HTTP_ContextCancelledPropagates(t *testing.T) {
+	// A slow server + a pre-cancelled context: fetch must return
+	// promptly with an error, not hang on the read.
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := &a2a.DefaultFetcher{}
+	_, _, err := f.Fetch(ctx, a2a.Artifact{URI: srv.URL})
+	require.Error(t, err)
+}
+
+func TestDefaultFetcher_HTTP_MalformedURL(t *testing.T) {
+	// A URL with an invalid control byte fails at
+	// http.NewRequestWithContext (before the network).
+	f := &a2a.DefaultFetcher{}
+	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: "http://exam\x00ple.com/x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "build request")
+}
+
+func TestDefaultFetcher_CheckSize_NegativeMaxSkipsCheck(t *testing.T) {
+	// checkSize's negative-max short-circuit — exercised by
+	// the Resolver path.
+	res := &stubResolver{body: []byte(strings.Repeat("z", 64*1024))}
+	f := &a2a.DefaultFetcher{Resolver: res, MaxBytes: -1}
+	data, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: "artifact://peer/x"})
+	require.NoError(t, err)
+	assert.Len(t, data, 64*1024)
 }

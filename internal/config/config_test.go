@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -72,4 +73,34 @@ func TestLoad_EmptyPathDefaultsHome(t *testing.T) {
 	cfg, err := Load("")
 	require.NoError(t, err)
 	assert.NotNil(t, cfg)
+}
+
+func TestLoad_UnknownFieldStillDecodes(t *testing.T) {
+	// viper's Unmarshal is lenient by default — unknown YAML keys
+	// are dropped, not an error. Locks that behaviour in so a
+	// forward-compatible config file (with future keys) doesn't
+	// break older binaries.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+provider: claudecli
+this_key_will_never_exist:
+  nor: this_one
+`), 0o600))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "claudecli", cfg.Provider)
+}
+
+func TestIsNotExist_Variants(t *testing.T) {
+	// Direct exercise of the helper. Covers all three branches
+	// (nil → false, os.IsNotExist match → true, viper's textual
+	// "Config File ... Not Found" match → true, unrelated error →
+	// false). out parameter is a dummy — the function ignores it
+	// today (kept for a future refactor).
+	var out *os.PathError
+	assert.False(t, isNotExist(nil, &out))
+	assert.True(t, isNotExist(&os.PathError{Err: os.ErrNotExist}, &out))
+	assert.True(t, isNotExist(errors.New(`Config File "foo" Not Found in "."`), &out))
+	assert.False(t, isNotExist(errors.New("some other error"), &out))
 }
