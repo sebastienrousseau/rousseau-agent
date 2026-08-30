@@ -259,6 +259,26 @@ func TestDefaultFetcher_HTTP_MalformedURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "build request")
 }
 
+func TestDefaultFetcher_HTTP_TooManySameOriginRedirects(t *testing.T) {
+	// Same-origin redirect chain longer than the 5-hop limit
+	// (10 hops here) should fail before storming the resolver.
+	// Distinct from the cross-origin-refused test: same host, but
+	// too many hops.
+	mux := http.NewServeMux()
+	hops := 0
+	mux.HandleFunc("/r", func(w http.ResponseWriter, r *http.Request) {
+		hops++
+		http.Redirect(w, r, "/r", http.StatusFound) // self-redirect
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := &a2a.DefaultFetcher{}
+	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: srv.URL + "/r"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "too many redirects")
+}
+
 func TestDefaultFetcher_CheckSize_NegativeMaxSkipsCheck(t *testing.T) {
 	// checkSize's negative-max short-circuit — exercised by
 	// the Resolver path.
