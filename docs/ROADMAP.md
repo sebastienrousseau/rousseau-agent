@@ -1,6 +1,15 @@
 # rousseau-agent — implementation plan
 
-_Last touched: 2026-08-29 (commit at HEAD)._
+_Last touched: 2026-08-30 (commit at HEAD)._
+
+> **Commercial framing (2026-08-30):** the business model is now
+> **open-core with a paid Enterprise / Team Edition** delivered as an
+> offline license key inside the same static binary. See
+> [`docs/COMMERCIAL.md`](COMMERCIAL.md) for the full contract —
+> what's free, what's paid, and where the boundary lives in code
+> (`internal/license`, `Checker.IsEnabled(feature)`). Every future
+> ROADMAP entry must state whether it lands in the core or behind
+> the licence gate; §2 below is being re-audited against that lens.
 
 This file is the living implementation plan for `rousseau-agent`. It is the source of truth for scope, priority, and sequencing. Ship diffs against this doc, not against verbal plans that vanish.
 
