@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -77,4 +79,31 @@ func TestBuildTranscriber_LegacyWhatsAppVoiceFallback(t *testing.T) {
 	}
 	got := buildTranscriber(opts)
 	require.NotNil(t, got, "legacy whatsapp.voice.enabled must still build a transcriber")
+}
+
+func TestVersion_ReturnsStampedString(t *testing.T) {
+	// Version() is the exported accessor for the -ldflags-stamped
+	// build version. Tests binary → "dev" (the default). Assert
+	// the return matches the package-private var so callers
+	// depending on this getter can trust it.
+	got := Version()
+	assert.NotEmpty(t, got, "Version() must never return empty")
+	assert.Equal(t, version, got, "Version() must return exactly the package var")
+}
+
+func TestOpenSessionStore_HappyPathReturnsConcreteStore(t *testing.T) {
+	// openSessionStore is the "session commands" specialisation of
+	// openStore: it demands the *sqlitestore.Store concrete type so
+	// the session commands can reach the FTS5 surface. Verifies the
+	// happy path (on-disk sqlite in a tmp dir) returns a usable
+	// store — the error path is exercised by the failing openStore
+	// tests elsewhere.
+	tmp := t.TempDir()
+	opts := &Options{
+		Config: &config.Config{State: config.StateConfig{Path: filepath.Join(tmp, "s.db")}},
+	}
+	store, err := openSessionStore(context.Background(), opts)
+	require.NoError(t, err)
+	require.NotNil(t, store)
+	assert.NoError(t, store.Close())
 }
