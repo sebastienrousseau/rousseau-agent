@@ -179,11 +179,13 @@ Add `internal/auth/sso/` with OIDC and SAML provider adapters, plus a mapping la
 
 ### 2.3 `rousseau doctor` reports licence status ⚖ **core** (but structural for paid)
 
-Extend `rousseau doctor` to print an `identity.license` row (tier, subject, expiry, warn-window flag, reason when inactive). Reads from `license.Checker.Info()` — no separate storage. Never prints the raw token.
+Extend `rousseau doctor` to print `identity.license.*` rows (tier, subject, features, expires_at). Reads from `license.Checker.Info()` — no separate storage. Never prints the raw token.
 
-**Why this is core:** paying customers need this to debug "my licence didn't activate" without grepping journalctl. OSS operators see a "tier: core — no licence configured" row that quietly demonstrates the paid tier exists (top-of-funnel awareness with zero friction).
+**Delivered (PR #115):** rows emitted directly after `build.go` — `identity.license.tier` always present; `subject` / `features` / `expires_at` only when a licence is loaded. Core tier renders as one bare info row; a valid paid tier renders `ok` (tier), plus rows for subject, comma-separated features, and RFC3339 expiry + human delta ("in 168d"). Inside the 14-day warn window the tier row + expiry row both flip to `warn` and the expiry detail appends "— renew soon". Cryptographic / structural failures render the tier row as `fail` with the reason parenthesised. A defensive test asserts the raw token can never appear in the rendered output.
 
-**Estimate:** 1 day. Bundled with the follow-up on §2.1.
+**Why this is core:** paying customers need this to debug "my licence didn't activate" without grepping journalctl. OSS operators see a "tier: core" row that quietly demonstrates the paid tier exists (top-of-funnel awareness with zero friction).
+
+**Estimate:** 1 day (shipped).
 
 ### 2.4 Helm chart + HA database backend 🎯 **core** (enterprise ergonomics)
 

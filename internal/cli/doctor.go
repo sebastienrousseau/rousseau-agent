@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 )
 
 // diagResult is one row in the doctor report.
@@ -35,7 +36,7 @@ func newDoctorCmd(opts *Options) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			w := cmd.OutOrStdout()
-			results := runChecks(cmd.Context(), opts.Config)
+			results := runChecks(cmd.Context(), opts.Config, license.Load(license.Source{}, nil))
 			renderReport(w, results)
 			if hasFailures(results) {
 				return errors.New("one or more checks failed")
@@ -45,14 +46,119 @@ func newDoctorCmd(opts *Options) *cobra.Command {
 	}
 }
 
-func runChecks(ctx context.Context, cfg *config.Config) []diagResult {
+func runChecks(ctx context.Context, cfg *config.Config, chk license.Checker) []diagResult {
 	var out []diagResult
 	out = append(out, checkBuild()...)
+	out = append(out, checkLicense(chk)...)
 	out = append(out, checkProvider(ctx, cfg)...)
 	out = append(out, checkState(cfg)...)
 	out = append(out, checkWhatsApp(cfg)...)
 	out = append(out, checkConfig(cfg)...)
 	return out
+}
+
+// checkLicense renders the identity.license.* rows. Reads solely
+// from [license.Checker.Info] — never touches the raw token. On a
+// core-tier install the rows are informational; on a paid tier
+// they surface tier, subject, effective features, and expiry
+// (with an amber warn inside [license.ExpiryWarnWindow]).
+//
+// A cryptographic / structural failure (bad signature, expired,
+// malformed) leaves the checker on core but with a non-empty
+// Info.Reason — that path renders as a fail row so paying
+// customers see the misconfiguration at a glance.
+func checkLicense(chk license.Checker) []diagResult {
+	if chk == nil {
+		// Defensive: any caller that forgets to plumb a checker
+		// gets the same behaviour as an unlicensed install.
+		chk = license.Core()
+	}
+	info := chk.Info()
+	tier := string(info.Tier)
+
+	tierStatus, tierDetail := licenseTierRow(info, tier)
+	out := []diagResult{{Name: "identity.license.tier", Status: tierStatus, Detail: tierDetail}}
+
+	if info.Subject != "" {
+		out = append(out, diagResult{
+			Name:   "identity.license.subject",
+			Status: "info",
+			Detail: info.Subject,
+		})
+	}
+	if len(info.Features) > 0 {
+		feats := make([]string, len(info.Features))
+		for i, f := range info.Features {
+			feats[i] = string(f)
+		}
+		out = append(out, diagResult{
+			Name:   "identity.license.features",
+			Status: "info",
+			Detail: strings.Join(feats, ","),
+		})
+	}
+	if !info.ExpiresAt.IsZero() {
+		status := "info"
+		if info.Expiring {
+			status = "warn"
+		}
+		out = append(out, diagResult{
+			Name:   "identity.license.expires_at",
+			Status: status,
+			Detail: renderExpiry(info),
+		})
+	}
+	return out
+}
+
+// licenseTierRow picks the status icon + detail string for the
+// primary tier row. Split out so the branching is obvious.
+func licenseTierRow(info license.Info, tier string) (status, detail string) {
+	switch {
+	case info.Valid && info.Expiring:
+		return "warn", tier
+	case info.Valid:
+		return "ok", tier
+	case info.Reason == "" || info.Reason == "no license configured":
+		// Vast-majority OSS path — a bare "core" row.
+		return "info", tier
+	default:
+		// Cryptographic / structural failure — paying customer's
+		// misconfiguration. Loud fail row so it can't be missed.
+		return "fail", fmt.Sprintf("%s (%s)", tier, info.Reason)
+	}
+}
+
+// renderExpiry formats the expiry timestamp + a human delta so
+// operators can eyeball "how long do I have" without doing UTC
+// math.
+func renderExpiry(info license.Info) string {
+	ts := info.ExpiresAt.UTC().Format(time.RFC3339)
+	d := time.Until(info.ExpiresAt)
+	if d < 0 {
+		return fmt.Sprintf("%s (expired %s ago)", ts, humanDuration(-d))
+	}
+	out := fmt.Sprintf("%s (in %s)", ts, humanDuration(d))
+	if info.Expiring {
+		out += " — renew soon"
+	}
+	return out
+}
+
+// humanDuration renders a duration as a coarse human string. Not
+// exact, deliberately — an operator doesn't care about minute
+// precision on a 180-day countdown.
+func humanDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	default:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
 }
 
 func checkBuild() []diagResult {
