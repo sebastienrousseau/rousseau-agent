@@ -44,6 +44,13 @@ import (
 //go:embed schema.sql
 var schema string
 
+// openDB is a testability seam over sql.Open. Production always uses
+// sql.Open; unit tests stub it with a sqlmock-backed *sql.DB so the
+// ping-failure and schema-apply-failure branches of Open are covered
+// without a live Postgres. Mirrors the seam pattern used elsewhere in
+// this codebase. Never reassigned outside tests.
+var openDB = sql.Open
+
 // Store is a state.Store backed by Postgres.
 type Store struct {
 	db *sql.DB
@@ -61,7 +68,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	if dsn == "" {
 		return nil, errors.New("postgres: empty DSN")
 	}
-	db, err := sql.Open("pgx", dsn)
+	db, err := openDB("pgx", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: open: %w", err)
 	}
