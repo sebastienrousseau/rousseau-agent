@@ -25,7 +25,7 @@ func newMockStore(t *testing.T) (*Store, sqlmock.Sqlmock) {
 	t.Helper()
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { _ = db.Close() }) //nolint:errcheck // best-effort cleanup; the test may already have closed it
 	return &Store{db: db}, mock
 }
 

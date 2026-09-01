@@ -134,7 +134,8 @@ func TestFetchDiscovery_Non200(t *testing.T) {
 func TestFetchDiscovery_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("this is not json"))
+		_, werr := w.Write([]byte("this is not json"))
+		require.NoError(t, werr)
 	}))
 	defer srv.Close()
 	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
@@ -206,8 +207,7 @@ func TestFetchJWKS_FetchError(t *testing.T) {
 }
 
 func TestFetchJWKS_Non200(t *testing.T) {
-	var jwks *httptest.Server
-	jwks = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer jwks.Close()
@@ -217,13 +217,13 @@ func TestFetchJWKS_Non200(t *testing.T) {
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jwks HTTP 500")
-	_ = jwks
 }
 
 func TestFetchJWKS_BadJSON(t *testing.T) {
 	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte("not-json"))
+		_, werr := w.Write([]byte("not-json"))
+		require.NoError(t, werr)
 	}))
 	defer jwks.Close()
 	srv := discoveryPointingAt(t, jwks.URL)
