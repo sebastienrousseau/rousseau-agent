@@ -35,7 +35,7 @@ func TestSystemPrompt_Default(t *testing.T) {
 
 func TestOpenStore_ExpandsHomeDefault(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	store, err := openStore(context.Background(), "")
+	store, err := openStore(context.Background(), config.StateConfig{})
 	require.NoError(t, err)
 	defer func() { _ = store.Close() }() //nolint:errcheck // test cleanup
 }
@@ -43,16 +43,39 @@ func TestOpenStore_ExpandsHomeDefault(t *testing.T) {
 func TestOpenStore_Explicit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "sessions.db")
-	store, err := openStore(context.Background(), path)
+	store, err := openStore(context.Background(), config.StateConfig{Path: path})
 	require.NoError(t, err)
 	defer func() { _ = store.Close() }() //nolint:errcheck // test cleanup
 	_, err = os.Stat(path)
 	assert.NoError(t, err)
 }
 
+func TestOpenStore_PostgresRequiresDSN(t *testing.T) {
+	// driver=postgres without a DSN must fail cleanly at Open,
+	// not silently fall through to sqlite.
+	_, err := openStore(context.Background(), config.StateConfig{Driver: "postgres"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dsn")
+}
+
+func TestOpenStore_UnknownDriverRejected(t *testing.T) {
+	_, err := openStore(context.Background(), config.StateConfig{Driver: "mysql"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown state driver")
+}
+
+func TestOpenSQLiteStore_RejectsPostgresDriver(t *testing.T) {
+	// Extension-hungry commands (mcp, session, daemon) still
+	// require SQLite until the extensions port. openSQLiteStore
+	// must surface a legible error rather than silently degrade.
+	_, err := openSQLiteStore(context.Background(), config.StateConfig{Driver: "postgres", DSN: "postgres://x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "state.driver=sqlite")
+}
+
 func TestLoadOrCreateSession_New(t *testing.T) {
 	dir := t.TempDir()
-	store, err := openStore(context.Background(), filepath.Join(dir, "s.db"))
+	store, err := openStore(context.Background(), config.StateConfig{Path: filepath.Join(dir, "s.db")})
 	require.NoError(t, err)
 	defer func() { _ = store.Close() }() //nolint:errcheck // test cleanup
 
@@ -64,7 +87,7 @@ func TestLoadOrCreateSession_New(t *testing.T) {
 
 func TestLoadOrCreateSession_Resume(t *testing.T) {
 	dir := t.TempDir()
-	store, err := openStore(context.Background(), filepath.Join(dir, "s.db"))
+	store, err := openStore(context.Background(), config.StateConfig{Path: filepath.Join(dir, "s.db")})
 	require.NoError(t, err)
 	defer func() { _ = store.Close() }() //nolint:errcheck // test cleanup
 
@@ -79,7 +102,7 @@ func TestLoadOrCreateSession_Resume(t *testing.T) {
 
 func TestLoadOrCreateSession_ResumeMissing(t *testing.T) {
 	dir := t.TempDir()
-	store, err := openStore(context.Background(), filepath.Join(dir, "s.db"))
+	store, err := openStore(context.Background(), config.StateConfig{Path: filepath.Join(dir, "s.db")})
 	require.NoError(t, err)
 	defer func() { _ = store.Close() }() //nolint:errcheck // test cleanup
 
