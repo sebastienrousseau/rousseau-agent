@@ -209,7 +209,7 @@ The full command tree:
 | **Resilience** | Per-JID token bucket (`internal/ratelimit`), panic-recovery middleware, and a circuit breaker per provider (`internal/resilience`, `sony/gobreaker/v2`). |
 | **Multimodal input** | Every provider adapter maps `ContentImage` to its native wire shape. `internal/media` enforces 10 MiB per image and 40 MiB per turn, with the MIME type sniffed from the first 512 bytes. Optional voice-note transcription via `whisper-cpp` or the OpenAI audio API. |
 | **Identity** | Stable identity IDs across transports (`internal/identity`) so one conversation can move from WhatsApp to Slack to email. `/whoami`, `/link`, `/unlink` chat commands resolve without an LLM round trip. |
-| **Multi-tenancy** | `internal/tenant` scopes sessions, state, and policy per tenant. |
+| **Workspaces** | `internal/workspace` scopes routing, credentials, and per-team approver rules within a single on-premise deployment (not a SaaS boundary — see [`docs/workspaces.md`](./docs/workspaces.md)). |
 | **Cost accounting** | Every completion records provider, model, token usage (input, output, cache-read, cache-creation) and an estimated USD figure from `internal/pricing`. Query with `rousseau session cost`. |
 | **Observability** | Prometheus registry with 15 `rousseau_*` metric families, an OpenTelemetry OTLP/HTTP tracer, and a redacting `slog` handler carrying default rules for every credential shape the daemon touches. |
 | **TUI** | Bubble Tea client with viewport, scrollback, streaming indicator, and typing feedback. |
@@ -988,7 +988,7 @@ transparency log for cosign, and the Go module checksum database for
 | [`docs/a2a.md`](./docs/a2a.md) | Agent-to-Agent protocol design |
 | [`docs/security/sandbox.md`](./docs/security/sandbox.md) | The four bash-sandbox backends |
 | [`docs/compatibility.md`](./docs/compatibility.md) | Compatibility contract |
-| [`docs/multi-tenant.md`](./docs/multi-tenant.md) | Multi-tenant mode |
+| [`docs/workspaces.md`](./docs/workspaces.md) | Per-team workspaces (routing + config scope) |
 | [`docs/memory-letta.md`](./docs/memory-letta.md) | Letta-style self-editing memory |
 | [`docs/plan-mode.md`](./docs/plan-mode.md) | Plan mode with checkpoints |
 | [`docs/progress-updates.md`](./docs/progress-updates.md) | Live progress and mid-flight interaction |
