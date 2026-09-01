@@ -1,0 +1,31 @@
+{{- if .Values.serviceMonitor.enabled -}}
+# Rendered ONLY when serviceMonitor.enabled=true. If the
+# monitoring.coreos.com/v1 CRD isn't installed the apply will fail
+# — that's intentional; a silent no-render would hide the operator's
+# assumption that Prometheus Operator is available.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "rousseau-agent.fullname" . }}
+  labels:
+    {{- include "rousseau-agent.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "rousseau-agent.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+      # The daemon exposes /metrics on the metrics port. Standard
+      # Prometheus text format — no scrape-config custom relabelling
+      # needed.
+      path: /metrics
+  {{- with .Values.serviceMonitor.namespaceSelector }}
+  namespaceSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end -}}

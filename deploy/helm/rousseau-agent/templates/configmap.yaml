@@ -1,0 +1,14 @@
+{{- if .Values.config -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rousseau-agent.fullname" . }}-config
+  labels:
+    {{- include "rousseau-agent.labels" . | nindent 4 }}
+data:
+  # The daemon reads /etc/rousseau/config.yaml when present. Keeping
+  # the file name matched to the on-disk default lets operators
+  # troubleshoot with the same path they'd `podman run --volume` in.
+  config.yaml: |-
+    {{- toYaml .Values.config | nindent 4 }}
+{{- end -}}

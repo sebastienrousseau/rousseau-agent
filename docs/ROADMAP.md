@@ -200,10 +200,10 @@ Ships free — deployment ergonomics belong in the core because every enterprise
 
 **Follow-ups:**
 - Port the extension tables (cron, jidmap, oauth, recall, session_cache, session_costs) to Postgres so the whole daemon (not just sessions) is HA — one PR per table so each keeps a small review surface.
-- Helm chart under `deploy/helm/` with a Postgres subchart dependency.
+- ~~Helm chart under `deploy/helm/`~~ — **delivered in PR #121** (chart at `deploy/helm/rousseau-agent`). Values.yaml with commented defaults, Deployment / Service / ConfigMap / Secret / PVC / ServiceAccount / ServiceMonitor templates, NOTES.txt with licence + multi-replica warnings. `helm lint --strict` clean. No Postgres subchart dependency — enterprises bring their own DSN.
 - Redis session-cache adapter for read-hot session lookups.
 
-**Estimate:** Postgres pilot shipped in 1 day. Extension ports ≈ 3 days. Helm chart ≈ 3 days. Redis cache ≈ 1 day.
+**Estimate:** Postgres pilot shipped in 1 day. Extension ports ≈ 3 days. Helm chart shipped in 1 day. Redis cache ≈ 1 day.
 
 ---
 

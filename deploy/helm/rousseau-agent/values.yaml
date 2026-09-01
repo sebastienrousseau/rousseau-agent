@@ -1,0 +1,179 @@
+# Default values for rousseau-agent.
+# Every knob is optional; the defaults produce a single-replica
+# self-hosted install that mirrors what `podman run` gives you.
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: false           # daemon does not talk to the Kubernetes API
+  name: ""                   # empty → generated from fullname
+  annotations: {}
+
+image:
+  # Two image flavours ship: `latest` (bundles the claude CLI —
+  # "unbox and run") and `distroless-latest` (daemon only, TLS
+  # roots from the base image). Pick per your compliance posture.
+  repository: ghcr.io/sebastienrousseau/rousseau-agent
+  tag: ""                  # defaults to .Chart.appVersion — override for pinning
+  pullPolicy: IfNotPresent
+  # imagePullSecrets: [{name: ghcr-io}]   # uncomment for private registries
+  imagePullSecrets: []
+
+# Replica count. Single-replica installs use the sqlite driver
+# (default). Multi-replica installs REQUIRE state.driver=postgres —
+# see docs/workspaces.md and ROADMAP §2.4. The chart will render but
+# your daemon replicas will silently NOT share session state if you
+# scale beyond 1 without configuring Postgres.
+replicaCount: 1
+
+# The subcommand rousseau runs. `whatsapp` is the default because
+# it's the most-adopted transport; swap to `slack` / `discord` /
+# `telegram` etc. per your bridge target. See `rousseau --help` for
+# the full list.
+command: whatsapp
+# Extra CLI args appended after `command`. Example: --allow +14155551212@s.whatsapp.net
+extraArgs: []
+
+# rousseau-agent config.yaml — inlined into a ConfigMap and mounted
+# at /etc/rousseau/config.yaml. Every top-level key mirrors the
+# schema in internal/config/config.go. Leave empty to use the
+# built-in defaults; the daemon looks for config.yaml under
+# /etc/rousseau/ if the file exists.
+config:
+  # provider: claudecli
+  # log:
+  #   level: info
+  #   format: json
+  # state:
+  #   driver: sqlite      # or "postgres" for multi-replica HA
+  #   path: /var/lib/rousseau/sessions.db
+  #   # dsn: postgres://user:pass@rousseau-agent-postgresql:5432/rousseau?sslmode=require
+  # agent:
+  #   max_iterations: 32
+  # …see the repo README for the full schema
+  {}
+
+# Environment variables passed directly to the daemon. Sensitive
+# values (API keys, licence) should come from `envFromSecret` instead.
+env: {}
+  # ROUSSEAU_LOG_FORMAT: json
+
+# Reference an existing Secret whose keys become env vars on the
+# pod. Standard pattern for `ROUSSEAU_LICENSE_KEY` +
+# `ANTHROPIC_API_KEY` + transport tokens.
+envFromSecret: ""
+# envFromSecret: rousseau-agent-secrets
+
+# The offline enterprise licence. Two ways to plumb it:
+#   1. Set licence.value here — creates a Secret + injects
+#      ROUSSEAU_LICENSE_KEY. Convenient but the value lives in
+#      your values.yaml.
+#   2. Leave blank and reference `envFromSecret` above with a
+#      pre-created Secret containing ROUSSEAU_LICENSE_KEY.
+# Absent → the daemon runs on the free `core` tier.
+licence:
+  value: ""
+  # File-based licence (mode-0600) is an alternative to env — set
+  # this path if you're mounting via CSI / vault-agent-injector.
+  # Env still wins if both are set.
+  path: ""
+
+# Persistent state. WhatsApp pairing data + session history live here.
+# Set persistence.enabled=false if driver=postgres AND you don't need
+# transport-side persistence (e.g. bridging Slack, not WhatsApp).
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""              # empty → cluster default
+  accessMode: ReadWriteOnce
+  # existingClaim: my-pvc       # bring your own PVC
+  existingClaim: ""
+
+# Container ports. rousseau exposes Prometheus metrics + an OTLP
+# tracer endpoint by default; port 9090 is the metrics scrape target.
+service:
+  type: ClusterIP
+  metricsPort: 9090
+  # annotations: {}
+
+# Prometheus ServiceMonitor — only rendered if serviceMonitor.enabled
+# AND the CRD is available on the cluster.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+  # namespaceSelector: {matchNames: [monitoring]}
+
+# Pod-level SecurityContext — hardening defaults mirror the Quadlet
+# unit shipped with the repo (docker/rousseau-agent.container).
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532            # nonroot user baked into the distroless image
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level SecurityContext — matches the Quadlet defaults.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  # Defaults sized for a single-transport install processing < 10 msg/min.
+  # Provider-side latency dominates; bump if you enable multiple transports
+  # in one pod.
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# Liveness / readiness probes. The daemon exposes /healthz on the
+# metrics port. Failing readiness pulls the pod out of the Service
+# without killing it — matters when your restarts kick the WhatsApp
+# QR pairing.
+probes:
+  liveness:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Rollout strategy. The daemon holds long-lived transport sockets
+# (WhatsApp especially — QR pairing is per-pod). Recreate is the
+# safe default; RollingUpdate risks split-brain on a WhatsApp pod
+# unless you're on driver=postgres AND the transport supports
+# multi-session pairing.
+strategy:
+  type: Recreate
+
+# Grace period for shutdown — the daemon closes provider streams +
+# flushes audit-egress on SIGTERM. Longer if your egress sink (SIEM)
+# is on a slow network.
+terminationGracePeriodSeconds: 30
+
+# Extra objects to render alongside the main manifests. Useful for
+# NetworkPolicy, ExternalSecret refs, or PodDisruptionBudget.
+extraManifests: []
+# extraManifests:
+#   - apiVersion: policy/v1
+#     kind: PodDisruptionBudget
+#     …

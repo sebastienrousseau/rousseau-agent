@@ -712,10 +712,24 @@ sample nftables allowlist ships at `docker/nftables.example.conf`.
 
 ### Kubernetes and OpenShift
 
-The daemon is a stateless single binary; a `Deployment` plus a
-`PersistentVolumeClaim` for the state directory is sufficient. Because
-there is no inbound HTTP surface, outbound-WebSocket transports need no
-`Service` and no `Ingress`.
+A production-shape Helm chart ships at
+[`deploy/helm/rousseau-agent`](./deploy/helm/rousseau-agent). It mirrors
+the Quadlet hardening baseline (non-root, read-only rootfs, seccomp
+`RuntimeDefault`, `capabilities.drop: [ALL]`) and packages the
+Deployment, Service, ConfigMap for `config.yaml`, PVC for
+`/var/lib/rousseau`, optional Secret for the enterprise licence,
+optional Prometheus Operator `ServiceMonitor`, and NOTES.txt that
+warns operators when `replicaCount > 1` without configuring
+`state.driver=postgres`.
+
+```bash
+helm install rousseau ./deploy/helm/rousseau-agent \
+  --namespace rousseau-agent --create-namespace
+```
+
+See [`deploy/helm/rousseau-agent/README.md`](./deploy/helm/rousseau-agent/README.md)
+for the values-file reference and common overrides (different transport,
+enterprise licence, HA with Postgres).
 
 ---
 
