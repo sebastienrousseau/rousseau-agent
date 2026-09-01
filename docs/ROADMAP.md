@@ -209,11 +209,11 @@ Ships free — deployment ergonomics belong in the core because every enterprise
 
 ### 2.5 Reframe `internal/tenant` from SaaS to workspaces ⚖ **core** (cleanup)
 
-`internal/tenant` scaffolding exists but was framed for multi-customer SaaS isolation — a model we've explicitly rejected. Rename types and docs to name what it actually is: **logical workspaces / teams within a single on-premise deployment**. No behaviour change; documentation + comment sweep only.
+**Delivered (PR #119):** package renamed `internal/tenant` → `internal/workspace`; all types (`ID`, `Config`, `Resolver`, `Registry`, `NewMapResolver`, `WithID`, `FromContext`) keep their shape but reframed via package doc, error messages, ctx-key names, and comments to name what it actually is: **logical workspaces / teams within a single on-premise deployment**. `docs/multi-tenant.md` replaced by `docs/workspaces.md` with a fresh "what a workspace is (and is not)" section that makes the non-SaaS boundary explicit. COMMERCIAL.md + README.md updated to match. 100 % test coverage retained. No behaviour change; the runtime is byte-identical.
 
-**Why:** stops the confusion. A future contributor reading `internal/tenant` shouldn't be misled into building SaaS-shaped features on top of it.
+**Why this mattered:** stopped the confusion. A future contributor reading `internal/tenant` was one wrong assumption away from adding a `tenant_id` column to every table + building SaaS-shaped features on top of it. The rename + doc rewrite closes that trapdoor.
 
-**Estimate:** 0.5 days.
+**Estimate:** 0.5 days (shipped).
 
 ### 2.6 Google Vertex + AWS Bedrock providers ⚖ **core**
 

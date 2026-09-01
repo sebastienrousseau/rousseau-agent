@@ -107,13 +107,13 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
   checkpoint recording. `MemoryCheckpointStore` ships as the
   default backend; SQLite persistence + the `/plan` chat command
   are follow-ups.
-- **Multi-tenant resolver runtime** (`internal/tenant` +
-  `docs/multi-tenant.md`) — `NewMapResolver([]Config)` →
+- **Workspace resolver runtime** (originally `internal/tenant` +
+  `docs/multi-tenant.md`; renamed in v0.0.3 to `internal/workspace` +
+  `docs/workspaces.md` — see ROADMAP §2.5) — `NewMapResolver([]Config)` →
   `Registry` with three allowlist patterns (exact
   `<transport>:<sender>`, transport-agnostic `<sender>`, catch-all
   `*`) + `ConfigFor(id)` / `All()` accessors for downstream
-  per-tenant credentials + approver rules. State-table `tenant_id`
-  migrations + per-tenant vault wiring are follow-ups.
+  per-workspace credentials + approver rules.
 
 ### Coverage
 

@@ -203,9 +203,9 @@ a gate.** A "just this once" exception erodes the boundary and
 turns future upgrades into breaking changes for customers.
 
 **Do not add SaaS-shaped work.** No billing hooks, no external
-telemetry, no cross-customer isolation. `internal/tenant` is
-scoped to logical workspaces within a *single on-premise
-deployment*, not multi-customer SaaS.
+telemetry, no cross-customer isolation. `internal/workspace` is
+scoped to logical workspaces (teams / squads / projects) within
+a *single on-premise deployment*, not multi-customer SaaS.
 
 **Documentation follows the code.** Any new gated feature updates
 this document with its position on the boundary AND its constant
