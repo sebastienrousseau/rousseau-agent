@@ -172,8 +172,69 @@ func TestCheckState_EmptyPathUsesHome(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	got := checkState(&config.Config{})
 	require.NotEmpty(t, got)
-	assert.Equal(t, "state.path", got[0].Name)
-	assert.Contains(t, got[0].Detail, "rousseau")
+	// First row is now state.driver (default sqlite); the
+	// state.path row that used to be first is now second.
+	assert.Equal(t, "state.driver", got[0].Name)
+	assert.Equal(t, "sqlite", got[0].Detail)
+	require.GreaterOrEqual(t, len(got), 2)
+	assert.Equal(t, "state.path", got[1].Name)
+	assert.Contains(t, got[1].Detail, "rousseau")
+}
+
+func TestCheckState_PostgresDriverSurfacesRedactedDSN(t *testing.T) {
+	got := checkState(&config.Config{
+		State: config.StateConfig{
+			Driver: "postgres",
+			DSN:    "postgres://alice:supersecret@db.example:5432/rousseau?sslmode=require",
+		},
+	})
+	require.NotEmpty(t, got)
+	assert.Equal(t, "state.driver", got[0].Name)
+	assert.Equal(t, "postgres", got[0].Detail)
+
+	var dsnRow diagResult
+	for _, r := range got {
+		if r.Name == "state.dsn" {
+			dsnRow = r
+		}
+	}
+	assert.Equal(t, "ok", dsnRow.Status)
+	assert.Contains(t, dsnRow.Detail, "alice:***@db.example", "password must be redacted")
+	assert.NotContains(t, dsnRow.Detail, "supersecret", "raw password MUST NOT appear")
+}
+
+func TestCheckState_PostgresMissingDSNIsFail(t *testing.T) {
+	got := checkState(&config.Config{State: config.StateConfig{Driver: "postgres"}})
+	var haveFail bool
+	for _, r := range got {
+		if r.Status == "fail" {
+			haveFail = true
+		}
+	}
+	assert.True(t, haveFail, "driver=postgres without DSN must be a fail row")
+}
+
+func TestCheckState_UnknownDriverIsFail(t *testing.T) {
+	got := checkState(&config.Config{State: config.StateConfig{Driver: "mysql"}})
+	var haveFail bool
+	for _, r := range got {
+		if r.Status == "fail" {
+			haveFail = true
+		}
+	}
+	assert.True(t, haveFail)
+}
+
+func TestRedactDSN_HandlesShapes(t *testing.T) {
+	// URL with password → redacted.
+	assert.Equal(t, "postgres://alice:***@host/db",
+		redactDSN("postgres://alice:hunter2@host/db"))
+	// URL without password → untouched.
+	assert.Equal(t, "postgres://alice@host/db",
+		redactDSN("postgres://alice@host/db"))
+	// Keyword form (not covered by the redactor — pass-through).
+	assert.Equal(t, "user=alice password=hunter2 host=db",
+		redactDSN("user=alice password=hunter2 host=db"))
 }
 
 func TestCheckState_StatErrorIsFail(t *testing.T) {
@@ -604,7 +665,7 @@ func TestSessionShowCmd_RendersToolUseAndResult(t *testing.T) {
 
 func TestOpenStore_UnresolvableHomeErrors(t *testing.T) {
 	noHome(t)
-	_, err := openStore(context.Background(), "")
+	_, err := openStore(context.Background(), config.StateConfig{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolve home")
 }
@@ -612,13 +673,13 @@ func TestOpenStore_UnresolvableHomeErrors(t *testing.T) {
 func TestOpenStore_MkdirFailureErrors(t *testing.T) {
 	blocker := filepath.Join(t.TempDir(), "file")
 	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0o600))
-	_, err := openStore(context.Background(), filepath.Join(blocker, "sessions.db"))
+	_, err := openStore(context.Background(), config.StateConfig{Path: filepath.Join(blocker, "sessions.db")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create state dir")
 }
 
 func TestLoadOrCreateSession_SaveFailureSurfaces(t *testing.T) {
-	store, err := openStore(context.Background(), filepath.Join(t.TempDir(), "s.db"))
+	store, err := openStore(context.Background(), config.StateConfig{Path: filepath.Join(t.TempDir(), "s.db")})
 	require.NoError(t, err)
 	require.NoError(t, store.Close())
 	_, err = loadOrCreateSession(context.Background(), store, "", "titled")

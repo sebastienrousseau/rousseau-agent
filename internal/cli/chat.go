@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
+	pgstore "github.com/sebastienrousseau/rousseau-agent/internal/state/postgres"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
@@ -36,7 +39,7 @@ func newChatCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
-			store, err := openStore(ctx, cfg.State.Path)
+			store, err := openStore(ctx, cfg.State)
 			if err != nil {
 				return err
 			}
@@ -100,18 +103,66 @@ func newChatCmd(opts *Options) *cobra.Command {
 	return cmd
 }
 
-func openStore(ctx context.Context, path string) (state.Store, error) {
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("resolve home: %w", err)
+// openStore dispatches to the driver named in cfg.Driver. Empty
+// driver defaults to sqlite so existing single-replica installs
+// keep working with no config change. Postgres requires cfg.DSN;
+// misconfiguration is surfaced at Open time (fail-fast) rather
+// than deferred to the first Save.
+func openStore(ctx context.Context, cfg config.StateConfig) (state.Store, error) {
+	driver := cfg.Driver
+	if driver == "" {
+		driver = "sqlite"
+	}
+	switch driver {
+	case "sqlite":
+		path := cfg.Path
+		if path == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("resolve home: %w", err)
+			}
+			path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
 		}
-		path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, fmt.Errorf("create state dir: %w", err)
+		}
+		return sqlitestore.Open(ctx, path)
+	case "postgres":
+		if cfg.DSN == "" {
+			return nil, fmt.Errorf("state driver=postgres requires state.dsn (e.g. postgres://user:pass@host:5432/db?sslmode=require)")
+		}
+		return pgstore.Open(ctx, cfg.DSN)
+	default:
+		return nil, fmt.Errorf("unknown state driver %q (want \"sqlite\" or \"postgres\")", driver)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("create state dir: %w", err)
+}
+
+// openSQLiteStore opens a store for the commands that still
+// need SQLite-only extensions (cron, jidmap, oauth, recall).
+// Errors cleanly when the operator has configured a non-sqlite
+// driver — the alternative (silent fall-through to sqlite) would
+// silently degrade an HA deploy back to per-replica state.
+//
+// Once the extensions gain a Postgres implementation the driver
+// switch should collapse into openStore + a runtime type check.
+func openSQLiteStore(ctx context.Context, cfg config.StateConfig) (*sqlitestore.Store, error) {
+	driver := cfg.Driver
+	if driver == "" {
+		driver = "sqlite"
 	}
-	return sqlitestore.Open(ctx, path)
+	if driver != "sqlite" {
+		return nil, fmt.Errorf("this command requires state.driver=sqlite (got %q); Postgres backend covers session state only, extension tables (cron/jidmap/oauth/recall) are not yet ported", driver)
+	}
+	store, err := openStore(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	concrete, ok := store.(*sqlitestore.Store)
+	if !ok {
+		_ = store.Close() //nolint:errcheck // best-effort cleanup on error path
+		return nil, errors.New("openSQLiteStore: driver=sqlite did not return *sqlite.Store — refusing to proceed")
+	}
+	return concrete, nil
 }
 
 func loadOrCreateSession(ctx context.Context, store state.Store, id, title string) (*agent.Session, error) {

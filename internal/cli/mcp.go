@@ -21,12 +21,11 @@ func newMCPCmd(opts *Options) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			store, err := openStore(ctx, opts.Config.State.Path)
+			concrete, err := openSQLiteStore(ctx, opts.Config.State)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
-			concrete := store.(*sqlitestore.Store)
+			defer func() { _ = concrete.Close() }() //nolint:errcheck // best-effort cleanup
 
 			cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
 			if err != nil {

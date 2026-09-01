@@ -572,8 +572,24 @@ type LogConfig struct {
 }
 
 // StateConfig configures the session store.
+//
+// Two drivers ship in the core: sqlite (default — single-replica,
+// zero-config, embedded) and postgres (multi-replica HA, requires
+// an external server). Selection lives here rather than a top-
+// level driver field so operators bind one struct and forget it.
 type StateConfig struct {
+	// Driver selects the backend: "sqlite" (default) or "postgres".
+	// Empty is treated as "sqlite" so existing configs keep working
+	// with no change.
+	Driver string `mapstructure:"driver"`
+	// Path is the SQLite database path. Ignored when driver is
+	// "postgres".
 	Path string `mapstructure:"path"`
+	// DSN is the Postgres libpq-style URL, e.g.
+	//   postgres://user:pass@host:5432/rousseau?sslmode=require
+	// Ignored when driver is "sqlite". Required when driver is
+	// "postgres".
+	DSN string `mapstructure:"dsn"`
 }
 
 // AgentConfig configures the agent loop.

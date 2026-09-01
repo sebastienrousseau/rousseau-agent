@@ -117,11 +117,11 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		return nil, err
 	}
 
-	sessions, err := openStore(ctx, cfg.State.Path)
+	concrete, err := openSQLiteStore(ctx, cfg.State)
 	if err != nil {
 		return nil, err
 	}
-	concrete := sessions.(*sqlitestore.Store)
+	sessions := state.Store(concrete)
 
 	jidMap, err := sqlitestore.NewJIDMap(ctx, concrete)
 	if err != nil {

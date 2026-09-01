@@ -253,14 +253,9 @@ func newSessionDeleteCmd(opts *Options) *cobra.Command {
 }
 
 func openSessionStore(ctx context.Context, opts *Options) (*sqlitestore.Store, error) {
-	store, err := openStore(ctx, opts.Config.State.Path)
+	concrete, err := openSQLiteStore(ctx, opts.Config.State)
 	if err != nil {
 		return nil, err
-	}
-	concrete, ok := store.(*sqlitestore.Store)
-	if !ok {
-		_ = store.Close() //nolint:errcheck // best-effort cleanup on error path
-		return nil, errors.New("session commands require the sqlite store")
 	}
 	return concrete, nil
 }

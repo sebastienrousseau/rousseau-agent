@@ -246,23 +246,79 @@ func checkProvider(ctx context.Context, cfg *config.Config) []diagResult {
 }
 
 func checkState(cfg *config.Config) []diagResult {
-	path := cfg.State.Path
-	if path == "" {
-		home, _ := os.UserHomeDir() //nolint:errcheck // fall back to empty home; join still produces a valid probe path
-		path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
+	driver := cfg.State.Driver
+	if driver == "" {
+		driver = "sqlite"
 	}
-	out := []diagResult{{Name: "state.path", Status: "info", Detail: path}}
-	if info, err := os.Stat(path); err == nil {
-		out = append(out, diagResult{Name: "state.db_size", Status: "ok", Detail: humanBytes(info.Size())})
-		if n, err := countSessions(path); err == nil {
-			out = append(out, diagResult{Name: "state.sessions", Status: "ok", Detail: fmt.Sprintf("%d recorded", n)})
+	out := []diagResult{{Name: "state.driver", Status: "info", Detail: driver}}
+
+	switch driver {
+	case "sqlite":
+		path := cfg.State.Path
+		if path == "" {
+			home, _ := os.UserHomeDir() //nolint:errcheck // fall back to empty home; join still produces a valid probe path
+			path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
 		}
-	} else if os.IsNotExist(err) {
-		out = append(out, diagResult{Name: "state.db_size", Status: "info", Detail: "does not exist yet (created on first run)"})
-	} else {
-		out = append(out, diagResult{Name: "state.db_size", Status: "fail", Detail: err.Error()})
+		out = append(out, diagResult{Name: "state.path", Status: "info", Detail: path})
+		if info, err := os.Stat(path); err == nil {
+			out = append(out, diagResult{Name: "state.db_size", Status: "ok", Detail: humanBytes(info.Size())})
+			if n, err := countSessions(path); err == nil {
+				out = append(out, diagResult{Name: "state.sessions", Status: "ok", Detail: fmt.Sprintf("%d recorded", n)})
+			}
+		} else if os.IsNotExist(err) {
+			out = append(out, diagResult{Name: "state.db_size", Status: "info", Detail: "does not exist yet (created on first run)"})
+		} else {
+			out = append(out, diagResult{Name: "state.db_size", Status: "fail", Detail: err.Error()})
+		}
+	case "postgres":
+		if cfg.State.DSN == "" {
+			out = append(out, diagResult{
+				Name:   "state.dsn",
+				Status: "fail",
+				Detail: "state.driver=postgres but state.dsn is empty",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name:   "state.dsn",
+				Status: "ok",
+				Detail: redactDSN(cfg.State.DSN),
+			})
+		}
+	default:
+		out = append(out, diagResult{
+			Name:   "state.driver",
+			Status: "fail",
+			Detail: fmt.Sprintf("unknown driver %q (want sqlite or postgres)", driver),
+		})
 	}
 	return out
+}
+
+// redactDSN masks the password segment of a libpq URL so the DSN
+// can be surfaced in diagnostic output without leaking creds.
+// Keeps the scheme + user + host so operators can confirm the
+// right server is targeted.
+func redactDSN(dsn string) string {
+	// Cheap regexp-free redaction — pgx accepts both "url://" and
+	// "keyword=value" forms. Only the URL form has a colon-
+	// delimited password field to worry about; the keyword form
+	// splits password onto its own token we leave to the operator
+	// (documented in COMMERCIAL.md).
+	i := strings.Index(dsn, "://")
+	if i < 0 {
+		return dsn
+	}
+	rest := dsn[i+3:]
+	at := strings.LastIndex(rest, "@")
+	if at < 0 {
+		return dsn
+	}
+	userinfo := rest[:at]
+	colon := strings.Index(userinfo, ":")
+	if colon < 0 {
+		return dsn
+	}
+	return dsn[:i+3] + userinfo[:colon] + ":***" + rest[at:]
 }
 
 func checkWhatsApp(cfg *config.Config) []diagResult {

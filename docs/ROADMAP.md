@@ -196,7 +196,14 @@ Two deliverables in one workstream because they only matter together:
 
 Ships free — deployment ergonomics belong in the core because every enterprise trial starts with "can I deploy this in my cluster?". A hard-to-deploy OSS product has no paid conversion funnel.
 
-**Estimate:** 3 days Helm chart + 3 days Postgres driver + 1 day Redis cache adapter = 1 week total.
+**Delivered so far (PR #116):** `internal/state/postgres/` implements the canonical `state.Store` (Save/Load/List/Delete/Close) on top of pgx v5. `StateConfig` gains `driver` + `dsn` fields; empty driver defaults to sqlite so existing single-replica installs are byte-compatible. `openStore` dispatches on driver; extension-hungry commands (mcp, session, daemon) now go through `openSQLiteStore` which errors cleanly if the operator has selected postgres — prevents a silent HA regression where a "postgres-configured" deploy quietly falls back to per-replica SQLite for cron/jidmap/oauth. `rousseau doctor` surfaces `state.driver` + a redacted `state.dsn`.
+
+**Follow-ups:**
+- Port the extension tables (cron, jidmap, oauth, recall, session_cache, session_costs) to Postgres so the whole daemon (not just sessions) is HA — one PR per table so each keeps a small review surface.
+- Helm chart under `deploy/helm/` with a Postgres subchart dependency.
+- Redis session-cache adapter for read-hot session lookups.
+
+**Estimate:** Postgres pilot shipped in 1 day. Extension ports ≈ 3 days. Helm chart ≈ 3 days. Redis cache ≈ 1 day.
 
 ---
 
