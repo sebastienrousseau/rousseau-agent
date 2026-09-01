@@ -210,6 +210,58 @@ func TestDispatch_ImageEnvelopeMIMELyingLogsAndDelivers(t *testing.T) {
 		"sniffed MIME wins over the envelope's claim")
 }
 
+// ownOutboundImageEvent builds an image the account holder sent to a
+// THIRD PARTY from another linked device: IsFromMe=true and Chat is the
+// third party (not the self-chat). WhatsApp echoes such messages back to
+// this linked device.
+func ownOutboundImageEvent(sender, chat types.JID, caption string) *events.Message {
+	e := imageEvent(sender, chat, "image/png", caption)
+	e.Info.IsFromMe = true
+	return e
+}
+
+// TestResolveInbound_OwnOutboundImageIsSkippedNotEmptyText is the
+// unit-level regression for the media own-outbound hole. An image the
+// operator sends to a third party carries no extractable text, so before
+// the own-outbound guard was moved ahead of the empty-text gate it was
+// classified SkipEmptyText — which Dispatch's image branch then
+// "recovered", replying into the third party's chat.
+func TestResolveInbound_OwnOutboundImageIsSkippedNotEmptyText(t *testing.T) {
+	own := jid("15551234567", 21)
+	me := jid("15551234567", 3)     // another linked device of ours
+	third := jid("447700900000", 0) // the contact we photographed
+	res := ResolveInbound(ownOutboundImageEvent(me, third.ToNonAD(), "look at this"), &own)
+	assert.Equal(t, SkipOwnOutbound, res.Skip,
+		"an image the operator sends to a third party must be own_outbound, not empty_text")
+}
+
+// TestDispatch_OwnOutboundImageToThirdPartyIsNotAnswered is the
+// end-to-end guard: uploading a photo to a contact must never draw a
+// reply or reaction into that contact's chat, even though the image
+// branch would otherwise recover a caption-less (empty-text) media
+// message.
+func TestDispatch_OwnOutboundImageToThirdPartyIsNotAnswered(t *testing.T) {
+	own := jid("15551234567", 21)
+	me := jid("15551234567", 3)
+	third := jid("447700900000", 0)
+
+	logs := &logBuffer{}
+	send := &fakeSender{}
+	h := &captureHandler{reply: "should not happen"}
+	Dispatch(context.Background(), DispatchInput{
+		Event:      ownOutboundImageEvent(me, third.ToNonAD(), ""),
+		OwnID:      &own,
+		Sender:     send,
+		Downloader: &fakeDownloader{audio: pngHeader, mimetype: "image/png"},
+		Handler:    h,
+		Logger:     logs.newLogger(),
+	})
+	assert.Empty(t, h.got.From, "handler must not run for our own outbound image")
+	assert.Empty(t, send.sent, "no reply may land in the third party's chat")
+	assert.Empty(t, send.presence, "no typing indicator either")
+	assert.True(t, logs.has("whatsapp.skipped_own_outbound"))
+}
+
 func TestDownloadImage_NilMessageRejected(t *testing.T) {
 	att, err := downloadImage(context.Background(), &fakeDownloader{}, nil, media.Policy{}, silentLogger())
 	require.Error(t, err)
