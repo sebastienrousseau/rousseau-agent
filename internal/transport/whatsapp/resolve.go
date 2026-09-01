@@ -74,12 +74,20 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 	if evt.Info.IsFromMe && ownID != nil && evt.Info.Sender.Device == ownID.Device {
 		return Resolved{Skip: SkipOwnDevice}
 	}
-	body := strings.TrimSpace(extractText(evt.Message))
-	if body == "" {
-		return Resolved{Skip: SkipEmptyText}
-	}
-
-	// Sender normalisation.
+	// Sender normalisation + own-outbound guard.
+	//
+	// This block MUST run BEFORE the empty-text gate below. Media-only
+	// messages (a photo or voice note with no caption) carry no
+	// extractable text, so the empty-text gate classifies them
+	// SkipEmptyText — and Dispatch's media-recovery branches (image,
+	// audio) deliberately act on SkipEmptyText. If the own-outbound
+	// determination ran after the empty-text return, an image/voice note
+	// the account holder sent to a THIRD PARTY would be classified
+	// SkipEmptyText, slip past this guard, be recovered by the media
+	// branch, attributed to our own (allowlisted) JID, and answered into
+	// the third party's chat. Ordering the guard first closes that hole
+	// for every message type, text and media alike.
+	//
 	//  1. Strip the multi-device address suffix so allowlists written
 	//     as the plain user JID match regardless of which linked
 	//     device sent the message.
@@ -117,6 +125,11 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 			return Resolved{Skip: SkipOwnOutbound}
 		}
 		from = ownJID
+	}
+
+	body := strings.TrimSpace(extractText(evt.Message))
+	if body == "" {
+		return Resolved{Skip: SkipEmptyText}
 	}
 
 	return Resolved{
