@@ -1,0 +1,44 @@
+apiVersion: v2
+name: rousseau-agent
+description: |
+  Self-hosted personal AI agent daemon that bridges nine chat transports
+  to the LLM provider of your choice, in a single static Go binary.
+  Ships the OSS core; runtime-gates enterprise features on an offline
+  Ed25519-signed licence key (see docs/COMMERCIAL.md).
+type: application
+
+# The chart version tracks the same monotonic +0.0.1 policy as the
+# app itself (see CHANGELOG.md and repo convention). Bump this line
+# for chart-only changes; bump appVersion for daemon-code changes.
+version: 0.0.1
+
+# App version is the daemon image tag this chart is validated against.
+# When bumping, run `helm lint` + a `--dry-run` install against the
+# new image before publishing.
+appVersion: "v0.0.3"
+
+kubeVersion: ">=1.28.0-0"
+
+home: https://github.com/sebastienrousseau/rousseau-agent
+sources:
+  - https://github.com/sebastienrousseau/rousseau-agent
+
+keywords:
+  - ai
+  - agent
+  - whatsapp
+  - claude
+  - llm
+  - self-hosted
+  - open-core
+
+maintainers:
+  - name: Sebastien Rousseau
+    email: sebastian.rousseau@gmail.com
+    url: https://github.com/sebastienrousseau
+
+# annotations surface in `helm search`, artifacthub.io, and downstream
+# chart-listing UIs. Kept minimal — the chart is single-purpose.
+annotations:
+  category: Productivity
+  licenses: Apache-2.0

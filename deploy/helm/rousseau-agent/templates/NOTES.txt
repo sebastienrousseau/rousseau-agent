@@ -1,0 +1,61 @@
+rousseau-agent {{ .Chart.AppVersion }} — installed as release {{ .Release.Name }}.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Verify the pod is up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "rousseau-agent.fullname" . }}
+
+Watch the daemon's log output:
+
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "rousseau-agent.fullname" . }}
+
+Run `rousseau doctor` inside the pod to sanity-check runtime state:
+
+  kubectl -n {{ .Release.Namespace }} exec -it deploy/{{ include "rousseau-agent.fullname" . }} -- rousseau doctor
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if not .Values.licence.value }}
+{{- if not .Values.envFromSecret }}
+
+⚠  No licence configured — the daemon runs on the free `core` tier.
+   To unlock Team / Enterprise features:
+
+     helm upgrade {{ .Release.Name }} deploy/helm/rousseau-agent \
+       --set licence.value=$(cat /path/to/licence.key)
+
+   Or reference a pre-existing Secret:
+
+     helm upgrade {{ .Release.Name }} deploy/helm/rousseau-agent \
+       --set envFromSecret=my-rousseau-secrets
+
+   See docs/COMMERCIAL.md for what the licence unlocks.
+{{- end }}
+{{- end }}
+
+{{- if gt (int .Values.replicaCount) 1 }}
+
+⚠  replicaCount={{ .Values.replicaCount }} but the chart cannot verify
+   your state driver is postgres. Multi-replica installs REQUIRE
+   state.driver=postgres — otherwise every pod runs its own SQLite
+   and session state does NOT cross pods (users see random gaps
+   depending on which pod they land on).
+
+   Configure via values.yaml:
+
+     config:
+       state:
+         driver: postgres
+         dsn: postgres://user:pass@host:5432/rousseau?sslmode=require
+
+   See ROADMAP §2.4 for the HA architecture notes.
+{{- end }}
+
+{{- if eq .Values.command "whatsapp" }}
+
+📱 WhatsApp bridge: on first launch the daemon prints a QR code you
+   scan from your phone. Attach to the log stream and scan within 60s:
+
+     kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "rousseau-agent.fullname" . }}
+{{- end }}
