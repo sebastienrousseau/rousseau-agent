@@ -119,24 +119,56 @@ func checkAuditEgress(cfg *config.Config, chk license.Checker) []diagResult {
 // "I wrote RBAC rules and they aren't taking effect").
 func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 	rbac := cfg.Agent.Approver.RBAC
-	if len(rbac.Rules) == 0 {
+	opaCfg := cfg.Agent.Approver.OPA
+	if len(rbac.Rules) == 0 && strings.TrimSpace(opaCfg.PolicyFile) == "" {
 		return nil
 	}
-	out := []diagResult{{
-		Name:   "identity.governance.rbac.rules",
-		Status: "info",
-		Detail: fmt.Sprintf("%d rule(s) configured", len(rbac.Rules)),
-	}}
-	if chk == nil || !chk.IsEnabled(license.FeatureGovernanceAdvanced) {
+	var out []diagResult
+	unlocked := chk != nil && chk.IsEnabled(license.FeatureGovernanceAdvanced)
+	if len(rbac.Rules) > 0 {
 		out = append(out, diagResult{
-			Name:   "identity.governance.rbac.licensed",
-			Status: "warn",
-			Detail: "rules configured but licence does not unlock governance_advanced — rules are inert (see docs/COMMERCIAL.md)",
+			Name:   "identity.governance.rbac.rules",
+			Status: "info",
+			Detail: fmt.Sprintf("%d rule(s) configured", len(rbac.Rules)),
 		})
-	} else {
-		out = append(out, diagResult{
-			Name: "identity.governance.rbac.licensed", Status: "ok", Detail: "active",
-		})
+		if unlocked {
+			out = append(out, diagResult{
+				Name: "identity.governance.rbac.licensed", Status: "ok", Detail: "active",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name:   "identity.governance.rbac.licensed",
+				Status: "warn",
+				Detail: "rules configured but licence does not unlock governance_advanced — rules are inert (see docs/COMMERCIAL.md)",
+			})
+		}
+	}
+	if strings.TrimSpace(opaCfg.PolicyFile) != "" {
+		// Present the policy path so operators can grep for it
+		// without opening the config. Includes a fail row when
+		// the file is missing — the daemon warns at boot but
+		// doctor makes the failure visible on demand too.
+		policyRow := diagResult{
+			Name:   "identity.governance.opa.policy_file",
+			Status: "info",
+			Detail: opaCfg.PolicyFile,
+		}
+		if _, err := os.Stat(opaCfg.PolicyFile); err != nil {
+			policyRow.Status = "fail"
+			policyRow.Detail = fmt.Sprintf("%s (%s)", opaCfg.PolicyFile, err.Error())
+		}
+		out = append(out, policyRow)
+		if unlocked {
+			out = append(out, diagResult{
+				Name: "identity.governance.opa.licensed", Status: "ok", Detail: "active",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name:   "identity.governance.opa.licensed",
+				Status: "warn",
+				Detail: "policy configured but licence does not unlock governance_advanced — policy is inert (see docs/COMMERCIAL.md)",
+			})
+		}
 	}
 	return out
 }

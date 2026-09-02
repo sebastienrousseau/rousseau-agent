@@ -244,6 +244,11 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// the licence unlocks governance-advanced. See wrapWithRBAC
 	// for the fail-safe behaviour on partial configuration.
 	approver = wrapWithRBAC(approver, cfg.Agent.Approver.RBAC, checker, opts.Logger)
+	// Layer OPA on top of RBAC — a request must pass BOTH
+	// governance layers before reaching the mode-selected
+	// (pattern / TUI) approver. Same three-condition fail-safe
+	// gate as wrapWithRBAC.
+	approver = wrapWithOPA(ctx, approver, cfg.Agent.Approver.OPA, checker, opts.Logger)
 
 	skillsProv, err := buildSkillsProvider(opts)
 	if err != nil {
