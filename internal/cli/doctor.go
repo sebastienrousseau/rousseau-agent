@@ -121,7 +121,10 @@ func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 	rbac := cfg.Agent.Approver.RBAC
 	opaCfg := cfg.Agent.Approver.OPA
 	mp := cfg.Agent.Approver.MultiParty
-	if len(rbac.Rules) == 0 && strings.TrimSpace(opaCfg.PolicyFile) == "" && len(mp.Rules) == 0 {
+	if len(rbac.Rules) == 0 &&
+		strings.TrimSpace(opaCfg.PolicyFile) == "" &&
+		len(mp.Rules) == 0 &&
+		strings.TrimSpace(cfg.Agent.SkillBundles.Dir) == "" {
 		return nil
 	}
 	var out []diagResult
@@ -168,6 +171,33 @@ func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 				Name:   "identity.governance.opa.licensed",
 				Status: "warn",
 				Detail: "policy configured but licence does not unlock governance_advanced — policy is inert (see docs/COMMERCIAL.md)",
+			})
+		}
+	}
+	// Signed skills bundle (§2.8) — same governance-advanced
+	// gate; distinct doctor namespace so operators can see
+	// at a glance which enterprise features are configured.
+	skillBundles := cfg.Agent.SkillBundles
+	if strings.TrimSpace(skillBundles.Dir) != "" {
+		out = append(out, diagResult{
+			Name:   "identity.governance.skill_bundles.dir",
+			Status: "info",
+			Detail: skillBundles.Dir,
+		})
+		out = append(out, diagResult{
+			Name:   "identity.governance.skill_bundles.trusted_publishers",
+			Status: "info",
+			Detail: fmt.Sprintf("%d key(s)", len(skillBundles.TrustedPublisherKeys)),
+		})
+		if unlocked {
+			out = append(out, diagResult{
+				Name: "identity.governance.skill_bundles.licensed", Status: "ok", Detail: "active",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name:   "identity.governance.skill_bundles.licensed",
+				Status: "warn",
+				Detail: "bundles dir configured but licence does not unlock governance_advanced — bundles ignored (see docs/COMMERCIAL.md)",
 			})
 		}
 	}

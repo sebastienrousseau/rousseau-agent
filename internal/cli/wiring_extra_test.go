@@ -17,6 +17,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/hooks"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
@@ -290,7 +291,7 @@ func TestResolveSkillsDir_UnresolvableHomeReturnsEmpty(t *testing.T) {
 
 func TestBuildSkillsProvider_EmptyDirReturnsNoProvider(t *testing.T) {
 	noHome(t)
-	p, err := buildSkillsProvider(&Options{Config: &config.Config{}})
+	p, err := buildSkillsProvider(&Options{Config: &config.Config{}}, license.Core())
 	require.NoError(t, err)
 	assert.Nil(t, p, "no resolvable skills dir means no skills provider")
 }
@@ -298,7 +299,7 @@ func TestBuildSkillsProvider_EmptyDirReturnsNoProvider(t *testing.T) {
 func TestBuildSkillsProvider_LoadFailureSurfaces(t *testing.T) {
 	_, err := buildSkillsProvider(&Options{
 		Config: &config.Config{Agent: config.AgentConfig{SkillsDir: brokenSkillsDir(t)}},
-	})
+	}, license.Core())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read dir")
 }

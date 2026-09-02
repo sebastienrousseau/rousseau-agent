@@ -251,7 +251,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// gate as wrapWithRBAC.
 	approver = wrapWithOPA(ctx, approver, cfg.Agent.Approver.OPA, checker, opts.Logger)
 
-	skillsProv, err := buildSkillsProvider(opts)
+	skillsProv, err := buildSkillsProvider(opts, checker)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err

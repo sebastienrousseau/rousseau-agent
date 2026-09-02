@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 	"github.com/sebastienrousseau/rousseau-agent/internal/skills"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
@@ -117,7 +118,7 @@ func TestNewSkillsCmd_HasSubcommands(t *testing.T) {
 func TestBuildSkillsProvider_ReturnsProvider(t *testing.T) {
 	dir := t.TempDir()
 	opts := &Options{Config: &config.Config{Agent: config.AgentConfig{SkillsDir: dir}}}
-	p, err := buildSkillsProvider(opts)
+	p, err := buildSkillsProvider(opts, license.Core())
 	require.NoError(t, err)
 	assert.NotNil(t, p)
 }

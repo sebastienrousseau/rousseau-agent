@@ -699,6 +699,31 @@ type AgentConfig struct {
 	Approver      ApproverConfig    `mapstructure:"approver"`
 	Compression   CompressionConfig `mapstructure:"compression"`
 	SkillsDir     string            `mapstructure:"skills_dir"`
+	// SkillBundles configures the enterprise-only
+	// cryptographically-signed skill bundle loader (see
+	// internal/skills/bundle). Zero value leaves the loader
+	// off — plain-markdown SkillsDir behaviour is unchanged.
+	// Requires FeatureGovernanceAdvanced.
+	SkillBundles SkillBundlesConfig `mapstructure:"skill_bundles"`
+}
+
+// SkillBundlesConfig is the operator-facing view of the
+// signed-bundle loader. Zero value = disabled.
+type SkillBundlesConfig struct {
+	// Dir is the directory the loader scans for
+	// *.skill.json files. Empty leaves the loader off.
+	Dir string `mapstructure:"dir"`
+	// TrustedPublisherKeys is the base64-encoded Ed25519
+	// public key allow-list. A bundle whose
+	// signature.public_key isn't in this list is rejected —
+	// the trust root is the operator, not implicit.
+	// Standard base64 (matches the same encoding the license
+	// package uses for embedded keys).
+	TrustedPublisherKeys []string `mapstructure:"trusted_publisher_keys"`
+	// Strict, when true, elevates verification failures to
+	// ERROR log level. Verification never falls through to
+	// "load anyway" — a broken bundle simply isn't loaded.
+	Strict bool `mapstructure:"strict"`
 }
 
 // CompressionConfig configures session compression. Disabled by
