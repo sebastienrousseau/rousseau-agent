@@ -747,6 +747,15 @@ type ApproverConfig struct {
 	// so both layers can veto; a broken policy falls back to
 	// inner without wrapping.
 	OPA OPAConfig `mapstructure:"opa"`
+	// MultiParty wraps the approver chain (outermost) with an
+	// N-approvers-required layer. Rules that name a tool block
+	// its execution until N distinct SSO-authenticated
+	// approvers reply /approve via chat. Zero value leaves the
+	// layer off. Same licence gate. Composition order:
+	//   inner ← RBAC ← OPA ← MultiParty
+	// so a request must pass all three before the mode-selected
+	// (pattern / TUI) approver has its final say.
+	MultiParty MultiPartyConfig `mapstructure:"multi_party"`
 }
 
 // RBACConfig configures the group-based RBAC wrapper.
@@ -770,6 +779,27 @@ type OPAConfig struct {
 	// Query overrides the default Rego query
 	// (`data.rousseau.authz`). Rarely needed.
 	Query string `mapstructure:"query"`
+}
+
+// MultiPartyConfig configures the N-approvers-required approver
+// (see internal/agent/approval). Zero value leaves the layer
+// off. Requires FeatureGovernanceAdvanced.
+type MultiPartyConfig struct {
+	// Rules list the tools that need multi-party approval.
+	Rules []MultiPartyRule `mapstructure:"rules"`
+}
+
+// MultiPartyRule pins one tool to a minimum-approvers threshold
+// + timeout.
+type MultiPartyRule struct {
+	// Tool is the model-facing tool name.
+	Tool string `mapstructure:"tool"`
+	// NeededApprovals is the count of DISTINCT non-self
+	// approvers required to allow the call.
+	NeededApprovals int `mapstructure:"needed_approvals"`
+	// Timeout bounds how long the pending request lives. Zero
+	// uses approval.DefaultTimeout (15m).
+	Timeout time.Duration `mapstructure:"timeout"`
 }
 
 // RBACRule mirrors [rbac.Rule] but keeps mapstructure tags out

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
@@ -94,6 +95,12 @@ type RouterOptions struct {
 	// daemon wires this to the shared enterprise sink assembled
 	// in cli/daemon.go.
 	AuditSink audit_egress.Sink
+	// Approvals is the multi-party approval broker used by the
+	// /approve and /deny chat commands. Nil disables both
+	// commands. Wired by the daemon when
+	// agent.approver.multi_party.rules is non-empty AND the
+	// licence unlocks FeatureGovernanceAdvanced.
+	Approvals *approval.PendingManager
 }
 
 // Router binds an inbound Handler to an agent + persistent session state.
@@ -111,6 +118,7 @@ type Router struct {
 	ssoStore  sso.BindingStore
 	ssoTTL    time.Duration
 	auditSink audit_egress.Sink
+	approvals *approval.PendingManager
 	mu        sync.Mutex
 }
 
@@ -144,6 +152,7 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		ssoStore:  ssoStore,
 		ssoTTL:    opts.SSOBindingTTL,
 		auditSink: opts.AuditSink,
+		approvals: opts.Approvals,
 	}
 }
 
@@ -195,9 +204,22 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 	// allowlist path — the identity attaches even when a static
 	// allowlist did the auth. Lookup filters expired bindings, so
 	// we can trust the returned Identity.
+	//
+	// Runs BEFORE the approval-command intercept so /approve
+	// and /deny land with the voter's identity already in ctx.
 	if r.ssoStore != nil {
 		if id, ok, err := r.ssoStore.Lookup(ctx, r.transport, msg.From); err == nil && ok {
 			ctx = sso.WithIdentity(ctx, id)
+		}
+	}
+
+	// /approve <token> / /deny <token> — multi-party approval
+	// votes. Runs after the SSO lookup so the voter's identity
+	// is available; the handler enforces that anonymous votes
+	// are rejected.
+	if r.approvals != nil {
+		if reply, matched := r.handleApprovalCommand(ctx, msg); matched {
+			return reply, nil
 		}
 	}
 
@@ -398,6 +420,40 @@ func (r *Router) cmdLogin(ctx context.Context, from, token string) string {
 		name = id.Subject
 	}
 	return "signed in as " + name
+}
+
+// handleApprovalCommand handles /approve and /deny multi-party
+// votes. Returns (reply, true) when the message matched; the
+// caller then short-circuits the LLM path.
+//
+// The voter's SSO identity is drawn from ctx (populated
+// upstream by the SSO-store lookup); anonymous voters are
+// refused. The PendingManager owns all the vote-counting +
+// distinct-approver enforcement — the router just adapts
+// chat-command args to method calls.
+func (r *Router) handleApprovalCommand(ctx context.Context, msg IncomingMessage) (string, bool) {
+	body := strings.TrimSpace(msg.Body)
+	if !strings.HasPrefix(body, "/") {
+		return "", false
+	}
+	parts := strings.Fields(body)
+	switch parts[0] {
+	case "/approve", "/deny":
+		if len(parts) != 2 {
+			return "usage: " + parts[0] + " <token>", true
+		}
+		verdict := approval.VerdictApprove
+		if parts[0] == "/deny" {
+			verdict = approval.VerdictDeny
+		}
+		var voter string
+		if id, ok := sso.IdentityFromContext(ctx); ok {
+			voter = id.Subject
+		}
+		res := r.approvals.Vote(ctx, parts[1], voter, verdict)
+		return res.String(), true
+	}
+	return "", false
 }
 
 func (r *Router) cmdLogout(ctx context.Context, from string) string {

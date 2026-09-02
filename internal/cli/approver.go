@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/opa"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/rbac"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
@@ -156,6 +157,51 @@ func wrapWithOPA(ctx context.Context, inner agent.Approver, cfg config.OPAConfig
 		slog.Int("policy_bytes", len(policy)),
 	)
 	return wrapped
+}
+
+// wrapWithMultiParty layers the multi-party approver on top of
+// inner when (a) the operator configured multi_party.rules AND
+// (b) the licence unlocks [license.FeatureGovernanceAdvanced].
+// Same three-condition gate as wrapWithRBAC / wrapWithOPA.
+//
+// The returned [*approval.PendingManager] is what the router
+// needs to service /approve /deny chat commands — nil when the
+// wrap didn't take effect (unconfigured / unlicensed / bad
+// config). Callers thread nil-safely.
+func wrapWithMultiParty(inner agent.Approver, cfg config.MultiPartyConfig, checker license.Checker, emitter approval.AuditEmitter, logger *slog.Logger) (agent.Approver, *approval.PendingManager) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if len(cfg.Rules) == 0 {
+		return inner, nil
+	}
+	if checker == nil || !checker.IsEnabled(license.FeatureGovernanceAdvanced) {
+		logger.Info("approver.multi_party.licence_required",
+			slog.Int("rule_count", len(cfg.Rules)),
+			slog.String("feature", string(license.FeatureGovernanceAdvanced)),
+			slog.String("hint", "add ROUSSEAU_LICENSE_KEY with governance_advanced to activate; see docs/COMMERCIAL.md"),
+		)
+		return inner, nil
+	}
+	rules := make([]approval.Rule, len(cfg.Rules))
+	for i, r := range cfg.Rules {
+		rules[i] = approval.Rule{
+			Tool:            r.Tool,
+			NeededApprovals: r.NeededApprovals,
+			Timeout:         r.Timeout,
+		}
+	}
+	pending := approval.NewPendingManager(emitter)
+	wrapped, err := approval.NewApprover(rules, inner, pending)
+	if err != nil {
+		logger.Warn("approver.multi_party.build_failed",
+			slog.String("err", err.Error()),
+			slog.String("hint", "check agent.approver.multi_party.rules for entries with an empty tool or NeededApprovals < 1"),
+		)
+		return inner, nil
+	}
+	logger.Info("approver.multi_party.active", slog.Int("rule_count", len(rules)))
+	return wrapped, pending
 }
 
 // chainApprovers runs first, and only consults second when first
