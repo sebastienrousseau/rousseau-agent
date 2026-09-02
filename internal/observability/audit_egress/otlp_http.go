@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -335,6 +336,17 @@ func attrsForRecord(r Record) []any {
 		if b, err := json.Marshal(r.Detail); err == nil {
 			attrs = append(attrs, kvString("rousseau.audit.detail", string(b)))
 		}
+	}
+	// Chain metadata surfaces only when the record was wrapped by
+	// a [ChainedSink]. A zero-value ChainInfo (Hash == "") means
+	// the operator hasn't opted into hash-chaining and the SIEM
+	// gets the pre-chain wire shape.
+	if r.Chain.Hash != "" {
+		attrs = append(attrs,
+			kvString("rousseau.audit.chain.sequence", strconv.FormatUint(r.Chain.Sequence, 10)),
+			kvString("rousseau.audit.chain.hash", r.Chain.Hash),
+			kvString("rousseau.audit.chain.prev_hash", r.Chain.PrevHash),
+		)
 	}
 	return attrs
 }
