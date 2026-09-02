@@ -433,19 +433,34 @@ func TestRegistry_TryBeginSerialisesConcurrentClaims(t *testing.T) {
 	// N goroutines racing on the same key must produce exactly ONE
 	// success — that is the property the Supervisor relies on to stop
 	// the "two claude --resume on the same session" bug.
+	//
+	// Previously used a time-based hold (20ms) to keep the winner
+	// alive while others attempted, but a slow scheduler under
+	// -race on macOS could let a late attempt land after End() —
+	// producing 2 winners and a legitimate-looking flake. The
+	// barrier-based version below guarantees ALL 64 goroutines
+	// have called TryBegin (and been rejected) before the winner
+	// releases, so a slow-scheduling second wave can't produce a
+	// second winner artefact.
 	const n = 64
 	reg, _ := newTestRegistry(nil)
 
-	var wg sync.WaitGroup
-	var winners int64
+	var (
+		wg        sync.WaitGroup
+		attempted sync.WaitGroup
+		winners   int64
+	)
+	attempted.Add(n)
 	claim := func() {
 		defer wg.Done()
 		_, turn, ok := reg.TryBegin(context.Background(), "shared")
+		// Signal that this goroutine has finished its TryBegin
+		// attempt. Losers exit here; the winner still holds the
+		// slot until every attempt has been counted.
+		attempted.Done()
 		if ok {
 			atomic.AddInt64(&winners, 1)
-			// Hold the slot until every racer has attempted, so no
-			// racer can succeed on a re-entry after End.
-			<-time.After(20 * time.Millisecond)
+			attempted.Wait()
 			turn.End()
 		}
 	}
