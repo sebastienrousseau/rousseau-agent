@@ -173,9 +173,9 @@ Add `internal/auth/sso/` with OIDC and SAML provider adapters, plus a mapping la
 
 **Delivered so far:** OIDC verifier + JWKS cache + license-gated `New()` factory in `internal/auth/sso/` (PR #114). Zero-dep stdlib crypto (no `go-oidc/v3`) so the airgapped-deploy story stays clean. Supports RS256/384/512 + ES256/384; refuses HS* + `none`. `TransportMapping` claims resolve to `Identity.TransportIDs` at verify time.
 
-**Follow-ups:** (a) SAML backend via `crewjam/saml` alongside OIDC; (b) directory-sync source (SCIM 2.0 pull or IdP-native API) so `ResolveTransportID` returns real answers instead of `ErrNotFound`; (c) daemon-assembly wiring so transports actually call `Directory.VerifyToken`.
+**Follow-ups:** (a) SAML backend via `crewjam/saml` alongside OIDC; (b) directory-sync source (SCIM 2.0 pull or IdP-native API) so `ResolveTransportID` returns real answers instead of `ErrNotFound`; ~~(c) daemon-assembly wiring so transports actually call `Directory.VerifyToken`~~ — **delivered in PR #122** (`/login <token>` + `/logout` chat commands, per-transport `sso.BindingStore` in SQLite, Router `allowed()` relaxation for SSO-verified senders, licence-gated daemon assembly, doctor `identity.sso.*` rows; fail-CLOSED discipline on store errors so an OIDC hiccup can't leak the allowlist).
 
-**Estimate:** OIDC pilot shipped in 1 day. SAML + directory-sync + wiring ≈ 3–4 days.
+**Estimate:** OIDC pilot shipped in 1 day. Daemon wiring shipped in 1 day. SAML + directory-sync ≈ 2–3 days.
 
 ### 2.3 `rousseau doctor` reports licence status ⚖ **core** (but structural for paid)
 

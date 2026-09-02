@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -49,6 +50,65 @@ type Config struct {
 	Hooks         HooksConfig         `mapstructure:"hooks"`
 	Media         MediaConfig         `mapstructure:"media"`
 	Tools         ToolsConfig         `mapstructure:"tools"`
+	Auth          AuthConfig          `mapstructure:"auth"`
+}
+
+// AuthConfig groups authentication surfaces. Today only SSO has
+// operator-facing knobs; other auth paths (static allowlist, local
+// SQLite) live under their respective transport / state config.
+type AuthConfig struct {
+	SSO SSOConfig `mapstructure:"sso"`
+}
+
+// SSOConfig configures the enterprise SSO surface. Zero value
+// leaves SSO disabled — the OSS static-allowlist path handles
+// every request. Requires FeatureSSO on the licence to activate;
+// see docs/COMMERCIAL.md §2.1.
+type SSOConfig struct {
+	// Kind selects the SSO backend. Empty (default) leaves SSO
+	// disabled; "oidc" enables the OpenID Connect verifier.
+	Kind string `mapstructure:"kind"`
+	// OIDC configures the OIDC verifier. Ignored when kind != "oidc".
+	OIDC SSOOIDCConfig `mapstructure:"oidc"`
+	// BindingTTL bounds how long a /login binding stays valid on
+	// the daemon side. Empty (default zero) uses the token's exp
+	// claim as-is; a shorter TTL clips a long-lived token so a
+	// mis-issued 1-year JWT doesn't unlock a chat identity for a
+	// year. Recommended: 24h.
+	BindingTTL time.Duration `mapstructure:"binding_ttl"`
+}
+
+// SSOOIDCConfig is the operator-facing view of internal/auth/sso's
+// OIDCConfig. Kept as a separate type so the config schema and
+// the wire type can evolve independently — mapstructure tags stay
+// in one place.
+type SSOOIDCConfig struct {
+	// Issuer is the IdP's issuer URL (e.g. https://tenant.okta.com).
+	// Required. The verifier fetches /.well-known/openid-configuration
+	// under this base at first VerifyToken call.
+	Issuer string `mapstructure:"issuer"`
+	// Audience is the expected `aud` claim on inbound tokens.
+	// Optional; when empty, aud is not checked. Recommended.
+	Audience string `mapstructure:"audience"`
+	// JWKSRefresh controls how often the verifier re-fetches the
+	// IdP's JWKS. Zero uses the shipped 15-minute default.
+	JWKSRefresh time.Duration `mapstructure:"jwks_refresh"`
+	// ClockSkew tolerates NTP drift between the IdP and the
+	// daemon. Zero uses the shipped 2-minute default.
+	ClockSkew time.Duration `mapstructure:"clock_skew"`
+	// TransportMappings maps custom / namespaced token claims to
+	// per-transport IDs. Example: `{transport: slack, claim_key:
+	// "https://schemas.example.com/slack_user_id"}` lifts an
+	// Okta-issued Slack ID from the JWT into the resulting
+	// Identity.TransportIDs["slack"] field.
+	TransportMappings []SSOTransportMapping `mapstructure:"transport_mappings"`
+}
+
+// SSOTransportMapping is one entry in
+// [SSOOIDCConfig.TransportMappings].
+type SSOTransportMapping struct {
+	Transport string `mapstructure:"transport"`
+	ClaimKey  string `mapstructure:"claim_key"`
 }
 
 // ToolsConfig groups per-built-in-tool configuration. Today only

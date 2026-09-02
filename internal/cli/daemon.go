@@ -9,8 +9,11 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
+	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/control"
 	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
+	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
@@ -48,6 +51,15 @@ type daemonWiring struct {
 	JIDMap      *sqlitestore.JIDMap
 	ClaudeCache *sqlitestore.ClaudeSessionCache
 	CostStore   *sqlitestore.SessionCostStore
+	// Licence is the loaded [license.Checker] the daemon consults
+	// at every gated code path. Never nil — falls back to
+	// [license.Core] when unlicensed.
+	Licence license.Checker
+	// SSOBindings is the on-disk store of /login-verified
+	// identities. Populated even when SSO isn't licensed (the
+	// [sso.NoBindings] fallback) so downstream call sites don't
+	// nil-check.
+	SSOBindings sso.BindingStore
 	// MCPClients holds every started MCP client subprocess. Callers
 	// close them (via wiring.Cleanup) on shutdown so the subprocesses
 	// exit cleanly rather than being reaped when the parent dies.
@@ -219,8 +231,23 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Progress:       progressBus,
 	})
 
+	// Load the licence + assemble the SSO surface. Both are shared
+	// across every transport the daemon later spins up; the doctor
+	// consults the same checker so operators see a consistent
+	// tier / bindings picture regardless of which command they run.
+	checker := license.Load(license.Source{}, opts.Logger)
+	ssoDir, ssoStore, err := buildSSO(ctx, cfg.Auth.SSO, checker, concrete, opts.Logger)
+	if err != nil {
+		closeMCPClients(mcpClients, opts.Logger)
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
+
 	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, transport.RouterOptions{
-		Allowlist: allowlist,
+		Allowlist:     allowlist,
+		SSO:           ssoDir,
+		SSOStore:      ssoStore,
+		SSOBindingTTL: cfg.Auth.SSO.BindingTTL,
 	})
 
 	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
@@ -245,7 +272,60 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		RateLimiters: rateLimiters,
 		Logger:       opts.Logger,
 		Progress:     progressBus,
+		Licence:      checker,
+		SSOBindings:  ssoStore,
 	}, nil
+}
+
+// buildSSO composes the [sso.Directory] + [sso.BindingStore]
+// pair the daemon wires into the transport router.
+//
+// The Directory is nil when SSO is not configured (KindNone) so
+// the router skips the /login command entirely — a clean OSS
+// experience. Otherwise the licence gate + sso.New handle the
+// three failure modes documented in internal/auth/sso/sso.go
+// (unconfigured / unlicensed / bad-config) and return a Nop
+// Directory that the router then hides.
+//
+// The BindingStore is always non-nil — either the real SQLite
+// backing store (when SSO could plausibly be used) or a
+// NoBindings fail-safe. The router's Lookup path guards on
+// store errors, but nil would just be a panic waiting to happen.
+func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker, store *sqlitestore.Store, logger *slog.Logger) (sso.Directory, sso.BindingStore, error) {
+	if cfg.Kind == "" {
+		return nil, sso.NoBindings{}, nil
+	}
+	// Real store: even when the Directory returns Nop (licence
+	// missing), the store may hold pre-existing bindings a
+	// previously-licensed run persisted. Keeping those readable
+	// lets an operator downgrade + re-upgrade without users
+	// having to /login again.
+	bindings, err := sqlitestore.NewSSOBindings(ctx, store)
+	if err != nil {
+		return nil, sso.NoBindings{}, fmt.Errorf("cli: sso bindings: %w", err)
+	}
+	dir := sso.New(sso.Config{
+		Kind: sso.Kind(cfg.Kind),
+		OIDC: sso.OIDCConfig{
+			Issuer:            cfg.OIDC.Issuer,
+			Audience:          cfg.OIDC.Audience,
+			JWKSRefresh:       cfg.OIDC.JWKSRefresh,
+			ClockSkew:         cfg.OIDC.ClockSkew,
+			TransportMappings: transportMappingsFromConfig(cfg.OIDC.TransportMappings),
+		},
+	}, checker, logger)
+	return dir, bindings, nil
+}
+
+func transportMappingsFromConfig(in []config.SSOTransportMapping) []sso.TransportMapping {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]sso.TransportMapping, len(in))
+	for i, m := range in {
+		out[i] = sso.TransportMapping{Transport: m.Transport, ClaimKey: m.ClaimKey}
+	}
+	return out
 }
 
 // TransportHandler returns the transport.Handler each transport
