@@ -50,10 +50,62 @@ func runChecks(ctx context.Context, cfg *config.Config, chk license.Checker) []d
 	var out []diagResult
 	out = append(out, checkBuild()...)
 	out = append(out, checkLicense(chk)...)
+	out = append(out, checkSSO(ctx, cfg, chk)...)
 	out = append(out, checkProvider(ctx, cfg)...)
 	out = append(out, checkState(cfg)...)
 	out = append(out, checkWhatsApp(cfg)...)
 	out = append(out, checkConfig(cfg)...)
+	return out
+}
+
+// checkSSO renders identity.sso.* rows. Only emitted when the
+// operator has configured SSO — a clean-install (no config) shows
+// no SSO rows at all, keeping the OSS doctor output uncluttered.
+//
+// Rows:
+//   - identity.sso.kind      — "oidc" (info) or "misconfigured" (fail)
+//   - identity.sso.issuer    — configured issuer URL
+//   - identity.sso.licensed  — ok/warn depending on the licence gate
+//   - identity.sso.bindings  — count of live /login bindings
+//
+// The binding count is read straight from the SQLite store — the
+// same pattern countSessions uses. It only surfaces when
+// state.driver=sqlite; the postgres driver's follow-up will add
+// the same query behind the same row.
+func checkSSO(ctx context.Context, cfg *config.Config, chk license.Checker) []diagResult {
+	if cfg.Auth.SSO.Kind == "" {
+		return nil // OSS install — no rows, no noise
+	}
+	out := []diagResult{
+		{Name: "identity.sso.kind", Status: "info", Detail: cfg.Auth.SSO.Kind},
+	}
+	if cfg.Auth.SSO.OIDC.Issuer != "" {
+		out = append(out, diagResult{
+			Name: "identity.sso.issuer", Status: "info", Detail: cfg.Auth.SSO.OIDC.Issuer,
+		})
+	} else if cfg.Auth.SSO.Kind == "oidc" {
+		out = append(out, diagResult{
+			Name:   "identity.sso.issuer",
+			Status: "fail",
+			Detail: "auth.sso.kind=oidc but auth.sso.oidc.issuer is empty",
+		})
+	}
+	if chk == nil || !chk.IsEnabled(license.FeatureSSO) {
+		out = append(out, diagResult{
+			Name:   "identity.sso.licensed",
+			Status: "warn",
+			Detail: "SSO configured but licence does not unlock it — /login is inert (see docs/COMMERCIAL.md)",
+		})
+	} else {
+		out = append(out, diagResult{
+			Name: "identity.sso.licensed", Status: "ok", Detail: "active",
+		})
+	}
+	if n, err := countSSOBindings(ctx, cfg.State); err == nil {
+		out = append(out, diagResult{
+			Name: "identity.sso.bindings", Status: "ok", Detail: fmt.Sprintf("%d active", n),
+		})
+	}
 	return out
 }
 
@@ -405,6 +457,41 @@ func countSessions(path string) (int, error) {
 	defer func() { _ = db.Close() }() //nolint:errcheck // best-effort cleanup
 	var n int
 	err = db.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// countSSOBindings peeks at the sqlite `sso_bindings` table without
+// going through the constructor — matches countSessions's pattern.
+// Only works when the state driver is sqlite; postgres returns nil
+// (the doctor SSO row simply omits the binding count).
+func countSSOBindings(_ context.Context, sc config.StateConfig) (int, error) {
+	driver := sc.Driver
+	if driver == "" {
+		driver = "sqlite"
+	}
+	if driver != "sqlite" {
+		return 0, fmt.Errorf("countSSOBindings: only sqlite is supported (got %q)", driver)
+	}
+	path := sc.Path
+	if path == "" {
+		home, _ := os.UserHomeDir() //nolint:errcheck // fall back to empty home; probe still valid
+		path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = db.Close() }() //nolint:errcheck // best-effort cleanup
+	var n int
+	// Use a parameterised now to keep the query cheap even without
+	// the expires_at index (the schema creates the index though).
+	err = db.QueryRow(
+		"SELECT COUNT(*) FROM sso_bindings WHERE expires_at > ?",
+		time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+	).Scan(&n)
 	if err != nil {
 		return 0, err
 	}

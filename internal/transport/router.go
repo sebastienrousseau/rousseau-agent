@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
@@ -69,6 +70,23 @@ type RouterOptions struct {
 	// when Identity is set (to form the (transport, sender) tuple the
 	// resolver keys on).
 	Transport string
+	// SSO, when non-nil, enables the /login + /logout chat commands
+	// and consults SSOStore to relax the static Allowlist for
+	// SSO-verified senders. Zero-value Nop{} is the safe default —
+	// the SSO code paths become inert without requiring nil checks.
+	// Wired only when the licence unlocks [license.FeatureSSO]; see
+	// [internal/cli/daemon.go] for the assembly point.
+	SSO sso.Directory
+	// SSOStore persists the (transport, sender) → verified-Identity
+	// mapping across restarts. Required whenever SSO is non-nil.
+	// Zero-value NoBindings{} is the shipped fallback.
+	SSOStore sso.BindingStore
+	// SSOBindingTTL bounds how long a /login binding stays valid
+	// without re-authentication. Falls back to the token's `exp`
+	// claim when zero; the smaller of (TTL, exp) wins. Prevents a
+	// mis-issued 1-year token from unlocking a chat identity for
+	// a year on the daemon's side.
+	SSOBindingTTL time.Duration
 }
 
 // Router binds an inbound Handler to an agent + persistent session state.
@@ -82,6 +100,9 @@ type Router struct {
 	openAll   bool
 	identity  identity.Resolver
 	transport string
+	ssoDir    sso.Directory
+	ssoStore  sso.BindingStore
+	ssoTTL    time.Duration
 	mu        sync.Mutex
 }
 
@@ -96,6 +117,12 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 	for _, id := range opts.Allowlist {
 		allow[id] = struct{}{}
 	}
+	ssoStore := opts.SSOStore
+	if ssoStore == nil {
+		// Fail-safe: never let a nil SSOStore panic the router
+		// if the caller wires SSO without also wiring the store.
+		ssoStore = sso.NoBindings{}
+	}
 	return &Router{
 		runner:    runner,
 		store:     store,
@@ -105,12 +132,26 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		openAll:   len(allow) == 0,
 		identity:  opts.Identity,
 		transport: opts.Transport,
+		ssoDir:    opts.SSO,
+		ssoStore:  ssoStore,
+		ssoTTL:    opts.SSOBindingTTL,
 	}
 }
 
 // Handle implements Handler.
 func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error) {
-	if !r.allowed(msg.From) {
+	// Chat-command interception runs BEFORE the allowlist check so
+	// /login can bootstrap a new sender via SSO without the operator
+	// having to pre-approve their number. Other commands
+	// (/whoami, /link, /unlink) still gate on allow — the identity
+	// commands assume you're already inside.
+	if r.ssoDir != nil {
+		if reply, matched := r.handleSSOCommand(ctx, msg); matched {
+			return reply, nil
+		}
+	}
+
+	if !r.allowed(ctx, msg.From) {
 		r.logger.Warn("transport.rejected", slog.String("from", msg.From))
 		return "", nil
 	}
@@ -225,12 +266,128 @@ func (r *Router) resolveOrProvision(ctx context.Context, from, display string) (
 	return r.identity.Provision(ctx, r.transport, from, display)
 }
 
-func (r *Router) allowed(from string) bool {
+// handleSSOCommand handles /login <token> and /logout. Runs before
+// the allowlist check so a fresh sender can authenticate their way
+// in — the operator hasn't necessarily pre-listed them.
+//
+// Trust boundary: /login accepts a token, VerifyToken must reject
+// anything invalid. The single caller-visible failure surface is
+// the reply string; nothing else lands in state unless the token
+// verified.
+func (r *Router) handleSSOCommand(ctx context.Context, msg IncomingMessage) (string, bool) {
+	body := strings.TrimSpace(msg.Body)
+	if !strings.HasPrefix(body, "/") {
+		return "", false
+	}
+	parts := strings.Fields(body)
+	switch parts[0] {
+	case "/login":
+		if len(parts) != 2 {
+			return "usage: /login <bearer-token>", true
+		}
+		return r.cmdLogin(ctx, msg.From, parts[1]), true
+	case "/logout":
+		return r.cmdLogout(ctx, msg.From), true
+	}
+	return "", false
+}
+
+func (r *Router) cmdLogin(ctx context.Context, from, token string) string {
+	id, err := r.ssoDir.VerifyToken(ctx, token)
+	if err != nil {
+		// Fail-closed: never reveal WHY the token failed to the
+		// sender — a stranger fuzzing /login must not learn
+		// whether they hit an expired-token vs bad-signature
+		// branch. Operator sees the reason in the log.
+		r.logger.Warn("transport.sso_login_failed",
+			slog.String("transport", r.transport),
+			slog.String("from", from),
+			slog.String("err", err.Error()),
+		)
+		return "login: rejected"
+	}
+	// Determine binding expiry: min(configured TTL, token's exp).
+	// The TTL bound guards against a mis-issued long-lived token
+	// unlocking a chat identity for its full lifetime.
+	exp := id.ExpiresAt
+	if exp.IsZero() {
+		exp = time.Now().Add(24 * time.Hour) // sane default when token has no exp
+	}
+	if r.ssoTTL > 0 {
+		bounded := time.Now().Add(r.ssoTTL)
+		if bounded.Before(exp) {
+			exp = bounded
+		}
+	}
+	if err := r.ssoStore.Bind(ctx, r.transport, from, id, exp); err != nil {
+		r.logger.Error("transport.sso_bind_failed",
+			slog.String("transport", r.transport),
+			slog.String("from", from),
+			slog.String("subject", id.Subject),
+			slog.String("err", err.Error()),
+		)
+		return "login: internal error"
+	}
+	r.logger.Info("transport.sso_login",
+		slog.String("transport", r.transport),
+		slog.String("from", from),
+		slog.String("subject", id.Subject),
+		slog.Time("expires_at", exp.UTC()),
+	)
+	name := id.DisplayName
+	if name == "" {
+		name = id.Subject
+	}
+	return "signed in as " + name
+}
+
+func (r *Router) cmdLogout(ctx context.Context, from string) string {
+	if err := r.ssoStore.Unbind(ctx, r.transport, from); err != nil {
+		r.logger.Warn("transport.sso_unbind_failed",
+			slog.String("transport", r.transport),
+			slog.String("from", from),
+			slog.String("err", err.Error()),
+		)
+		return "logout: internal error"
+	}
+	return "signed out"
+}
+
+func (r *Router) allowed(ctx context.Context, from string) bool {
 	if r.openAll {
 		return true
 	}
-	_, ok := r.allow[from]
-	return ok
+	if _, ok := r.allow[from]; ok {
+		return true
+	}
+	// SSO-verified senders bypass the static allowlist. This is
+	// the whole point of wiring SSO — an org with 500 users on
+	// Okta shouldn't have to enumerate 500 phone numbers in
+	// config.yaml.
+	//
+	// Lookup filters expired bindings; on any store-level error
+	// we deny (fail-CLOSED — an SSO backend hiccup must not open
+	// the door to unauthenticated senders).
+	if r.ssoStore != nil {
+		id, ok, err := r.ssoStore.Lookup(ctx, r.transport, from)
+		if err != nil {
+			r.logger.Warn("transport.sso_lookup_failed",
+				slog.String("transport", r.transport),
+				slog.String("from", from),
+				slog.String("err", err.Error()),
+			)
+			return false
+		}
+		if ok {
+			r.logger.Debug("transport.sso_allowed",
+				slog.String("transport", r.transport),
+				slog.String("from", from),
+				slog.String("subject", id.Subject),
+			)
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Router) sessionFor(ctx context.Context, jid string) (*agent.Session, error) {
