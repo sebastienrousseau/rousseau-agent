@@ -16,6 +16,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
@@ -60,6 +61,13 @@ type daemonWiring struct {
 	// [sso.NoBindings] fallback) so downstream call sites don't
 	// nil-check.
 	SSOBindings sso.BindingStore
+	// AuditSink is the enterprise audit-egress sink; downstream
+	// callers (agent tool-call instrumentation, SSO
+	// login/logout, license state changes) Emit into it. Never
+	// nil — [audit_egress.Nop] is the shipped fallback so call
+	// sites don't nil-check. Wrapped in [audit_egress.ChainedSink]
+	// when the operator sets observability.audit_egress.chained.
+	AuditSink audit_egress.Sink
 	// MCPClients holds every started MCP client subprocess. Callers
 	// close them (via wiring.Cleanup) on shutdown so the subprocesses
 	// exit cleanly rather than being reaped when the parent dies.
@@ -94,6 +102,20 @@ type daemonWiring struct {
 // then, so the leak is bounded).
 func (w *daemonWiring) Cleanup() error {
 	closeMCPClients(w.MCPClients, w.Logger)
+	// Drain the audit sink first — losing the shutdown record
+	// (daemon.stop) after Sessions.Close blocks would surprise
+	// operators reviewing SIEM histories. Bounded by a small
+	// context so a wedged remote SIEM can't stall daemon
+	// shutdown.
+	if w.AuditSink != nil {
+		_ = w.AuditSink.Emit(context.Background(), audit_egress.Record{ //nolint:errcheck // best-effort shutdown breadcrumb; sink counters are authoritative
+			Category: "daemon", Actor: "rousseau",
+			Verb: "stop", Object: "daemon", Result: "success",
+		})
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = w.AuditSink.Close(closeCtx) //nolint:errcheck // Close returns ctx err only; already bounded above
+		cancel()
+	}
 	if w.Sessions != nil {
 		return w.Sessions.Close()
 	}
@@ -242,6 +264,13 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Progress:       progressBus,
 	})
 
+	// Build the audit-egress sink from cfg + licence. Always
+	// non-nil (Nop when off/unlicensed) so downstream Emit call
+	// sites don't need nil checks. A "daemon.start" record is
+	// stamped once the wiring is complete, giving operators a
+	// zero-code way to verify their SIEM pipeline works.
+	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, opts.Logger)
+
 	// Assemble the SSO surface (Directory + BindingStore) using
 	// the licence loaded above. The router below consults both
 	// on every inbound message; doctor rows read from the same
@@ -284,7 +313,51 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Progress:     progressBus,
 		Licence:      checker,
 		SSOBindings:  ssoStore,
+		AuditSink:    auditSink,
 	}, nil
+}
+
+// buildAuditSink constructs the enterprise audit-egress sink
+// from cfg + licence + logger. Always non-nil — returns
+// [audit_egress.Nop] on the three documented no-op paths:
+// unconfigured / licence doesn't unlock / bad config. On the
+// happy path, optionally wraps the underlying sink in a
+// [audit_egress.ChainedSink] when cfg.Chained is true — the
+// tamper-evident wire shape SIEMs pin to.
+//
+// A "daemon.start" record is stamped as the first Emit so
+// operators can verify their pipeline works end-to-end without
+// waiting for real activity.
+func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, logger *slog.Logger) audit_egress.Sink {
+	inner := audit_egress.New(audit_egress.Config{
+		Kind:          audit_egress.Kind(cfg.Kind),
+		Endpoint:      cfg.Endpoint,
+		Headers:       cfg.Headers,
+		BatchSize:     cfg.BatchSize,
+		FlushInterval: cfg.FlushInterval,
+		QueueSize:     cfg.QueueSize,
+		HTTPTimeout:   cfg.HTTPTimeout,
+	}, checker, logger)
+	// Nop → no chain wrap. Wrapping a Nop would waste hash
+	// computation on records that never leave the process.
+	if _, isNop := inner.(audit_egress.Nop); isNop {
+		return inner
+	}
+	sink := inner
+	if cfg.Chained {
+		sink = audit_egress.NewChainedSink(inner)
+	}
+	// Boot event — best-effort. A failed Emit here is not a
+	// daemon-startup failure; the sink's own dropped-record
+	// counter (or the Nop return) tells the operator.
+	_ = sink.Emit(context.Background(), audit_egress.Record{ //nolint:errcheck // best-effort boot breadcrumb; sink counters are authoritative
+		Category: "daemon",
+		Actor:    "rousseau",
+		Verb:     "start",
+		Object:   "daemon",
+		Result:   "success",
+	})
+	return sink
 }
 
 // buildSSO composes the [sso.Directory] + [sso.BindingStore]

@@ -52,10 +52,60 @@ func runChecks(ctx context.Context, cfg *config.Config, chk license.Checker) []d
 	out = append(out, checkLicense(chk)...)
 	out = append(out, checkSSO(ctx, cfg, chk)...)
 	out = append(out, checkGovernance(cfg, chk)...)
+	out = append(out, checkAuditEgress(cfg, chk)...)
 	out = append(out, checkProvider(ctx, cfg)...)
 	out = append(out, checkState(cfg)...)
 	out = append(out, checkWhatsApp(cfg)...)
 	out = append(out, checkConfig(cfg)...)
+	return out
+}
+
+// checkAuditEgress renders observability.audit_egress.* rows.
+// Only emitted when the operator has configured it — a bare
+// install shows zero audit-egress rows.
+//
+// Warns loudly when configured-but-unlicensed (mirror of the
+// SSO doctor pattern — the operator sees the "you configured
+// this but it's inert" case).
+func checkAuditEgress(cfg *config.Config, chk license.Checker) []diagResult {
+	ae := cfg.Observability.AuditEgress
+	if ae.Kind == "" {
+		return nil
+	}
+	out := []diagResult{{
+		Name:   "observability.audit_egress.kind",
+		Status: "info",
+		Detail: ae.Kind,
+	}}
+	if ae.Kind == "otlp_http" && ae.Endpoint == "" {
+		out = append(out, diagResult{
+			Name:   "observability.audit_egress.endpoint",
+			Status: "fail",
+			Detail: "kind=otlp_http but endpoint is empty",
+		})
+	} else if ae.Endpoint != "" {
+		out = append(out, diagResult{
+			Name: "observability.audit_egress.endpoint", Status: "info", Detail: ae.Endpoint,
+		})
+	}
+	chainedDetail := "no"
+	if ae.Chained {
+		chainedDetail = "yes (tamper-evident hash chain)"
+	}
+	out = append(out, diagResult{
+		Name: "observability.audit_egress.chained", Status: "info", Detail: chainedDetail,
+	})
+	if chk == nil || !chk.IsEnabled(license.FeatureAuditEgress) {
+		out = append(out, diagResult{
+			Name:   "observability.audit_egress.licensed",
+			Status: "warn",
+			Detail: "audit egress configured but licence does not unlock it — sink is inert (see docs/COMMERCIAL.md)",
+		})
+	} else {
+		out = append(out, diagResult{
+			Name: "observability.audit_egress.licensed", Status: "ok", Detail: "active",
+		})
+	}
 	return out
 }
 
