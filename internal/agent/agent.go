@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/hooks"
+	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
@@ -57,6 +59,16 @@ type Options struct {
 	// model as a synthetic tool-result error. Nil disables hooks
 	// entirely.
 	Hooks hooks.Runner
+	// AuditSink receives one [audit_egress.Record] per tool-call
+	// decision (approver-deny, hook-deny, execute-success,
+	// execute-error). Nil disables audit emission — Emit calls
+	// simply don't happen. The daemon wires this to the shared
+	// enterprise sink assembled in cli/daemon.go.
+	//
+	// The Actor field of every emitted record is populated from
+	// [sso.IdentityFromContext] when available; anonymous
+	// requests emit `actor: "anonymous"`.
+	AuditSink audit_egress.Sink
 }
 
 // CostRecorder is the seam the agent loop uses to persist per-call
@@ -282,6 +294,9 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 			}
 			a.logger.Warn("tool.denied", slog.String("name", use.Name), slog.String("reason", reason))
 			a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
+			a.emitAudit(ctx, "tool_call", "deny", use.Name, "denied", sessionID, map[string]any{
+				"reason": reason,
+			})
 			results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
 				ToolUseID: use.ID,
 				Output:    "tool call blocked: " + reason,
@@ -310,6 +325,9 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 					}
 					a.logger.Warn("tool.hook_denied", slog.String("name", use.Name), slog.String("reason", reason))
 					a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
+					a.emitAudit(ctx, "tool_call", "deny", use.Name, "hook_denied", sessionID, map[string]any{
+						"reason": reason,
+					})
 					results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
 						ToolUseID: use.ID,
 						Output:    "tool call blocked by hook: " + reason,
@@ -338,14 +356,51 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 		out, err := tool.Execute(ctx, use.Input)
 		done := progress.Event{Kind: progress.KindToolFinished, Tool: use.Name, Detail: detail, Elapsed: time.Since(toolStart)}
 		result := &ToolResult{ToolUseID: use.ID, Output: out}
+		auditResult := "success"
+		auditDetail := map[string]any{
+			"elapsed_ms": time.Since(toolStart).Milliseconds(),
+		}
 		if err != nil {
 			result.IsError = true
 			result.Output = err.Error()
 			done.Err = err.Error()
 			a.logger.Warn("tool.error", slog.String("name", use.Name), slog.String("err", err.Error()))
+			auditResult = "error"
+			auditDetail["error"] = err.Error()
 		}
 		a.emitEvent(ctx, done)
+		a.emitAudit(ctx, "tool_call", "run", use.Name, auditResult, sessionID, auditDetail)
 		results = append(results, Content{Kind: ContentToolResult, ToolResult: result})
 	}
 	return results, nil
+}
+
+// emitAudit is a nil-safe helper that stamps a Record into the
+// configured audit sink. Actor is drawn from
+// [sso.IdentityFromContext] when available so downstream SIEMs
+// can filter events by verified identity. Emit errors are
+// deliberately swallowed — audit egress is best-effort
+// observability; a downstream sink hiccup must not derail the
+// agent loop. The sink's own dropped-record counter is the
+// authoritative delivery signal.
+func (a *Agent) emitAudit(ctx context.Context, category, verb, object, result, sessionID string, detail map[string]any) {
+	if a.opts.AuditSink == nil {
+		return
+	}
+	actor := "anonymous"
+	if id, ok := sso.IdentityFromContext(ctx); ok && id.Subject != "" {
+		actor = id.Subject
+	}
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["session_id"] = sessionID
+	_ = a.opts.AuditSink.Emit(ctx, audit_egress.Record{ //nolint:errcheck // best-effort; sink internal counters authoritative
+		Category: category,
+		Actor:    actor,
+		Verb:     verb,
+		Object:   object,
+		Result:   result,
+		Detail:   detail,
+	})
 }

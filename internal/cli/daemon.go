@@ -252,6 +252,17 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 	progressBus := progress.NewBus(progress.BusOptions{})
 
+	// Build the audit-egress sink from cfg + licence. Always
+	// non-nil (Nop when off/unlicensed) so downstream Emit call
+	// sites don't need nil checks. A "daemon.start" record is
+	// stamped once the wiring is complete, giving operators a
+	// zero-code way to verify their SIEM pipeline works.
+	//
+	// Constructed BEFORE agent + router so both can Emit into
+	// the same sink — a single sink means one consistent chain
+	// (if chained) and one place to reason about failures.
+	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, opts.Logger)
+
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
 		SystemPrompt:   systemPrompt(cfg.Agent.SystemPrompt),
@@ -262,14 +273,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		CostRecorder:   sqlitestore.NewCostRecorder(costStore, nil),
 		Hooks:          buildHooks(cfg.Hooks, opts.Logger),
 		Progress:       progressBus,
+		AuditSink:      auditSink,
 	})
-
-	// Build the audit-egress sink from cfg + licence. Always
-	// non-nil (Nop when off/unlicensed) so downstream Emit call
-	// sites don't need nil checks. A "daemon.start" record is
-	// stamped once the wiring is complete, giving operators a
-	// zero-code way to verify their SIEM pipeline works.
-	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, opts.Logger)
 
 	// Assemble the SSO surface (Directory + BindingStore) using
 	// the licence loaded above. The router below consults both
@@ -287,6 +292,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		SSO:           ssoDir,
 		SSOStore:      ssoStore,
 		SSOBindingTTL: cfg.Auth.SSO.BindingTTL,
+		AuditSink:     auditSink,
 	})
 
 	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
