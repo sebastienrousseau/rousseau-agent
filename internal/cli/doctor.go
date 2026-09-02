@@ -270,6 +270,49 @@ func checkSSO(ctx context.Context, cfg *config.Config, chk license.Checker) []di
 			Name: "identity.sso.bindings", Status: "ok", Detail: fmt.Sprintf("%d active", n),
 		})
 	}
+	// SCIM Service Provider — rendered only when the operator
+	// set an addr. The three-condition gate mirrors buildSCIM
+	// so operators see "you configured SCIM but the licence
+	// doesn't unlock it" / "you set an addr but no bearer
+	// token" as distinct rows.
+	scimCfg := cfg.Auth.SSO.SCIM
+	if scimCfg.Addr != "" {
+		out = append(out, diagResult{
+			Name:   "identity.sso.scim.addr",
+			Status: "info",
+			Detail: scimCfg.Addr,
+		})
+		bearerStatus := "ok"
+		bearerDetail := "configured"
+		if scimCfg.BearerToken == "" {
+			bearerStatus = "fail"
+			bearerDetail = "auth.sso.scim.addr set but bearer_token is empty — SCIM has no anonymous mode"
+		}
+		out = append(out, diagResult{
+			Name: "identity.sso.scim.bearer_token", Status: bearerStatus, Detail: bearerDetail,
+		})
+		if chk == nil || !chk.IsEnabled(license.FeatureSSO) {
+			out = append(out, diagResult{
+				Name:   "identity.sso.scim.licensed",
+				Status: "warn",
+				Detail: "SCIM configured but licence does not unlock FeatureSSO — server not started",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name: "identity.sso.scim.licensed", Status: "ok", Detail: "active",
+			})
+		}
+		// Directory row — only meaningful when the sqlite
+		// driver is in use (the SCIM table is provisioned
+		// there); postgres extension port is a follow-up.
+		if u, g, err := countSCIMDirectory(cfg.State); err == nil {
+			out = append(out, diagResult{
+				Name:   "identity.sso.scim.directory",
+				Status: "ok",
+				Detail: fmt.Sprintf("%d user(s), %d group(s)", u, g),
+			})
+		}
+	}
 	return out
 }
 
@@ -625,6 +668,38 @@ func countSessions(path string) (int, error) {
 		return 0, err
 	}
 	return n, nil
+}
+
+// countSCIMDirectory peeks at the sqlite `scim_users` +
+// `scim_groups` tables. Skips silently when driver != sqlite;
+// the daemon errors at boot for postgres+SCIM anyway (SCIM
+// tables aren't ported yet).
+func countSCIMDirectory(sc config.StateConfig) (int, int, error) {
+	driver := sc.Driver
+	if driver == "" {
+		driver = "sqlite"
+	}
+	if driver != "sqlite" {
+		return 0, 0, fmt.Errorf("countSCIMDirectory: only sqlite is supported (got %q)", driver)
+	}
+	path := sc.Path
+	if path == "" {
+		home, _ := os.UserHomeDir() //nolint:errcheck // fall back to empty home; probe still valid
+		path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer func() { _ = db.Close() }() //nolint:errcheck // best-effort cleanup
+	var u, g int
+	if err := db.QueryRow("SELECT COUNT(*) FROM scim_users").Scan(&u); err != nil {
+		return 0, 0, err
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM scim_groups").Scan(&g); err != nil {
+		return 0, 0, err
+	}
+	return u, g, nil
 }
 
 // countSSOBindings peeks at the sqlite `sso_bindings` table without

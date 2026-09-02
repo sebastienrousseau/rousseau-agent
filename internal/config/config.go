@@ -76,6 +76,29 @@ type SSOConfig struct {
 	// mis-issued 1-year JWT doesn't unlock a chat identity for a
 	// year. Recommended: 24h.
 	BindingTTL time.Duration `mapstructure:"binding_ttl"`
+	// SCIM configures the SCIM 2.0 Service Provider — the pull-
+	// based counterpart to the /login bootstrap. Fills the
+	// ResolveTransportID deferral from #114 by letting an IdP
+	// push users + groups on their existing SCIM schedule. Zero
+	// value leaves the SCIM server off. Requires FeatureSSO.
+	SCIM SCIMConfig `mapstructure:"scim"`
+}
+
+// SCIMConfig configures the SCIM 2.0 Service Provider.
+type SCIMConfig struct {
+	// Addr binds the SCIM HTTP endpoint. Empty leaves the
+	// server off. Standard IdPs expect https:// (behind a
+	// reverse-proxy that terminates TLS); the daemon serves
+	// plain HTTP.
+	Addr string `mapstructure:"addr"`
+	// BearerToken is the shared secret the IdP presents in
+	// the Authorization: Bearer header. Required when Addr is
+	// set. Rotate via secret-manager / env var.
+	BearerToken string `mapstructure:"bearer_token"`
+	// BaseURL is the daemon's externally-reachable URL used
+	// for the SCIM Meta.Location field. Optional; empty uses
+	// relative /scim/v2/... paths.
+	BaseURL string `mapstructure:"base_url"`
 }
 
 // SSOOIDCConfig is the operator-facing view of internal/auth/sso's

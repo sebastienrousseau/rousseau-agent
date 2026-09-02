@@ -10,6 +10,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/auth/scim"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/control"
@@ -62,6 +63,18 @@ type daemonWiring struct {
 	// [sso.NoBindings] fallback) so downstream call sites don't
 	// nil-check.
 	SSOBindings sso.BindingStore
+	// SCIMServer is the (optional) SCIM 2.0 HTTP Service
+	// Provider. Nil when the operator hasn't configured
+	// auth.sso.scim.addr OR the licence doesn't unlock
+	// FeatureSSO. When non-nil, callers start it via
+	// SCIMServer.ListenAndServe from a background goroutine.
+	SCIMServer *scim.Server
+	// SCIMAddr is the bind address the SCIM server listens on
+	// (mirrors auth.sso.scim.addr). Empty when SCIMServer is
+	// nil. Kept on the wiring so a transport-runner can spawn
+	// the ListenAndServe goroutine with the same lifetime as
+	// itself.
+	SCIMAddr string
 	// AuditSink is the enterprise audit-egress sink; downstream
 	// callers (agent tool-call instrumentation, SSO
 	// login/logout, license state changes) Emit into it. Never
@@ -90,6 +103,29 @@ type daemonWiring struct {
 	// key (e.g. a phone number that reaches both signal and whatsapp).
 	supervisorMu sync.Mutex
 	supervisors  map[string]*transport.Supervisor
+}
+
+// StartBackgroundServers launches any long-running HTTP
+// servers wired into daemonWiring (currently: SCIM). Each
+// server runs in its own goroutine and shuts down when ctx is
+// cancelled. Errors are logged via wiring.Logger but not
+// returned — one server failing must not take the transport
+// offline.
+//
+// Callers (every transport RunE) invoke this once, right after
+// assembleDaemon, before entering their inbound loop. Idempotent
+// on nil sub-servers; skips ones the operator didn't configure.
+func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
+	if w.SCIMServer != nil && w.SCIMAddr != "" {
+		go func() {
+			if err := w.SCIMServer.ListenAndServe(ctx, w.SCIMAddr); err != nil {
+				w.Logger.Warn("scim.serve_failed",
+					slog.String("addr", w.SCIMAddr),
+					slog.String("err", err.Error()),
+				)
+			}
+		}()
+	}
 }
 
 // Cleanup releases every resource held by the wiring: closes the MCP
@@ -316,6 +352,18 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		AuditSink:      auditSink,
 	})
 
+	// Build the optional SCIM Service Provider — pull-based
+	// directory sync from the IdP. Silent when unconfigured
+	// or unlicensed; matches the same three-condition gate
+	// pattern as the other governance surfaces. Doctor
+	// surfaces both cases so the operator sees "you set an
+	// addr but the licence doesn't unlock it".
+	scimServer, scimAddr, err := buildSCIM(ctx, cfg.Auth.SSO.SCIM, checker, concrete, opts.Logger)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
+
 	// Assemble the SSO surface (Directory + BindingStore) using
 	// the licence loaded above. The router below consults both
 	// on every inbound message; doctor rows read from the same
@@ -361,7 +409,59 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Licence:      checker,
 		SSOBindings:  ssoStore,
 		AuditSink:    auditSink,
+		SCIMServer:   scimServer,
+		SCIMAddr:     scimAddr,
 	}, nil
+}
+
+// buildSCIM composes the optional SCIM 2.0 SP. Returns (nil,
+// "", nil) when the operator hasn't set auth.sso.scim.addr,
+// mirroring the three-condition fail-safe pattern:
+//
+//   - No addr configured → nothing to do.
+//   - Addr set but no licence → INFO log + return nil so the
+//     doctor row surfaces the "your SCIM is inert" case
+//     without side-effects.
+//   - Addr set + licensed but bearer_token empty → WARN log +
+//     return nil (SCIM has no anonymous mode; refuse to boot
+//     an open endpoint).
+//
+// On success returns a wired *scim.Server + the addr so the
+// transport runner can spawn ListenAndServe with its own
+// context.
+func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Checker, store *sqlitestore.Store, logger *slog.Logger) (*scim.Server, string, error) {
+	if cfg.Addr == "" {
+		return nil, "", nil
+	}
+	if checker == nil || !checker.IsEnabled(license.FeatureSSO) {
+		logger.Info("scim.licence_required",
+			slog.String("addr", cfg.Addr),
+			slog.String("feature", string(license.FeatureSSO)),
+			slog.String("hint", "add ROUSSEAU_LICENSE_KEY with sso to activate; see docs/COMMERCIAL.md"),
+		)
+		return nil, "", nil
+	}
+	if cfg.BearerToken == "" {
+		logger.Warn("scim.no_bearer_token",
+			slog.String("addr", cfg.Addr),
+			slog.String("hint", "SCIM refuses anonymous — set auth.sso.scim.bearer_token from a secret manager"),
+		)
+		return nil, "", nil
+	}
+	scimStore, err := sqlitestore.NewSCIMStore(ctx, store)
+	if err != nil {
+		return nil, "", fmt.Errorf("cli: scim store: %w", err)
+	}
+	srv, err := scim.NewServer(scim.ServerConfig{
+		Store:       scimStore,
+		BearerToken: cfg.BearerToken,
+		BaseURL:     cfg.BaseURL,
+		Logger:      logger,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("cli: scim server: %w", err)
+	}
+	return srv, cfg.Addr, nil
 }
 
 // buildAuditSink constructs the enterprise audit-egress sink

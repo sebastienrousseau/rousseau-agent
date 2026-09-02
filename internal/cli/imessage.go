@@ -39,6 +39,7 @@ func newIMessageCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			wiring.StartBackgroundServers(ctx)
 
 			poll := 0 * time.Second
 			if s := firstNonEmpty(pollInterval, cfg.IMessage.PollInterval); s != "" {

@@ -46,6 +46,7 @@ func newSlackCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			wiring.StartBackgroundServers(ctx)
 
 			client, err := slack.New(slack.Config{
 				AppToken:    app,

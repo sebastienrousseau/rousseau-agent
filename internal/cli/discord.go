@@ -41,6 +41,7 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			wiring.StartBackgroundServers(ctx)
 
 			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
 			if tErr != nil {

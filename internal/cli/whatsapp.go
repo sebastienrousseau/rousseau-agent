@@ -52,6 +52,7 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				return err
 			}
 			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			wiring.StartBackgroundServers(ctx)
 
 			dsn, err := resolveWhatsAppDSN(storePath)
 			if err != nil {
