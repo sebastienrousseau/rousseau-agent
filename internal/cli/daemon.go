@@ -617,6 +617,21 @@ func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker
 			TransportMappings: transportMappingsFromConfig(cfg.OIDC.TransportMappings),
 		},
 	}, checker, logger)
+	// When SCIM is also configured, adapt its store into
+	// [sso.DirectoryStore] so OIDCDirectory.ResolveTransportID
+	// answers with real user data instead of ErrNotFound. The
+	// underlying scim table is created here idempotently
+	// (CREATE TABLE IF NOT EXISTS) — safe even when buildSCIM
+	// also opened one against the same *sqlitestore.Store.
+	if cfg.SCIM.Addr != "" && checker != nil && checker.IsEnabled(license.FeatureSSO) {
+		scimStore, err := sqlitestore.NewSCIMStore(ctx, store)
+		if err != nil {
+			return nil, bindings, fmt.Errorf("cli: sso scim adapter: %w", err)
+		}
+		if oidcDir, ok := dir.(*sso.OIDCDirectory); ok {
+			oidcDir.WithStore(newSCIMDirectoryStore(scimStore))
+		}
+	}
 	return dir, bindings, nil
 }
 

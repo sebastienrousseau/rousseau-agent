@@ -42,6 +42,13 @@ type OIDCDirectory struct {
 	cfg    OIDCConfig
 	client *http.Client
 	logger *slog.Logger
+	// store, when non-nil, satisfies ResolveTransportID by
+	// looking up the transport identifier in an operator-
+	// configured directory (typically SCIM-populated). Wired
+	// via [OIDCDirectory.WithStore] at assembly time; nil
+	// falls back to ErrNotFound (matches the pre-#132 pilot
+	// behaviour).
+	store DirectoryStore
 
 	// Discovery document fields, populated on first successful
 	// fetch and refreshed with the JWKS.
@@ -134,14 +141,23 @@ func (d *OIDCDirectory) VerifyToken(ctx context.Context, token string) (Identity
 	return d.identityFromClaims(payload, claims), nil
 }
 
-// ResolveTransportID is not implemented in this pilot — a future
-// PR adds the directory-cache backing store (SCIM 2.0 pull or IdP-
-// native user-directory API). Returns ErrNotFound so callers can
-// fall through to local identity resolution.
-func (d *OIDCDirectory) ResolveTransportID(_ context.Context, transport, externalID string) (Identity, error) {
+// ResolveTransportID looks up externalID in the operator-
+// configured [DirectoryStore] (typically the SCIM-populated
+// store wired at daemon assembly). Returns [ErrNotFound] when
+// no store is configured OR the identifier isn't in it.
+//
+// The `transport` argument is currently unused — the SCIM
+// externalId column is a scalar the IdP populates; convention
+// so far is that the IdP encodes any transport disambiguation
+// into that value (e.g. `slack:U012ABC`). A future backend
+// with per-transport columns can start honouring the argument
+// without breaking the interface.
+func (d *OIDCDirectory) ResolveTransportID(ctx context.Context, transport, externalID string) (Identity, error) {
 	_ = transport
-	_ = externalID
-	return Identity{}, ErrNotFound
+	if d.store == nil {
+		return Identity{}, ErrNotFound
+	}
+	return d.store.ResolveExternalID(ctx, externalID)
 }
 
 // checkClaims runs the three RFC 7519 time checks (exp, nbf, iat)

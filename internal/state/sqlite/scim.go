@@ -366,6 +366,42 @@ func (s *SCIMStore) LookupUserByExternalID(ctx context.Context, externalID strin
 	return unmarshalUser(body)
 }
 
+// UserGroupNames returns the displayNames of every group the
+// user belongs to, sorted alphabetically. Returns nil when the
+// user has no memberships or doesn't exist — same shape either
+// way, matches what downstream RBAC / OPA policies expect.
+//
+// Not part of the [scim.Store] interface (that surface is
+// pinned to what the HTTP handlers use); exposed here for the
+// SSO ResolveTransportID adapter in cli/sso_wire.go.
+func (s *SCIMStore) UserGroupNames(ctx context.Context, userID string) ([]string, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	const q = `
+SELECT g.display_name
+FROM scim_groups g
+JOIN scim_group_members m ON m.group_id = g.id
+WHERE m.user_id = ?
+ORDER BY g.display_name
+`
+	rows, err := s.db.QueryContext(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: user group names: %w", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
+
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("sqlite: scan group name: %w", err)
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
 // Count satisfies [scim.Store]. Used by doctor.
 func (s *SCIMStore) Count(ctx context.Context) (int, int, error) {
 	var users, groups int

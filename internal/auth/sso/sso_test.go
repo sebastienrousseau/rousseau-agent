@@ -11,6 +11,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -667,14 +668,81 @@ func TestOIDC_ES256TokenVerifies(t *testing.T) {
 	assert.Equal(t, "user-ec", id.Subject)
 }
 
-func TestOIDC_ResolveTransportIDNotImplemented(t *testing.T) {
-	// This PR ships the interface but not the directory-cache
-	// backing store. Documented as ErrNotFound so callers plumb
-	// the fallback (local identity resolution) today.
+func TestOIDC_ResolveTransportIDWithoutStoreReturnsNotFound(t *testing.T) {
+	// No DirectoryStore wired → matches pre-#132 behaviour so
+	// operators who run OIDC-only get a legible ErrNotFound
+	// rather than a nil-dereference panic.
 	s := newOIDCTestServer(t)
 	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.ResolveTransportID(context.Background(), "slack", "U012")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// stubDirectoryStore is a controllable DirectoryStore for the
+// wire-up tests.
+type stubDirectoryStore struct {
+	users map[string]Identity
+	err   error
+}
+
+func (s *stubDirectoryStore) ResolveExternalID(_ context.Context, externalID string) (Identity, error) {
+	if s.err != nil {
+		return Identity{}, s.err
+	}
+	id, ok := s.users[externalID]
+	if !ok {
+		return Identity{}, ErrNotFound
+	}
+	return id, nil
+}
+
+func TestOIDC_ResolveTransportIDWithStoreReturnsIdentity(t *testing.T) {
+	s := newOIDCTestServer(t)
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	require.NoError(t, err)
+
+	d.WithStore(&stubDirectoryStore{
+		users: map[string]Identity{
+			"okta|alice-external-id": {
+				Subject:     "scim-user-1",
+				DisplayName: "Alice",
+				Groups:      []string{"eng", "sre"},
+			},
+		},
+	})
+
+	id, err := d.ResolveTransportID(context.Background(), "slack", "okta|alice-external-id")
+	require.NoError(t, err)
+	assert.Equal(t, "scim-user-1", id.Subject)
+	assert.Equal(t, "Alice", id.DisplayName)
+	assert.ElementsMatch(t, []string{"eng", "sre"}, id.Groups)
+}
+
+func TestOIDC_ResolveTransportIDStoreErrorPropagates(t *testing.T) {
+	// Store-side errors surface as-is so callers can
+	// distinguish "user not found" from "backend broken".
+	s := newOIDCTestServer(t)
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	require.NoError(t, err)
+
+	d.WithStore(&stubDirectoryStore{err: errors.New("directory offline")})
+	_, err = d.ResolveTransportID(context.Background(), "slack", "any-id")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNotFound, "backend errors must NOT collapse into ErrNotFound")
+}
+
+func TestOIDC_WithStoreNilIsSafe(t *testing.T) {
+	// Property: passing a nil store returns the directory
+	// unchanged. Matches wrap-with-Option pattern used across
+	// the wrappers.
+	s := newOIDCTestServer(t)
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	require.NoError(t, err)
+	require.NotPanics(t, func() {
+		d.WithStore(nil)
+	})
+	_, err = d.ResolveTransportID(context.Background(), "slack", "any")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
