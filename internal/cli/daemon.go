@@ -207,11 +207,22 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		return nil, err
 	}
 
+	// Load the licence once — the approver-RBAC wrap AND the
+	// SSO surface below both consult it, and doctor reads from
+	// the same checker (a single load means one consistent
+	// tier picture regardless of which entry point is used).
+	checker := license.Load(license.Source{}, opts.Logger)
+
 	approver, err := buildApprover(cfg.Agent.Approver)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
+	// Layer RBAC on top when the operator configured rules AND
+	// the licence unlocks governance-advanced. See wrapWithRBAC
+	// for the fail-safe behaviour on partial configuration.
+	approver = wrapWithRBAC(approver, cfg.Agent.Approver.RBAC, checker, opts.Logger)
+
 	skillsProv, err := buildSkillsProvider(opts)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
@@ -231,11 +242,10 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Progress:       progressBus,
 	})
 
-	// Load the licence + assemble the SSO surface. Both are shared
-	// across every transport the daemon later spins up; the doctor
-	// consults the same checker so operators see a consistent
-	// tier / bindings picture regardless of which command they run.
-	checker := license.Load(license.Source{}, opts.Logger)
+	// Assemble the SSO surface (Directory + BindingStore) using
+	// the licence loaded above. The router below consults both
+	// on every inbound message; doctor rows read from the same
+	// checker.
 	ssoDir, ssoStore, err := buildSSO(ctx, cfg.Auth.SSO, checker, concrete, opts.Logger)
 	if err != nil {
 		closeMCPClients(mcpClients, opts.Logger)

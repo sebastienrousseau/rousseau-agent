@@ -51,10 +51,43 @@ func runChecks(ctx context.Context, cfg *config.Config, chk license.Checker) []d
 	out = append(out, checkBuild()...)
 	out = append(out, checkLicense(chk)...)
 	out = append(out, checkSSO(ctx, cfg, chk)...)
+	out = append(out, checkGovernance(cfg, chk)...)
 	out = append(out, checkProvider(ctx, cfg)...)
 	out = append(out, checkState(cfg)...)
 	out = append(out, checkWhatsApp(cfg)...)
 	out = append(out, checkConfig(cfg)...)
+	return out
+}
+
+// checkGovernance renders identity.governance.* rows for the
+// RBAC layer landed with ROADMAP §2.9. Only emitted when
+// agent.approver.rbac.rules is non-empty — a bare install with
+// no governance config produces zero rows.
+//
+// Warns loudly when rules are declared but the licence doesn't
+// unlock the feature (the most common misconfiguration —
+// "I wrote RBAC rules and they aren't taking effect").
+func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
+	rbac := cfg.Agent.Approver.RBAC
+	if len(rbac.Rules) == 0 {
+		return nil
+	}
+	out := []diagResult{{
+		Name:   "identity.governance.rbac.rules",
+		Status: "info",
+		Detail: fmt.Sprintf("%d rule(s) configured", len(rbac.Rules)),
+	}}
+	if chk == nil || !chk.IsEnabled(license.FeatureGovernanceAdvanced) {
+		out = append(out, diagResult{
+			Name:   "identity.governance.rbac.licensed",
+			Status: "warn",
+			Detail: "rules configured but licence does not unlock governance_advanced — rules are inert (see docs/COMMERCIAL.md)",
+		})
+	} else {
+		out = append(out, diagResult{
+			Name: "identity.governance.rbac.licensed", Status: "ok", Detail: "active",
+		})
+	}
 	return out
 }
 

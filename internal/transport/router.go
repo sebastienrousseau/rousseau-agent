@@ -156,6 +156,17 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		return "", nil
 	}
 
+	// Stash the SSO identity (if any) in ctx so downstream
+	// approvers / audit sinks can read it. Independent of the
+	// allowlist path — the identity attaches even when a static
+	// allowlist did the auth. Lookup filters expired bindings, so
+	// we can trust the returned Identity.
+	if r.ssoStore != nil {
+		if id, ok, err := r.ssoStore.Lookup(ctx, r.transport, msg.From); err == nil && ok {
+			ctx = sso.WithIdentity(ctx, id)
+		}
+	}
+
 	// Chat-command interception: /whoami, /link, /unlink handled
 	// before the LLM sees the message so they run instantly + free.
 	// Only fires when an Identity resolver is configured — the
