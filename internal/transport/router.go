@@ -101,25 +101,33 @@ type RouterOptions struct {
 	// agent.approver.multi_party.rules is non-empty AND the
 	// licence unlocks FeatureGovernanceAdvanced.
 	Approvals *approval.PendingManager
+	// BuildStamp is the string the /version chat command echoes
+	// back — build tag, git commit and build date, exactly as
+	// `rousseau version` prints them. Populated by the daemon
+	// from the ldflag-injected cli package vars. Empty string
+	// makes /version reply "unknown build" rather than error, so
+	// dev builds without ldflags still answer instead of hanging.
+	BuildStamp string
 }
 
 // Router binds an inbound Handler to an agent + persistent session state.
 // A Router is safe for concurrent use.
 type Router struct {
-	runner    TurnRunner
-	store     SessionStore
-	jidMap    JIDMapper
-	logger    *slog.Logger
-	allow     map[string]struct{}
-	openAll   bool
-	identity  identity.Resolver
-	transport string
-	ssoDir    sso.Directory
-	ssoStore  sso.BindingStore
-	ssoTTL    time.Duration
-	auditSink audit_egress.Sink
-	approvals *approval.PendingManager
-	mu        sync.Mutex
+	runner     TurnRunner
+	store      SessionStore
+	jidMap     JIDMapper
+	logger     *slog.Logger
+	allow      map[string]struct{}
+	openAll    bool
+	identity   identity.Resolver
+	transport  string
+	ssoDir     sso.Directory
+	ssoStore   sso.BindingStore
+	ssoTTL     time.Duration
+	auditSink  audit_egress.Sink
+	approvals  *approval.PendingManager
+	buildStamp string
+	mu         sync.Mutex
 }
 
 // NewRouter constructs a Router. The runner performs each Turn; store
@@ -140,19 +148,20 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		ssoStore = sso.NoBindings{}
 	}
 	return &Router{
-		runner:    runner,
-		store:     store,
-		jidMap:    jidMap,
-		logger:    logger,
-		allow:     allow,
-		openAll:   len(allow) == 0,
-		identity:  opts.Identity,
-		transport: opts.Transport,
-		ssoDir:    opts.SSO,
-		ssoStore:  ssoStore,
-		ssoTTL:    opts.SSOBindingTTL,
-		auditSink: opts.AuditSink,
-		approvals: opts.Approvals,
+		runner:     runner,
+		store:      store,
+		jidMap:     jidMap,
+		logger:     logger,
+		allow:      allow,
+		openAll:    len(allow) == 0,
+		identity:   opts.Identity,
+		transport:  opts.Transport,
+		ssoDir:     opts.SSO,
+		ssoStore:   ssoStore,
+		ssoTTL:     opts.SSOBindingTTL,
+		auditSink:  opts.AuditSink,
+		approvals:  opts.Approvals,
+		buildStamp: opts.BuildStamp,
 	}
 }
 
@@ -251,10 +260,11 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 	return firstText(final), nil
 }
 
-// handleIdentityCommand recognises the three identity-management
-// commands and returns the reply text. Second return value indicates
-// whether the message was a command (true → don't fall through to
-// the LLM).
+// handleIdentityCommand recognises the router's synchronous chat
+// commands — identity (/whoami, /link, /unlink) plus the build-stamp
+// echo (/version) — and returns the reply text. Second return value
+// indicates whether the message was a command (true → don't fall
+// through to the LLM).
 func (r *Router) handleIdentityCommand(ctx context.Context, msg IncomingMessage) (string, bool) {
 	body := strings.TrimSpace(msg.Body)
 	if body == "" || !strings.HasPrefix(body, "/") {
@@ -264,6 +274,8 @@ func (r *Router) handleIdentityCommand(ctx context.Context, msg IncomingMessage)
 	switch parts[0] {
 	case "/whoami":
 		return r.cmdWhoami(ctx, msg.From), true
+	case "/version":
+		return r.cmdVersion(), true
 	case "/link":
 		if len(parts) != 2 || !strings.Contains(parts[1], ":") {
 			return "usage: /link <transport>:<sender>", true
@@ -278,6 +290,22 @@ func (r *Router) handleIdentityCommand(ctx context.Context, msg IncomingMessage)
 		return r.cmdUnlink(ctx, tp, sender), true
 	}
 	return "", false
+}
+
+// cmdVersion answers the /version chat command with the daemon's
+// build stamp. Never touches the LLM, never touches storage — the
+// only purpose is to let an operator prove from any chat client
+// which binary is answering (post-redeploy sanity check).
+//
+// Deliberately does NOT surface uptime or PID: those are host
+// concerns and can be answered by `podman inspect` / `systemctl
+// status`. The chat channel's job is to prove the code version,
+// not to be a shell.
+func (r *Router) cmdVersion() string {
+	if r.buildStamp == "" {
+		return "rousseau (unknown build — daemon started without a build stamp)"
+	}
+	return "rousseau " + r.buildStamp
 }
 
 func (r *Router) cmdWhoami(ctx context.Context, from string) string {
