@@ -247,9 +247,11 @@ RBAC with role hierarchies inherited from SSO groups, [Open Policy Agent](https:
 
 **Delivered so far (PR #123):** first slice — group-based RBAC. `internal/agent/rbac` ships `Approver` (wraps inner approver, gates by `sso.Identity.Groups`, fail-CLOSED on anonymous requests). Config surface `agent.approver.rbac.rules` (tool → allowed_groups). Licence gate at daemon assembly (rules without licence → INFO log + inner approver returned unchanged; broken config → WARN + inner unchanged so a bad rule can't take the daemon offline). Router now stashes the verified `sso.Identity` into ctx after SSO lookup so the approver reads WHO's making the request. Doctor rows `identity.governance.rbac.*` (rule count + licensed status). 100 % coverage on the new package.
 
-**Follow-ups (still §2.9):** OPA integration (Rego per tool call) — separate concern from RBAC, will land as `internal/agent/opa`; multi-party approval workflows (Slack rota, etc.) — needs a transport-side approver-request handler.
+**Delivered (PR #129):** OPA slice — `internal/agent/opa` ships a Rego-per-tool-call approver mirroring the RBAC wrapping pattern. Config `agent.approver.opa.{policy_file, query}`; daemon composition `inner ← RBAC ← OPA` so a tool call must pass both governance layers. Rego input document carries `{tool, input (parsed JSON), session_id, actor, groups, email}` — policies gate on any combination. Standard v1 Rego syntax with `import rego.v1`. Fail-CLOSED discipline: bad policy → WARN + inner returned (never take daemon offline); ctx cancel → deny (explicit gate at start of Approve, not race with Rego's own ctx check); result-not-an-object → deny; anonymous callers see `actor=""` + `groups=[]` so policies can require identity. Doctor rows `identity.governance.opa.{policy_file, licensed}` with fail status when policy file is missing.
 
-**Estimate:** RBAC slice shipped in 1 day. OPA ≈ 5 days, multi-party ≈ 5 days.
+**Follow-ups (still §2.9):** multi-party approval workflows (Slack rota, etc.) — needs a transport-side approver-request handler.
+
+**Estimate:** RBAC + OPA slices shipped in 1 day each. Multi-party ≈ 5 days.
 
 ### 2.10 Enterprise redaction rule packs 🔒 **paid**
 

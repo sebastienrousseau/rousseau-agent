@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/opa"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/rbac"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/license"
@@ -51,23 +53,6 @@ func toRules(in []config.PatternEntry) []agent.PatternRule {
 	return out
 }
 
-// chainApprovers runs first, and only consults second when first
-// returns DecisionAllow. This lets the CLI wrap the config-driven
-// PatternApprover (or AllowAll / DenyAll) around the interactive
-// TUI approver so:
-//
-//   - a Deny from first (e.g. blanket-deny `bash`) short-circuits
-//     the interactive prompt entirely — the user never sees a
-//     question they can only answer one way.
-//   - an Allow from first still prompts the user (interactive
-//     approver runs second) so the operator retains veto over
-//     specific inputs even for tools that policy pre-approves in
-//     principle. To auto-approve without prompting, users answer
-//     [a] on the first interactive prompt for that tool.
-//
-// When first is AllowAll (the config default), the behaviour reduces
-// to "always prompt via second" — matching the CLI's stated intent
-// that the interactive user is the authority in a TUI session.
 // wrapWithRBAC layers the group-based RBAC approver on top of the
 // mode-selected inner approver when (a) the operator configured
 // rbac.rules AND (b) the licence unlocks
@@ -114,6 +99,82 @@ func wrapWithRBAC(inner agent.Approver, cfg config.RBACConfig, checker license.C
 	return wrapped
 }
 
+// wrapWithOPA layers the Rego-per-tool-call approver on top of
+// inner when (a) the operator points at a policy file AND (b)
+// the licence unlocks [license.FeatureGovernanceAdvanced].
+// Composition intent: OPA wraps AFTER RBAC so a request must
+// pass BOTH layers before reaching the mode-selected approver.
+//
+// Same three-condition gate as [wrapWithRBAC]:
+//
+//   - No policy_file → inner returned as-is (no noise).
+//   - Policy configured but licence doesn't unlock → INFO log
+//   - inner returned (operator sees "your Rego is inert").
+//   - Policy file missing / unreadable / uncompilable → WARN
+//     log + inner returned (fail-safe: a broken policy must
+//     never take the daemon offline; the OSS approver still
+//     runs).
+func wrapWithOPA(ctx context.Context, inner agent.Approver, cfg config.OPAConfig, checker license.Checker, logger *slog.Logger) agent.Approver {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if strings.TrimSpace(cfg.PolicyFile) == "" {
+		return inner
+	}
+	if checker == nil || !checker.IsEnabled(license.FeatureGovernanceAdvanced) {
+		logger.Info("approver.opa.licence_required",
+			slog.String("policy_file", cfg.PolicyFile),
+			slog.String("feature", string(license.FeatureGovernanceAdvanced)),
+			slog.String("hint", "add ROUSSEAU_LICENSE_KEY with governance_advanced to activate; see docs/COMMERCIAL.md"),
+		)
+		return inner
+	}
+	policy, err := os.ReadFile(cfg.PolicyFile) //nolint:gosec // path is operator-supplied config
+	if err != nil {
+		logger.Warn("approver.opa.policy_read_failed",
+			slog.String("policy_file", cfg.PolicyFile),
+			slog.String("err", err.Error()),
+			slog.String("hint", "check the file exists and is readable by the daemon UID"),
+		)
+		return inner
+	}
+	wrapped, err := opa.NewApprover(ctx, opa.Config{
+		Policy:     string(policy),
+		Query:      cfg.Query,
+		ModuleName: cfg.PolicyFile,
+	}, inner)
+	if err != nil {
+		logger.Warn("approver.opa.compile_failed",
+			slog.String("policy_file", cfg.PolicyFile),
+			slog.String("err", err.Error()),
+			slog.String("hint", "run `opa parse` on the policy to see the syntax error location"),
+		)
+		return inner
+	}
+	logger.Info("approver.opa.active",
+		slog.String("policy_file", cfg.PolicyFile),
+		slog.Int("policy_bytes", len(policy)),
+	)
+	return wrapped
+}
+
+// chainApprovers runs first, and only consults second when first
+// returns DecisionAllow. This lets the CLI wrap the config-driven
+// PatternApprover (or AllowAll / DenyAll) around the interactive
+// TUI approver so:
+//
+//   - a Deny from first (e.g. blanket-deny `bash`) short-circuits
+//     the interactive prompt entirely — the user never sees a
+//     question they can only answer one way.
+//   - an Allow from first still prompts the user (interactive
+//     approver runs second) so the operator retains veto over
+//     specific inputs even for tools that policy pre-approves in
+//     principle. To auto-approve without prompting, users answer
+//     [a] on the first interactive prompt for that tool.
+//
+// When first is AllowAll (the config default), the behaviour reduces
+// to "always prompt via second" — matching the CLI's stated intent
+// that the interactive user is the authority in a TUI session.
 func chainApprovers(first, second agent.Approver) agent.Approver {
 	if first == nil {
 		return second

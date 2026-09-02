@@ -740,6 +740,13 @@ type ApproverConfig struct {
 	// unlocks FeatureGovernanceAdvanced; without the licence the
 	// rules are ignored and the daemon logs an INFO on boot.
 	RBAC RBACConfig `mapstructure:"rbac"`
+	// OPA wraps the approver chain (below RBAC) with a Rego-
+	// per-tool-call policy. Zero value leaves OPA off. Same
+	// licence gate as RBAC. Composition order:
+	//   inner ← RBAC ← OPA
+	// so both layers can veto; a broken policy falls back to
+	// inner without wrapping.
+	OPA OPAConfig `mapstructure:"opa"`
 }
 
 // RBACConfig configures the group-based RBAC wrapper.
@@ -749,6 +756,20 @@ type RBACConfig struct {
 	// — only explicitly-locked tools filter. See
 	// internal/agent/rbac for semantics.
 	Rules []RBACRule `mapstructure:"rules"`
+}
+
+// OPAConfig configures the Rego-per-tool-call approver (see
+// internal/agent/opa). Zero value leaves the OPA layer off —
+// the mode-selected + RBAC-wrapped approver runs alone.
+type OPAConfig struct {
+	// PolicyFile is the on-disk path to the Rego module the
+	// daemon evaluates on every tool call. Read at boot; a
+	// missing file or parse error is fatal to the layer (WARN
+	// + wrap-skipped, matching wrapWithRBAC's failure mode).
+	PolicyFile string `mapstructure:"policy_file"`
+	// Query overrides the default Rego query
+	// (`data.rousseau.authz`). Rarely needed.
+	Query string `mapstructure:"query"`
 }
 
 // RBACRule mirrors [rbac.Rule] but keeps mapstructure tags out
