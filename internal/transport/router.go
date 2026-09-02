@@ -12,6 +12,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
 
@@ -87,6 +88,12 @@ type RouterOptions struct {
 	// mis-issued 1-year token from unlocking a chat identity for
 	// a year on the daemon's side.
 	SSOBindingTTL time.Duration
+	// AuditSink receives one [audit_egress.Record] per /login /
+	// /logout attempt (success + failure). Nil disables audit
+	// emission entirely — Emit calls simply don't happen. The
+	// daemon wires this to the shared enterprise sink assembled
+	// in cli/daemon.go.
+	AuditSink audit_egress.Sink
 }
 
 // Router binds an inbound Handler to an agent + persistent session state.
@@ -103,6 +110,7 @@ type Router struct {
 	ssoDir    sso.Directory
 	ssoStore  sso.BindingStore
 	ssoTTL    time.Duration
+	auditSink audit_egress.Sink
 	mu        sync.Mutex
 }
 
@@ -135,7 +143,33 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		ssoDir:    opts.SSO,
 		ssoStore:  ssoStore,
 		ssoTTL:    opts.SSOBindingTTL,
+		auditSink: opts.AuditSink,
 	}
+}
+
+// emitAuthAudit is the router's nil-safe helper for auth-event
+// records (login / logout). Emit errors are swallowed by design
+// — auth-audit is best-effort observability and a wedged SIEM
+// must not break a /login command mid-flow. Actor is the SSO
+// subject on a successful login, or the raw transport sender on
+// a failed one (so denial trails still name a target).
+func (r *Router) emitAuthAudit(ctx context.Context, verb, actor, from, result string, detail map[string]any) {
+	if r.auditSink == nil {
+		return
+	}
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["transport"] = r.transport
+	detail["from"] = from
+	_ = r.auditSink.Emit(ctx, audit_egress.Record{ //nolint:errcheck // best-effort; sink counters authoritative
+		Category: "auth",
+		Actor:    actor,
+		Verb:     verb,
+		Object:   from,
+		Result:   result,
+		Detail:   detail,
+	})
 }
 
 // Handle implements Handler.
@@ -315,6 +349,14 @@ func (r *Router) cmdLogin(ctx context.Context, from, token string) string {
 			slog.String("from", from),
 			slog.String("err", err.Error()),
 		)
+		// Audit emit includes the failure category the SIEM can
+		// alert on (repeated denials from one sender = probable
+		// attack). The err.Error() is included in Detail because
+		// audit records are for the operator, not the sender —
+		// the fail-closed reveal only applies to the reply string.
+		r.emitAuthAudit(ctx, "login", "", from, "denied", map[string]any{
+			"reason": err.Error(),
+		})
 		return "login: rejected"
 	}
 	// Determine binding expiry: min(configured TTL, token's exp).
@@ -337,6 +379,9 @@ func (r *Router) cmdLogin(ctx context.Context, from, token string) string {
 			slog.String("subject", id.Subject),
 			slog.String("err", err.Error()),
 		)
+		r.emitAuthAudit(ctx, "login", id.Subject, from, "error", map[string]any{
+			"reason": "binding store error: " + err.Error(),
+		})
 		return "login: internal error"
 	}
 	r.logger.Info("transport.sso_login",
@@ -345,6 +390,9 @@ func (r *Router) cmdLogin(ctx context.Context, from, token string) string {
 		slog.String("subject", id.Subject),
 		slog.Time("expires_at", exp.UTC()),
 	)
+	r.emitAuthAudit(ctx, "login", id.Subject, from, "success", map[string]any{
+		"expires_at": exp.UTC().Format(time.RFC3339),
+	})
 	name := id.DisplayName
 	if name == "" {
 		name = id.Subject
@@ -353,14 +401,25 @@ func (r *Router) cmdLogin(ctx context.Context, from, token string) string {
 }
 
 func (r *Router) cmdLogout(ctx context.Context, from string) string {
+	// Look up the identity BEFORE we unbind so the audit record
+	// names WHO signed out. Ignore lookup errors — logout is
+	// best-effort by design (idempotent).
+	var actor string
+	if id, ok, err := r.ssoStore.Lookup(ctx, r.transport, from); err == nil && ok {
+		actor = id.Subject
+	}
 	if err := r.ssoStore.Unbind(ctx, r.transport, from); err != nil {
 		r.logger.Warn("transport.sso_unbind_failed",
 			slog.String("transport", r.transport),
 			slog.String("from", from),
 			slog.String("err", err.Error()),
 		)
+		r.emitAuthAudit(ctx, "logout", actor, from, "error", map[string]any{
+			"reason": err.Error(),
+		})
 		return "logout: internal error"
 	}
+	r.emitAuthAudit(ctx, "logout", actor, from, "success", nil)
 	return "signed out"
 }
 
