@@ -237,7 +237,11 @@ Removes the JVM dependency from the Signal transport (currently shells out to `s
 
 **Recut from the old §2.3 "skill marketplace".** The marketplace concept as originally framed had commercial gravity but no monetization path if it stayed OSS-only. The re-framed version: agent-authored skills remain a **core** feature (they're a competitive moat for the OSS product), but the **signed / verified skills bundle** — cryptographically-verified skill packages with vendor attestation, an SBOM per skill, and centralised skill-catalogue management — becomes an enterprise feature. Compliance officers pay to know exactly which skill the model just triggered, from whom, and whether it's been tampered with.
 
-**Estimate:** ~1 week end-to-end; deferred until there's a genuine user pull.
+**Delivered (PR #131):** `internal/skills/bundle` ships the `.skill.json` bundle format — one JSON per skill carrying a manifest (name/version/publisher/published_at/triggers), the skill content, an optional CycloneDX SBOM, and an Ed25519 publisher signature. `bundle.Verify(trustedKeys)` performs the full trust chain: algorithm=ed25519, publisher key in the operator's trust list, content hash matches, SBOM hash matches, Ed25519 verify over the manifest-hash. `internal/skills.LoadBundles(dir, opts)` scans `*.skill.json` files, verifies each, drops unverified silently (WARN or ERROR log per Strict flag). Daemon `buildSkillsProvider` composes verified bundles with plain markdown skills; three-condition gate matches the RBAC / OPA pattern (no config / no licence / no trusted keys → bundles ignored, plain skills untouched). Doctor rows `identity.governance.skill_bundles.{dir, trusted_publishers, licensed}`.
+
+**Follow-ups:** publisher-side signing tool (`rousseau skills sign <manifest.json> --key <priv>`) to make bundle creation ergonomic for CI pipelines. The `bundle.Sign` primitive already exists in-package; a CLI wrapper is a small standalone PR.
+
+**Estimate:** ~1 week end-to-end (per original ROADMAP); shipped in 1 day.
 
 ### 2.9 Advanced governance ecosystem (OPA + multi-party approvals) 🔒 **paid**
 
