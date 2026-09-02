@@ -155,6 +155,39 @@ type Record struct {
 	// (when tracing is on). Downstream SIEM correlation joins on
 	// this.
 	TraceID string
+	// Chain, when populated, carries the hash-chain metadata
+	// [ChainedSink] stamps onto every record it wraps. Zero value
+	// means "this record was not chained" — the OTLP marshaller
+	// omits the chain.* attributes and downstream tooling sees
+	// unchained events as before. See [ChainInfo] for semantics.
+	Chain ChainInfo
+}
+
+// ChainInfo carries the tamper-evidence metadata a [ChainedSink]
+// stamps onto every record before delegating to the wrapped
+// underlying sink. Compliance regimes that mandate append-only
+// audit trails (SOC 2, ISO 27001, HIPAA) verify the chain
+// end-to-end offline — no round-trip to a signing service.
+//
+// # Wire representation
+//
+// Emitted under the `rousseau.audit.chain.{sequence,hash,prev_hash}`
+// OTLP attribute keys so SIEM filters can dedupe by sequence or
+// gap-detect by missing sequences.
+type ChainInfo struct {
+	// Sequence is a strictly-increasing counter starting at 0 for
+	// the first record a ChainedSink emits. Gaps mean records
+	// were dropped between emitter and verifier.
+	Sequence uint64
+	// Hash is a hex-encoded SHA-256 of a canonical serialisation
+	// of the record's user-supplied fields concatenated with
+	// PrevHash and Sequence — see [canonicalHash] for the exact
+	// order. Empty means the record wasn't chained.
+	Hash string
+	// PrevHash is the Hash of the previous record in the chain,
+	// or the empty string for the first record. A verifier
+	// reads PrevHash to detect insertion / deletion / reorder.
+	PrevHash string
 }
 
 // Sink is the egress surface every enterprise-only backend

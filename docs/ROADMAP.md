@@ -161,6 +161,8 @@ The daemon boots; the OTLP sink attempts to start; the licence check fails → t
 
 **Why first:** proves the whole open-core apparatus works before we invest in the bigger gated features. Also the smallest reviewable diff — one config surface, one gate call, one sink.
 
+**Delivered (PR #113):** OTLP HTTP sink pilot with fail-open runtime discipline (drop records ≫ block daemon). Additive: PR #124 ships `audit_egress.ChainedSink` — hash-chained tamper-evident records for the SOC 2 / ISO 27001 / HIPAA audit-trail requirement listed on the COMMERCIAL.md gate boundary. Any Sink wraps into a ChainedSink; sequence + hash + prev_hash surface on the OTLP wire as `rousseau.audit.chain.*` attributes; `VerifyChain([]Record)` walks a batch offline and flags mutation / gap / reorder / insert. Mechanism-only pilot — daemon wiring (config bool + assembly) is a small follow-up.
+
 **Estimate:** 2 days end-to-end.
 
 ### 2.2 SSO adapters (OIDC + SAML) 🔒 **paid**
