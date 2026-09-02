@@ -56,9 +56,11 @@ helm install rousseau ./deploy/helm/rousseau-agent \
 
 ## Multi-replica HA
 
-`replicaCount > 1` REQUIRES `state.driver=postgres`. Without it, every pod runs its own SQLite and session state does NOT cross pods — users see random gaps depending on which pod they land on.
+`replicaCount > 1` REQUIRES `state.driver=postgres` for the session store. Without it, every pod runs its own SQLite and session state does NOT cross pods — users see random gaps depending on which pod they land on.
 
-The chart intentionally does NOT enforce this at render time (an operator may run the second replica as a hot standby of a shared state store the chart doesn't know about). It DOES warn in `helm install` NOTES.
+**Current status (2026-09):** the session store is Postgres-ready today. Extension stores (cron/jidmap/oauth/session_cache/session_costs) now also have Postgres implementations in `internal/state/postgres/`, but the daemon callsites still consume the sqlite driver's concrete types — running the WhatsApp bridge under `driver=postgres` will error until the extension callsites are wired to accept either driver. For a working multi-replica deploy today, run only the read-only `mcp` sidecar or a headless benchmark shape until that wiring lands.
+
+The chart intentionally does NOT enforce driver=postgres at render time (an operator may run the second replica as a hot standby of a shared state store the chart doesn't know about). It DOES warn in `helm install` NOTES.
 
 Minimal HA values.yaml:
 

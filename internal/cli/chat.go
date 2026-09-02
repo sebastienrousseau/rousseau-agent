@@ -137,21 +137,27 @@ func openStore(ctx context.Context, cfg config.StateConfig) (state.Store, error)
 	}
 }
 
-// openSQLiteStore opens a store for the commands that still
-// need SQLite-only extensions (cron, jidmap, oauth, recall).
-// Errors cleanly when the operator has configured a non-sqlite
-// driver — the alternative (silent fall-through to sqlite) would
-// silently degrade an HA deploy back to per-replica state.
+// openSQLiteStore opens a store for the commands whose extension
+// callsites still consume the sqlite driver's concrete types
+// (cron, jidmap, oauth, session_cache, session_costs) even though
+// Postgres implementations of every one of those tables exist in
+// internal/state/postgres. Errors cleanly when the operator has
+// configured a non-sqlite driver — the alternative (silent
+// fall-through to sqlite) would silently degrade an HA deploy back
+// to per-replica state.
 //
-// Once the extensions gain a Postgres implementation the driver
-// switch should collapse into openStore + a runtime type check.
+// Next step to remove this seam: teach each extension callsite
+// to hold either concrete type (the two drivers share method
+// signatures + type-alias the domain shapes so this is a wiring
+// change, not a redesign). Recall stays sqlite-only until FTS5 →
+// tsvector is designed separately.
 func openSQLiteStore(ctx context.Context, cfg config.StateConfig) (*sqlitestore.Store, error) {
 	driver := cfg.Driver
 	if driver == "" {
 		driver = "sqlite"
 	}
 	if driver != "sqlite" {
-		return nil, fmt.Errorf("this command requires state.driver=sqlite (got %q); Postgres backend covers session state only, extension tables (cron/jidmap/oauth/recall) are not yet ported", driver)
+		return nil, fmt.Errorf("this command still holds the sqlite driver's concrete types for its extension tables (cron/jidmap/oauth/session_cache/session_costs) — Postgres implementations of those tables exist but are not yet wired here; recall stays sqlite-only. Configure state.driver=sqlite (got %q)", driver)
 	}
 	store, err := openStore(ctx, cfg)
 	if err != nil {
