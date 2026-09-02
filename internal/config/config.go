@@ -694,6 +694,28 @@ type ApproverConfig struct {
 	Default string         `mapstructure:"default"` // "allow" or "deny" for pattern mode
 	Allow   []PatternEntry `mapstructure:"allow"`
 	Deny    []PatternEntry `mapstructure:"deny"`
+	// RBAC wraps the mode-selected approver with a group-based
+	// gate. Zero value leaves RBAC off — the mode-selected
+	// approver runs alone. Activates only when the licence
+	// unlocks FeatureGovernanceAdvanced; without the licence the
+	// rules are ignored and the daemon logs an INFO on boot.
+	RBAC RBACConfig `mapstructure:"rbac"`
+}
+
+// RBACConfig configures the group-based RBAC wrapper.
+type RBACConfig struct {
+	// Rules maps a tool name to the SSO groups permitted to
+	// invoke it. A tool not listed here bypasses the RBAC layer
+	// — only explicitly-locked tools filter. See
+	// internal/agent/rbac for semantics.
+	Rules []RBACRule `mapstructure:"rules"`
+}
+
+// RBACRule mirrors [rbac.Rule] but keeps mapstructure tags out
+// of the domain package.
+type RBACRule struct {
+	Tool          string   `mapstructure:"tool"`
+	AllowedGroups []string `mapstructure:"allowed_groups"`
 }
 
 // PatternEntry mirrors agent.PatternRule but decouples config from the

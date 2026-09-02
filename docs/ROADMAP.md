@@ -243,7 +243,11 @@ Removes the JVM dependency from the Signal transport (currently shells out to `s
 
 RBAC with role hierarchies inherited from SSO groups, [Open Policy Agent](https://www.openpolicyagent.org/) integration for Rego-based tool-call policy, and multi-party approval workflows (e.g. "`terraform apply` needs a DevOps rota approval in Slack"). Plugs into the existing `agent.Approver` interface so the seam is clean; the OSS `PatternApprover` + TUI interactive approver stay unchanged.
 
-**Estimate:** ~2 weeks end-to-end. Depends on §2.2 (SSO) landing first so RBAC has a real identity source to hang roles off.
+**Delivered so far (PR #123):** first slice — group-based RBAC. `internal/agent/rbac` ships `Approver` (wraps inner approver, gates by `sso.Identity.Groups`, fail-CLOSED on anonymous requests). Config surface `agent.approver.rbac.rules` (tool → allowed_groups). Licence gate at daemon assembly (rules without licence → INFO log + inner approver returned unchanged; broken config → WARN + inner unchanged so a bad rule can't take the daemon offline). Router now stashes the verified `sso.Identity` into ctx after SSO lookup so the approver reads WHO's making the request. Doctor rows `identity.governance.rbac.*` (rule count + licensed status). 100 % coverage on the new package.
+
+**Follow-ups (still §2.9):** OPA integration (Rego per tool call) — separate concern from RBAC, will land as `internal/agent/opa`; multi-party approval workflows (Slack rota, etc.) — needs a transport-side approver-request handler.
+
+**Estimate:** RBAC slice shipped in 1 day. OPA ≈ 5 days, multi-party ≈ 5 days.
 
 ### 2.10 Enterprise redaction rule packs 🔒 **paid**
 

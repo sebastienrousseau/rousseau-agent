@@ -3,10 +3,13 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/rbac"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 )
 
 // buildApprover translates the ApproverConfig into an agent.Approver.
@@ -65,6 +68,52 @@ func toRules(in []config.PatternEntry) []agent.PatternRule {
 // When first is AllowAll (the config default), the behaviour reduces
 // to "always prompt via second" — matching the CLI's stated intent
 // that the interactive user is the authority in a TUI session.
+// wrapWithRBAC layers the group-based RBAC approver on top of the
+// mode-selected inner approver when (a) the operator configured
+// rbac.rules AND (b) the licence unlocks
+// [license.FeatureGovernanceAdvanced].
+//
+// The two-condition gate is deliberate:
+//   - Config without licence → INFO log + inner returned as-is
+//     (the operator sees "your rules are inert" rather than a
+//     silent no-op).
+//   - Licence without config → nothing to enforce, inner
+//     returned unchanged. No noise.
+//
+// Returns the inner approver on any construction error (fail-
+// safe: a broken RBAC config must not take the daemon offline;
+// the operator sees a WARN and their existing approver still runs).
+func wrapWithRBAC(inner agent.Approver, cfg config.RBACConfig, checker license.Checker, logger *slog.Logger) agent.Approver {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if len(cfg.Rules) == 0 {
+		return inner
+	}
+	if checker == nil || !checker.IsEnabled(license.FeatureGovernanceAdvanced) {
+		logger.Info("approver.rbac.licence_required",
+			slog.Int("rule_count", len(cfg.Rules)),
+			slog.String("feature", string(license.FeatureGovernanceAdvanced)),
+			slog.String("hint", "add ROUSSEAU_LICENSE_KEY with governance_advanced to activate; see docs/COMMERCIAL.md"),
+		)
+		return inner
+	}
+	rules := make([]rbac.Rule, len(cfg.Rules))
+	for i, r := range cfg.Rules {
+		rules[i] = rbac.Rule{Tool: r.Tool, AllowedGroups: append([]string(nil), r.AllowedGroups...)}
+	}
+	wrapped, err := rbac.NewApprover(rules, inner)
+	if err != nil {
+		logger.Warn("approver.rbac.build_failed",
+			slog.String("err", err.Error()),
+			slog.String("hint", "check agent.approver.rbac.rules for entries with an empty tool name"),
+		)
+		return inner
+	}
+	logger.Info("approver.rbac.active", slog.Int("rule_count", len(rules)))
+	return wrapped
+}
+
 func chainApprovers(first, second agent.Approver) agent.Approver {
 	if first == nil {
 		return second
