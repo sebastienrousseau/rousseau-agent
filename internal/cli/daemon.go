@@ -261,7 +261,20 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// Constructed BEFORE agent + router so both can Emit into
 	// the same sink — a single sink means one consistent chain
 	// (if chained) and one place to reason about failures.
-	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, opts.Logger)
+	//
+	// The chain-state store is only opened when chained=true.
+	// Its schema-apply is idempotent so a subsequent restart
+	// without chained=true leaves the row untouched (harmless).
+	var chainStore audit_egress.ChainStore
+	if cfg.Observability.AuditEgress.Chained {
+		cs, csErr := sqlitestore.NewAuditChainState(ctx, concrete)
+		if csErr != nil {
+			_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+			return nil, fmt.Errorf("cli: audit chain state: %w", csErr)
+		}
+		chainStore = cs
+	}
+	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, chainStore, opts.Logger)
 
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
@@ -334,7 +347,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 // A "daemon.start" record is stamped as the first Emit so
 // operators can verify their pipeline works end-to-end without
 // waiting for real activity.
-func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, logger *slog.Logger) audit_egress.Sink {
+func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chainStore audit_egress.ChainStore, logger *slog.Logger) audit_egress.Sink {
 	inner := audit_egress.New(audit_egress.Config{
 		Kind:          audit_egress.Kind(cfg.Kind),
 		Endpoint:      cfg.Endpoint,
@@ -351,7 +364,11 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, logge
 	}
 	sink := inner
 	if cfg.Chained {
-		sink = audit_egress.NewChainedSink(inner)
+		opts := []audit_egress.ChainOption{audit_egress.WithChainLogger(logger)}
+		if chainStore != nil {
+			opts = append(opts, audit_egress.WithChainStore(chainStore))
+		}
+		sink = audit_egress.NewChainedSink(inner, opts...)
 	}
 	// Boot event — best-effort. A failed Emit here is not a
 	// daemon-startup failure; the sink's own dropped-record

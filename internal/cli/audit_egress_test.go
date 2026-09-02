@@ -18,7 +18,7 @@ import (
 func TestBuildAuditSink_UnconfiguredReturnsNop(t *testing.T) {
 	// Zero-config OSS path: no sink activity at all — the
 	// operator hasn't asked for one, we don't build one.
-	sink := buildAuditSink(config.AuditEgressConfig{}, license.Core(), silentLogger())
+	sink := buildAuditSink(config.AuditEgressConfig{}, license.Core(), nil, silentLogger())
 	require.NotNil(t, sink)
 	_, isNop := sink.(audit_egress.Nop)
 	assert.True(t, isNop, "empty config must return Nop")
@@ -31,7 +31,7 @@ func TestBuildAuditSink_UnlicensedReturnsNop(t *testing.T) {
 	sink := buildAuditSink(config.AuditEgressConfig{
 		Kind:     "otlp_http",
 		Endpoint: "https://siem.example.com/v1/logs",
-	}, license.Core(), silentLogger())
+	}, license.Core(), nil, silentLogger())
 	_, isNop := sink.(audit_egress.Nop)
 	assert.True(t, isNop, "configured but unlicensed must return Nop")
 }
@@ -45,7 +45,7 @@ func TestBuildAuditSink_LicensedNoChainReturnsOTLPSink(t *testing.T) {
 	sink := buildAuditSink(config.AuditEgressConfig{
 		Kind:     "otlp_http",
 		Endpoint: "https://siem.example.com/v1/logs",
-	}, chk, silentLogger())
+	}, chk, nil, silentLogger())
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -69,7 +69,7 @@ func TestBuildAuditSink_ChainedFlagWrapsInChainedSink(t *testing.T) {
 		Kind:     "otlp_http",
 		Endpoint: "https://siem.example.com/v1/logs",
 		Chained:  true,
-	}, chk, silentLogger())
+	}, chk, nil, silentLogger())
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -86,7 +86,7 @@ func TestBuildAuditSink_ChainedFlagOnNopIsNop(t *testing.T) {
 	sink := buildAuditSink(config.AuditEgressConfig{
 		Kind:    "otlp_http",
 		Chained: true,
-	}, license.Core(), silentLogger())
+	}, license.Core(), nil, silentLogger())
 	_, isChained := sink.(*audit_egress.ChainedSink)
 	assert.False(t, isChained)
 	_, isNop := sink.(audit_egress.Nop)

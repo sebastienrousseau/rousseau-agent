@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strconv"
 	"sync"
@@ -61,21 +62,100 @@ import (
 // stay consistent under concurrent callers. The critical section
 // is small (compute hash, update counters) so throughput is
 // bounded by the wrapped sink's Emit, not the chain math.
+//
+// # Cross-restart continuity
+//
+// By default each ChainedSink starts a fresh chain at Sequence=0
+// with an empty PrevHash. Pass [WithChainStore] to resume the
+// chain across daemon restarts: the store loads
+// (last_sequence, last_hash) at construction and receives
+// (sequence, hash) after each Emit. A SIEM-side verifier then
+// sees one continuous chain instead of one-chain-per-restart —
+// crucial for the "did anything happen while the daemon was
+// down?" compliance question.
 type ChainedSink struct {
-	inner Sink
+	inner  Sink
+	store  ChainStore
+	logger *slog.Logger
 
 	mu   sync.Mutex
 	seq  uint64
 	prev string
 }
 
+// ChainStore persists the tail of the audit chain so a
+// ChainedSink resumes from where the last daemon instance left
+// off. Implementations MUST be safe for concurrent use — Save
+// may be called from any Emit goroutine.
+type ChainStore interface {
+	// Load returns the last-written (sequence, hash). Returns
+	// (0, "", nil) when the store has never seen a record —
+	// callers treat that as "fresh chain".
+	Load(ctx context.Context) (sequence uint64, hash string, err error)
+	// Save records the most recent (sequence, hash). Called
+	// once per emitted record, inside the ChainedSink's Emit
+	// critical section, so state is atomically consistent with
+	// what the wrapped sink saw.
+	Save(ctx context.Context, sequence uint64, hash string) error
+}
+
+// ChainOption customises a [ChainedSink] built by [NewChainedSink].
+type ChainOption func(*ChainedSink)
+
+// WithChainStore enables cross-restart chain continuity. The
+// store is queried once at construction to resume state, then
+// written after every Emit. A nil store is treated as "no
+// persistence" — matches the default zero-arg NewChainedSink
+// call.
+func WithChainStore(s ChainStore) ChainOption {
+	return func(c *ChainedSink) { c.store = s }
+}
+
+// WithChainLogger installs a logger used for the (rare) store
+// error paths. A nil logger falls back to [slog.Default]. Store
+// errors are otherwise best-effort — the chain advances in
+// memory regardless.
+func WithChainLogger(l *slog.Logger) ChainOption {
+	return func(c *ChainedSink) { c.logger = l }
+}
+
 // NewChainedSink wraps inner. A nil inner returns nil so misuse
 // fails at the call site rather than at first Emit.
-func NewChainedSink(inner Sink) *ChainedSink {
+//
+// When [WithChainStore] is passed, the store's most recent
+// (sequence, hash) is loaded synchronously — a store-level
+// error is logged but non-fatal (the chain resumes as a fresh
+// one; the SIEM sees a chain break, which is more visible than
+// a silent gap).
+func NewChainedSink(inner Sink, opts ...ChainOption) *ChainedSink {
 	if inner == nil {
 		return nil
 	}
-	return &ChainedSink{inner: inner}
+	c := &ChainedSink{inner: inner}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if c.logger == nil {
+		c.logger = slog.Default()
+	}
+	if c.store != nil {
+		seq, hash, err := c.store.Load(context.Background())
+		if err != nil {
+			c.logger.Warn("audit_egress.chain.resume_failed",
+				slog.String("err", err.Error()),
+				slog.String("hint", "chain will start fresh at sequence 0 — SIEM will see a chain break"),
+			)
+		} else if hash != "" {
+			// Resume: next record uses (loaded_seq + 1, loaded_hash).
+			c.seq = seq + 1
+			c.prev = hash
+			c.logger.Info("audit_egress.chain.resumed",
+				slog.Uint64("next_sequence", c.seq),
+				slog.String("prev_hash", hash[:min(16, len(hash))]),
+			)
+		}
+	}
+	return c
 }
 
 // Emit stamps chain metadata onto rec and delegates to the
@@ -84,6 +164,13 @@ func NewChainedSink(inner Sink) *ChainedSink {
 // record that the operator's SIEM saw was ATTEMPTED, and the
 // dropped-record counter on the wrapped sink is the authoritative
 // "was this delivered" signal.
+//
+// When a [ChainStore] is configured, Save is called inside the
+// critical section AFTER the in-memory state advances but
+// BEFORE the wrapped sink Emit — so a store save that fails
+// only loses that one record's continuity (not the whole
+// batch), and a store save that succeeds guarantees the
+// on-disk state matches what the SIEM will see.
 func (c *ChainedSink) Emit(ctx context.Context, rec Record) error {
 	c.mu.Lock()
 	rec.Chain.Sequence = c.seq
@@ -91,6 +178,16 @@ func (c *ChainedSink) Emit(ctx context.Context, rec Record) error {
 	rec.Chain.Hash = canonicalHash(rec)
 	c.seq++
 	c.prev = rec.Chain.Hash
+	if c.store != nil {
+		if err := c.store.Save(ctx, rec.Chain.Sequence, rec.Chain.Hash); err != nil {
+			// Log but don't abort — audit is best-effort and a
+			// wedged state DB shouldn't wedge the daemon.
+			c.logger.Warn("audit_egress.chain.persist_failed",
+				slog.Uint64("sequence", rec.Chain.Sequence),
+				slog.String("err", err.Error()),
+			)
+		}
+	}
 	c.mu.Unlock()
 	return c.inner.Emit(ctx, rec)
 }
