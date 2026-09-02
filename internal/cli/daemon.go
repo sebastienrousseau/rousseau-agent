@@ -276,6 +276,14 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, chainStore, opts.Logger)
 
+	// Snapshot the licence state into the audit trail so the
+	// SIEM has a boot-time record of "what tier is this daemon
+	// running as, and when does it expire". Standard SOC 2
+	// Change-Management visibility — a compliance reviewer can
+	// filter for Category=license across a fleet to answer
+	// "were any daemons running unlicensed this quarter?".
+	emitLicenseSnapshot(auditSink, checker)
+
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
 		SystemPrompt:   systemPrompt(cfg.Agent.SystemPrompt),
@@ -381,6 +389,75 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chain
 		Result:   "success",
 	})
 	return sink
+}
+
+// emitLicenseSnapshot writes one Category=license record to sink
+// describing the loaded [license.Checker]'s state. Detail carries
+// the operator-actionable fields ([license.Info.Subject],
+// features, expiry, expiring flag) so SIEM dashboards can slice
+// by tier + expiry-warning window without joining against a
+// separate source.
+//
+// Result values:
+//
+//   - "core"     — no licence configured (OSS install; expected)
+//   - "invalid"  — configured but signature / structure rejected
+//   - "expiring" — valid but inside [license.ExpiryWarnWindow]
+//   - "active"   — valid + not expiring
+//
+// Best-effort — a nil sink, a Nop sink, or a wedged remote all
+// swallow silently. The daemon boots regardless.
+func emitLicenseSnapshot(sink audit_egress.Sink, checker license.Checker) {
+	if sink == nil || checker == nil {
+		return
+	}
+	info := checker.Info()
+	result := licenseSnapshotResult(info)
+	detail := map[string]any{
+		"tier":  string(info.Tier),
+		"valid": info.Valid,
+	}
+	if info.Subject != "" {
+		detail["subject"] = info.Subject
+	}
+	if !info.ExpiresAt.IsZero() {
+		detail["expires_at"] = info.ExpiresAt.UTC().Format(time.RFC3339)
+		detail["expiring"] = info.Expiring
+	}
+	if info.Reason != "" {
+		detail["reason"] = info.Reason
+	}
+	if len(info.Features) > 0 {
+		feats := make([]string, len(info.Features))
+		for i, f := range info.Features {
+			feats[i] = string(f)
+		}
+		detail["features"] = feats
+	}
+	_ = sink.Emit(context.Background(), audit_egress.Record{ //nolint:errcheck // best-effort licence snapshot
+		Category: "license",
+		Actor:    "rousseau",
+		Verb:     "load",
+		Object:   string(info.Tier),
+		Result:   result,
+		Detail:   detail,
+	})
+}
+
+// licenseSnapshotResult picks the SIEM-facing outcome string
+// based on the licence Info. Split out so the branching is
+// unit-testable without spinning up the full daemon assembly.
+func licenseSnapshotResult(info license.Info) string {
+	if !info.Valid {
+		if info.Tier == license.TierCore && (info.Reason == "" || info.Reason == "no license configured") {
+			return "core"
+		}
+		return "invalid"
+	}
+	if info.Expiring {
+		return "expiring"
+	}
+	return "active"
 }
 
 // buildSSO composes the [sso.Directory] + [sso.BindingStore]
