@@ -121,7 +121,7 @@ cosign verify \
 
 Size budgets are a CI gate, not a suggestion:
 `.github/workflows/image-size.yml` fails the pull request if
-`:distroless` exceeds 70 MB or `:lite` exceeds 60 MB. Per-architecture
+`:distroless` exceeds 85 MB or `:lite` exceeds 75 MB. Per-architecture
 binary sizes are in [`docker/README.md`](./docker/README.md).
 
 ### From a signed release
@@ -907,7 +907,7 @@ pull request, 24 hours nightly.
 |---|---|---|
 | `ci.yml` | push, PR | `go vet`, `golangci-lint`, `go test -race` on Linux and macOS, the 95/95 coverage gate, `govulncheck`, build |
 | `cross-arch.yml` | push | 12 GOOS/GOARCH/tag combinations, including `linux/riscv64` and `linux/armv6` |
-| `image-size.yml` | push, PR | Fails if `:distroless` exceeds 70 MB or `:lite` exceeds 60 MB |
+| `image-size.yml` | push, PR | Fails if `:distroless` exceeds 85 MB or `:lite` exceeds 75 MB |
 | `reproducible-build.yml` | push | Two independent builds must produce an identical sha256 |
 | `soak.yml` | push, PR, nightly | Wall-clock leak detection |
 | `container-release.yml` | tag | Build, push, cosign-sign, and attest the `full` and `distroless` images |
