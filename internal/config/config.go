@@ -451,6 +451,46 @@ type ObservabilityConfig struct {
 	// OTLPEndpoint is the base URL of an OTLP-HTTP collector, e.g.
 	// "http://otel-collector:4318". Empty leaves the tracer noop.
 	OTLPEndpoint string `mapstructure:"otlp_endpoint"`
+	// AuditEgress configures the enterprise-only streaming
+	// audit-log sink. Zero value leaves the sink Nop (no records
+	// leave the process) — the OSS stdout+SQLite audit path is
+	// unaffected. Requires FeatureAuditEgress on the licence.
+	AuditEgress AuditEgressConfig `mapstructure:"audit_egress"`
+}
+
+// AuditEgressConfig is the operator-facing view of
+// internal/observability/audit_egress. Kept as a separate
+// config type so mapstructure tags don't leak into the sink
+// package.
+type AuditEgressConfig struct {
+	// Kind selects the sink implementation. Empty (default)
+	// leaves audit egress disabled; "otlp_http" ships the
+	// OTLP/HTTP logs pilot.
+	Kind string `mapstructure:"kind"`
+	// Endpoint is the OTLP/HTTP logs URL, e.g.
+	// "https://siem.example.com/v1/logs". Required when
+	// kind = "otlp_http".
+	Endpoint string `mapstructure:"endpoint"`
+	// Headers are added to every request. Standard use: bearer
+	// tokens, Splunk HEC "Authorization: Splunk <token>".
+	Headers map[string]string `mapstructure:"headers"`
+	// BatchSize caps records per push. Zero uses the sink's
+	// documented default.
+	BatchSize int `mapstructure:"batch_size"`
+	// FlushInterval bounds how long a partial batch waits
+	// before being pushed. Zero uses the sink default.
+	FlushInterval time.Duration `mapstructure:"flush_interval"`
+	// QueueSize caps in-memory records; overflow drops oldest.
+	// Zero uses the sink default.
+	QueueSize int `mapstructure:"queue_size"`
+	// HTTPTimeout caps a single push attempt. Zero uses the
+	// sink default (10s).
+	HTTPTimeout time.Duration `mapstructure:"http_timeout"`
+	// Chained wraps the sink in a hash-chained tamper-evident
+	// layer (see internal/observability/audit_egress.ChainedSink).
+	// Compliance-officer visible feature; recommended for SOC 2 /
+	// ISO 27001 / HIPAA audit-trail requirements.
+	Chained bool `mapstructure:"chained"`
 }
 
 // SMSConfig configures the Twilio/Vonage SMS transport.
