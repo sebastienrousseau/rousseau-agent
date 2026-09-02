@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
@@ -257,15 +258,15 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 	progressBus := progress.NewBus(progress.BusOptions{})
 
-	// Build the audit-egress sink from cfg + licence. Always
-	// non-nil (Nop when off/unlicensed) so downstream Emit call
-	// sites don't need nil checks. A "daemon.start" record is
-	// stamped once the wiring is complete, giving operators a
-	// zero-code way to verify their SIEM pipeline works.
+	// Build the audit-egress sink BEFORE the multi-party
+	// wrapper (which feeds pending-approval lifecycle events
+	// through it via an adapter). Sink is always non-nil (Nop
+	// when off/unlicensed) so downstream Emit call sites don't
+	// need nil checks.
 	//
-	// Constructed BEFORE agent + router so both can Emit into
-	// the same sink — a single sink means one consistent chain
-	// (if chained) and one place to reason about failures.
+	// A "daemon.start" record is stamped once the wiring is
+	// complete, giving operators a zero-code way to verify
+	// their SIEM pipeline works.
 	//
 	// The chain-state store is only opened when chained=true.
 	// Its schema-apply is idempotent so a subsequent restart
@@ -288,6 +289,19 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// filter for Category=license across a fleet to answer
 	// "were any daemons running unlicensed this quarter?".
 	emitLicenseSnapshot(auditSink, checker)
+
+	// Layer multi-party approval as the OUTERMOST governance
+	// wrapper — a request must pass MultiParty → OPA → RBAC →
+	// inner. Composition intent: N-approvers is the highest-
+	// friction gate; do it first so a group / Rego / pattern
+	// deny short-circuits the ops-heavy step. Returns a nil
+	// PendingManager when the wrap didn't take effect (no rules
+	// or unlicensed); router thread-safe on nil.
+	var pendingApprovals *approval.PendingManager
+	approver, pendingApprovals = wrapWithMultiParty(
+		approver, cfg.Agent.Approver.MultiParty, checker,
+		newApprovalAuditAdapter(auditSink), opts.Logger,
+	)
 
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
@@ -319,6 +333,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		SSOStore:      ssoStore,
 		SSOBindingTTL: cfg.Auth.SSO.BindingTTL,
 		AuditSink:     auditSink,
+		Approvals:     pendingApprovals,
 	})
 
 	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)

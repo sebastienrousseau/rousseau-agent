@@ -120,7 +120,8 @@ func checkAuditEgress(cfg *config.Config, chk license.Checker) []diagResult {
 func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 	rbac := cfg.Agent.Approver.RBAC
 	opaCfg := cfg.Agent.Approver.OPA
-	if len(rbac.Rules) == 0 && strings.TrimSpace(opaCfg.PolicyFile) == "" {
+	mp := cfg.Agent.Approver.MultiParty
+	if len(rbac.Rules) == 0 && strings.TrimSpace(opaCfg.PolicyFile) == "" && len(mp.Rules) == 0 {
 		return nil
 	}
 	var out []diagResult
@@ -167,6 +168,24 @@ func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 				Name:   "identity.governance.opa.licensed",
 				Status: "warn",
 				Detail: "policy configured but licence does not unlock governance_advanced — policy is inert (see docs/COMMERCIAL.md)",
+			})
+		}
+	}
+	if len(mp.Rules) > 0 {
+		out = append(out, diagResult{
+			Name:   "identity.governance.multi_party.rules",
+			Status: "info",
+			Detail: fmt.Sprintf("%d rule(s) configured", len(mp.Rules)),
+		})
+		if unlocked {
+			out = append(out, diagResult{
+				Name: "identity.governance.multi_party.licensed", Status: "ok", Detail: "active",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name:   "identity.governance.multi_party.licensed",
+				Status: "warn",
+				Detail: "rules configured but licence does not unlock governance_advanced — pending queue is inert (see docs/COMMERCIAL.md)",
 			})
 		}
 	}
