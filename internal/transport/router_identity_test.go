@@ -136,6 +136,47 @@ func TestRouter_RegularMessageBypassesCommandInterception(t *testing.T) {
 	assert.Equal(t, "ok", got)
 }
 
+func TestRouter_VersionEchoesBuildStamp(t *testing.T) {
+	// /version is the operator-facing "which binary is answering"
+	// probe. Must echo the exact BuildStamp the daemon passed in,
+	// prefixed with "rousseau " so the reply is self-identifying
+	// even if forwarded / screenshotted out of context.
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
+	jm, err := sqlitestore.NewJIDMap(ctx, store)
+	require.NoError(t, err)
+	ids, err := sqlitestore.NewIdentityStore(ctx, store)
+	require.NoError(t, err)
+
+	stamp := "v0.0.3-99-gdeadbee (commit deadbee, built 2026-01-01T00:00:00Z)"
+	r := transport.NewRouter(
+		&staticRunner{reply: "ok"},
+		&storeAdapter{s: store},
+		jm,
+		silent(),
+		transport.RouterOptions{
+			Identity:   ids,
+			Transport:  "whatsapp",
+			BuildStamp: stamp,
+		},
+	)
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/version"})
+	require.NoError(t, err)
+	assert.Equal(t, "rousseau "+stamp, got)
+}
+
+func TestRouter_VersionFallbackWhenBuildStampEmpty(t *testing.T) {
+	// The daemon SHOULD always inject a build stamp, but dev
+	// builds without ldflags exist. /version must answer rather
+	// than error or fall through to the LLM.
+	r, _, ctx := setup(t) // setup passes no BuildStamp
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/version"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "unknown build")
+}
+
 func TestRouter_NilIdentityDisablesCommandInterception(t *testing.T) {
 	// A router without an Identity resolver treats /whoami as
 	// regular text (no interception) — backwards-compat guarantee.

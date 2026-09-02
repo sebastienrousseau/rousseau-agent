@@ -382,6 +382,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		SSOBindingTTL: cfg.Auth.SSO.BindingTTL,
 		AuditSink:     auditSink,
 		Approvals:     pendingApprovals,
+		BuildStamp:    fmt.Sprintf("%s (commit %s, built %s)", version, commit, buildDate),
 	})
 
 	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
