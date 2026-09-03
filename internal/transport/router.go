@@ -746,35 +746,45 @@ func trimQuotes(s string) string {
 // expecting session-switch, get "nothing running", and are
 // confused.
 func cmdHelp() string {
-	return `rousseau commands (every verb has a shortcut):
+	// WhatsApp bubbles render in a proportional font — the
+	// previous column-aligned layout collapsed multi-space
+	// gaps and became unreadable. Use WhatsApp-native markup
+	// (single-asterisk bold, • bullets, blank lines between
+	// sections) so each verb reads as its own line regardless
+	// of client font width.
+	//
+	// Slack + iMessage + Signal also render bold via
+	// *asterisks*, so this stays legible across every transport
+	// the daemon speaks.
+	return `*rousseau commands* — every verb has a shortcut
 
-session:
-  /sessions   /s     list your saved sessions
-  /name "…"   /n     rename the current session
-  /resume <shortid>  /r     switch to a saved session
-  /clear      /c     start a fresh session
-  /delete <shortid>  /d     remove a saved session (not the current one)
+*session*
+• /sessions (/s) — list your saved sessions
+• /name "…" (/n) — rename the current session
+• /resume <shortid> (/r) — switch to a saved session
+• /clear (/c) — start a fresh session
+• /delete <shortid> (/d) — remove a session (not the current one)
 
-turn control (while a reply is in flight):
-  /status     /st    what is the current turn doing right now?
-  /pause      /p     pause at the next safe checkpoint
-  /resume     /r     unpause (no args) — /r <shortid> switches sessions instead
-  /cancel     /x     abort the current turn
+*turn control* — while a reply is in flight
+• /status (/st) — what is the current turn doing?
+• /pause (/p) — pause at the next safe checkpoint
+• /resume (/r) — unpause a paused turn (or /r <shortid> to switch sessions)
+• /cancel (/x) — abort the current turn
 
-identity + sso:
-  /whoami     /w                             show my identity + linked handles
-  /link <transport>:<sender>     /lk         link an additional handle
-  /unlink <transport>:<sender>   /ul         remove a handle
-  /login      /li                            begin an SSO handshake (when enabled)
-  /logout     /lo                            end the SSO session
+*identity + sso*
+• /whoami (/w) — show my identity + linked handles
+• /link <transport>:<sender> (/lk) — link a handle
+• /unlink <transport>:<sender> (/ul) — remove a handle
+• /login (/li) — begin an SSO handshake (when enabled)
+• /logout (/lo) — end the SSO session
 
-approvals:
-  /approve <token>   /ap                     approve a pending multi-party request
-  /deny <token>      /ny                     deny a pending multi-party request
+*approvals*
+• /approve <token> (/ap) — approve a pending multi-party request
+• /deny <token> (/ny) — deny a pending multi-party request
 
-ops:
-  /version    /v     show the daemon build stamp
-  /help       /h     this listing`
+*ops*
+• /version (/v) — show the daemon build stamp
+• /help (/h) — this listing`
 }
 
 func (r *Router) cmdWhoami(ctx context.Context, from string) string {
