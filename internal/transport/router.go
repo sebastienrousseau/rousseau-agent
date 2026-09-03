@@ -16,6 +16,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
+	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
 // SessionStore is the subset of state.Store the Router needs. Declared
@@ -31,6 +32,7 @@ type SessionStore interface {
 	Save(ctx context.Context, s *agent.Session) error
 	Load(ctx context.Context, id string) (*agent.Session, error)
 	ListBySender(ctx context.Context, sender string, limit int) ([]state.Summary, error)
+	SearchBySender(ctx context.Context, sender, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -329,6 +331,12 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 				return "", fmt.Errorf("router: save: %w", err)
 			}
 			return reply, nil
+		case "/find":
+			reply, err := r.cmdFind(ctx, msg.From, arg)
+			if err != nil {
+				return "", fmt.Errorf("router: find: %w", err)
+			}
+			return reply, nil
 		}
 	}
 
@@ -403,7 +411,9 @@ var syncCommands = map[string]struct{}{
 	"/save":   {},
 	"/s":      {}, // shortcut for /save (Ctrl+S muscle memory).
 	// /ls above lists sessions instead.
-	"/rm":      {}, // shell-alias for /delete
+	"/find": {},
+	"/f":    {}, // shortcut for /find (search across your sessions)
+	"/rm":   {}, // shell-alias for /delete
 	"/login":   {},
 	"/li":      {}, // shortcut for /login
 	"/logout":  {},
@@ -433,6 +443,7 @@ var commandAliases = map[string]string{
 	"/h":  "/help",
 	"/c":  "/clear",
 	"/s":  "/save", // Ctrl+S muscle memory wins over "s = sessions"
+	"/f":  "/find",
 	"/n":  "/name",
 	"/r":  "/resume",
 	"/d":  "/delete",
@@ -729,6 +740,52 @@ func (r *Router) cmdSave(ctx context.Context, from, name string) (string, error)
 // keeps the old session for audit AND repoints the jidMap to a
 // fresh one). Prevents the "I just deleted the conversation I
 // was in the middle of" foot-gun.
+// cmdFind full-text-searches the sender's own sessions and
+// returns matching hits with a short snippet. Uses the store's
+// SearchBySender (sqlite FTS5 / postgres tsvector — both drivers
+// return the same SearchHit shape) so the query hits an index
+// rather than scanning payloads.
+//
+// Scope-isolation: SearchBySender filters on sender at the SQL
+// level, so a query from Alice can never surface a hit from
+// Bob's sessions regardless of what words match. Pinned by
+// TestRouter_FindIsScopedToSender.
+func (r *Router) cmdFind(ctx context.Context, from, arg string) (string, error) {
+	arg = trimQuotes(strings.TrimSpace(arg))
+	if arg == "" {
+		return "usage: /find \"words to search for\"  (or /f — matches text in any of your saved sessions)", nil
+	}
+	hits, err := r.store.SearchBySender(ctx, from, arg, sqlitestore.SearchOptions{Limit: 10})
+	if err != nil {
+		return "", fmt.Errorf("search by sender: %w", err)
+	}
+	if len(hits) == 0 {
+		return fmt.Sprintf("no matches for %q in your sessions.", arg), nil
+	}
+	current, _, _ := r.jidMap.Get(ctx, from) //nolint:errcheck // unknown-current is fine
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "matches for %q (%d):\n", arg, len(hits))
+	for i, h := range hits {
+		marker := " "
+		if h.SessionID == current {
+			marker = "*"
+		}
+		title := h.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		snippet := strings.TrimSpace(h.Snippet)
+		if snippet == "" {
+			snippet = "(no preview)"
+		}
+		fmt.Fprintf(&b, "%s %2d. %s  %s\n    ↳ %s\n",
+			marker, i+1, title, shortSessionID(h.SessionID), snippet)
+	}
+	b.WriteString("\n* = current • /r <shortid> to jump to a match")
+	return b.String(), nil
+}
+
 func (r *Router) cmdDelete(ctx context.Context, from, arg string) (string, error) {
 	arg = trimQuotes(strings.TrimSpace(arg))
 	if arg == "" {
@@ -860,6 +917,7 @@ func cmdHelp() string {
 *session* (my memory of the conversation — not your WhatsApp chat bubbles)
 • /save "…" (/s) — atomic snapshot of the current state (stay in current)
 • /sessions (/ls) — list your saved sessions
+• /find "…" (/f) — full-text search across your sessions
 • /name "…" (/n) — rename the current session
 • /resume <shortid> (/r) — switch to a saved session
 • /clear (/c) — start a fresh session (bot forgets, chat bubbles stay)

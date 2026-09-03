@@ -223,6 +223,11 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	if err != nil {
 		return nil, err
 	}
+	// concrete is the driver-native store. `sessions` keeps the
+	// state.Store interface for callers that only touch the
+	// canonical Save/Load/List/Delete surface; the transport
+	// router below needs the wider SearchBySender + Search
+	// methods so it holds the concrete `concrete` directly.
 	sessions := state.Store(concrete)
 
 	identities, err := openIdentityStore(ctx, concrete)
@@ -430,7 +435,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Approvals:     pendingApprovals,
 		BuildStamp:    fmt.Sprintf("%s (commit %s, built %s)", version, commit, buildDate),
 	}
-	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, routerOpts)
+	router := transport.NewRouter(ag, concrete, jidMap, opts.Logger, routerOpts)
 
 	cronStore, err := openCronStore(ctx, concrete)
 	if err != nil {
@@ -750,7 +755,11 @@ func (w *daemonWiring) routerFor(name string) *transport.Router {
 	opts := w.routerOpts
 	opts.Identity = w.Identities
 	opts.Transport = name
-	r := transport.NewRouter(w.Agent, w.Sessions, w.JIDMap, w.Logger, opts)
+	// Concrete (SearchableStore) rather than Sessions
+	// (state.Store) so the router can reach the wider
+	// SearchBySender + Search methods it needs for /find and
+	// the recall provider.
+	r := transport.NewRouter(w.Agent, w.Concrete, w.JIDMap, w.Logger, opts)
 	w.routers[name] = r
 	return r
 }

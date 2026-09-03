@@ -28,6 +28,7 @@ import (
 type SearchableStore interface {
 	state.Store
 	Search(ctx context.Context, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error)
+	SearchBySender(ctx context.Context, sender, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error)
 	EnsureSearch(ctx context.Context) error
 }
 
