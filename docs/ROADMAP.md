@@ -50,6 +50,7 @@ Sections:
 - Six additional transports with the same Dispatch shape + image ingestion + Router-integrated allowlist: Slack, Discord, Telegram, Matrix, Signal (via `signal-cli` JSON-RPC), iMessage (via BlueBubbles), plus SMS + email variants.
 - Tier-1/2/3 live progress UX on WhatsApp: emoji-reaction ack, sequential Claude-CLI-style bullet feed (one message per action with a 2s coalescing floor), ✅/❌ completion reaction. Reply is always a fresh message (never an edit of the placeholder) so notifications fire and the running log stays as thread history.
 - Cross-transport identity: `/whoami`, `/link`, `/unlink` commands resolve one identity across every transport a user signs in from.
+- Operator probes: `/version` echoes the daemon's ldflag-injected build stamp (tag + commit + build date) — post-redeploy sanity check without needing shell access to the container.
 
 ### 1.5 UI surfaces
 
