@@ -1,6 +1,6 @@
 # rousseau-agent — implementation plan
 
-_Last touched: 2026-08-30 (commit at HEAD)._
+_Last touched: 2026-09-03 (commit at HEAD)._
 
 > **Commercial framing (2026-08-30):** the business model is now
 > **open-core with a paid Enterprise / Team Edition** delivered as an
@@ -40,7 +40,7 @@ Sections:
 ### 1.3 Storage
 
 - SQLite via `modernc.org/sqlite` (pure Go, no CGO). WAL journaling, `busy_timeout=15s`, `synchronous=NORMAL`, `foreign_keys=ON`.
-- Tables: `sessions`, `jid_sessions` (transport → session mapping), `claude_sessions` (provider cache), `cron_jobs`.
+- Tables (SQLite driver, canonical schema): `sessions` + FTS twin `sessions_fts`, `jid_sessions` (transport → session mapping), `claude_sessions` (provider cache), `cron_jobs`, `oauth_tokens`, `session_costs`, `recall_vectors`, `identities` + `identity_handles` (cross-transport identity), `handles_real` (allowlist), `approved_senders`, `sso_bindings`, `scim_users` + `scim_groups` + `scim_group_members` (SCIM directory), `audit_chain_state` (tamper-evident audit ring). Postgres mirror in `internal/state/postgres/` covers all relational tables (`sessions`, `cron_jobs`, `jid_sessions`, `claude_sessions`, `oauth_tokens`, `session_costs`); FTS-backed `sessions_fts` + vector `recall_vectors` remain sqlite-only pending the tsvector / pgvector design call.
 - FTS5 virtual table (`sessions_fts`) with porter + unicode61 tokenizer and INSERT/UPDATE/DELETE triggers keeping it in sync.
 
 ### 1.4 Transports
