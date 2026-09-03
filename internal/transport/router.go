@@ -323,6 +323,12 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 				return "", fmt.Errorf("router: delete: %w", err)
 			}
 			return reply, nil
+		case "/save":
+			reply, err := r.cmdSave(ctx, msg.From, arg)
+			if err != nil {
+				return "", fmt.Errorf("router: save: %w", err)
+			}
+			return reply, nil
 		}
 	}
 
@@ -393,6 +399,8 @@ var syncCommands = map[string]struct{}{
 	// /r → /resume before control.Decide sees it.
 	"/delete":  {},
 	"/d":       {}, // shortcut for /delete
+	"/save":    {},
+	"/sv":      {}, // shortcut for /save (/s is /sessions)
 	"/ls":      {}, // shell-alias for /sessions
 	"/rm":      {}, // shell-alias for /delete
 	"/login":   {},
@@ -427,6 +435,7 @@ var commandAliases = map[string]string{
 	"/n":  "/name",
 	"/r":  "/resume",
 	"/d":  "/delete",
+	"/sv": "/save",
 	"/ls": "/sessions",
 	"/rm": "/delete",
 	"/li": "/login",
@@ -649,6 +658,53 @@ func (r *Router) cmdResume(ctx context.Context, from, arg string) (string, error
 		title, target.MessageCount), nil
 }
 
+// cmdSave takes an atomic snapshot of the current session and
+// stores it as a separate named session. The current session
+// keeps its ID + continues to receive future messages; the
+// snapshot is a frozen point-in-time copy the user can later
+// /resume to revisit that state without losing the current
+// thread. Git-branch analog: work freely + save known-good
+// checkpoints.
+//
+// Distinct from /name (which relabels the current session
+// in-place) and /clear (which retires the current session
+// and starts an empty one). /save is the "I want to be able
+// to come back to THIS state" verb.
+func (r *Router) cmdSave(ctx context.Context, from, name string) (string, error) {
+	name = trimQuotes(strings.TrimSpace(name))
+	if name == "" {
+		return "usage: /save \"checkpoint name\"  (takes an atomic snapshot of the current session that you can /resume later)", nil
+	}
+	// Load the current session to snapshot its messages.
+	sess, err := r.sessionFor(ctx, from)
+	if err != nil {
+		return "", fmt.Errorf("session for: %w", err)
+	}
+	// Build a fresh session with the same messages. Deep-copy
+	// the Messages slice so future appends to the live session
+	// never mutate the snapshot's history.
+	snapshot := agent.NewSession(name)
+	snapshot.Sender = from
+	if len(sess.Messages) > 0 {
+		snapshot.Messages = make([]agent.Message, len(sess.Messages))
+		copy(snapshot.Messages, sess.Messages)
+	}
+	if err := r.store.Save(ctx, snapshot); err != nil {
+		return "", fmt.Errorf("save snapshot: %w", err)
+	}
+	// jidMap intentionally NOT touched — the user stays in the
+	// original session and continues there. The snapshot is a
+	// separate row addressable via /sessions.
+	r.logger.Info("router.session_snapshotted",
+		slog.String("from", from),
+		slog.String("source_session_id", sess.ID),
+		slog.String("snapshot_session_id", snapshot.ID),
+		slog.String("name", name),
+	)
+	return fmt.Sprintf("saved snapshot %q (%d msg). you're still in the current session — /r %s to revisit the snapshot later.",
+		name, len(snapshot.Messages), shortSessionID(snapshot.ID)), nil
+}
+
 // cmdDelete removes a session by short-id. Refuses to delete
 // the current session — the user should /clear first (which
 // keeps the old session for audit AND repoints the jidMap to a
@@ -761,6 +817,7 @@ func cmdHelp() string {
 *session*
 • /sessions (/s) — list your saved sessions
 • /name "…" (/n) — rename the current session
+• /save "…" (/sv) — atomic snapshot of the current state (stay in current session)
 • /resume <shortid> (/r) — switch to a saved session
 • /clear (/c) — start a fresh session
 • /delete <shortid> (/d) — remove a session (not the current one)
