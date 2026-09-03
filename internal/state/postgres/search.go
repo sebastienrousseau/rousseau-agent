@@ -163,6 +163,89 @@ ORDER BY rank DESC
 	return out, nil
 }
 
+// SearchBySender runs Search but restricts hits to sessions
+// whose sender matches the caller's JID. Backs the transport
+// /find chat verb — every operator only sees their own
+// conversation history. Empty sender short-circuits to nil so
+// a bug that forgot to plumb the sender through never
+// accidentally leaks cross-sender content.
+func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts SearchOptions) ([]SearchHit, error) {
+	if sender == "" {
+		return nil, nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("postgres: empty search query")
+	}
+	if opts.Limit == 0 {
+		opts.Limit = 20
+	}
+	if opts.SnippetChars == 0 {
+		opts.SnippetChars = 200
+	}
+
+	maxWords := opts.SnippetChars / 6
+	if maxWords < 2 {
+		maxWords = 2
+	}
+	minWords := maxWords / 2
+	if minWords < 1 {
+		minWords = 1
+	}
+	headlineOpts := fmt.Sprintf(
+		`MaxWords=%d, MinWords=%d, ShortWord=3, HighlightAll=false, StartSel="", StopSel=""`,
+		maxWords, minWords,
+	)
+	// Same CTE shape as Search — the extra WHERE sender = $2
+	// clause hits the (sender, updated_at) index for the
+	// pre-filter, then the FTS predicate narrows further. The
+	// index-based sender filter is cheaper than post-filtering
+	// FTS hits with an application-level set intersection.
+	const q = `
+WITH ranked AS (
+    SELECT id, title, payload, updated_at,
+           ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS rank
+    FROM sessions
+    WHERE sender = $2
+      AND search_vector @@ websearch_to_tsquery('english', $1)
+    ORDER BY rank DESC
+    LIMIT $3
+)
+SELECT id, title,
+       ts_headline('english', payload,
+                   websearch_to_tsquery('english', $1),
+                   $4) AS snippet,
+       updated_at,
+       rank
+FROM ranked
+ORDER BY rank DESC
+`
+	rows, err := s.db.QueryContext(ctx, q, query, sender, opts.Limit, headlineOpts)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: search by sender: %w", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
+
+	var out []SearchHit
+	for rows.Next() {
+		var (
+			hit       SearchHit
+			updatedAt sql.NullTime
+		)
+		if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Snippet, &updatedAt, &hit.Rank); err != nil {
+			return nil, fmt.Errorf("postgres: scan hit: %w", err)
+		}
+		if updatedAt.Valid {
+			hit.UpdatedAt = updatedAt.Time.UTC()
+		}
+		out = append(out, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: iterate hits: %w", err)
+	}
+	return out, nil
+}
+
 // RecentSessions returns the N most recently touched sessions.
 // Handy for CLI commands that render a picker. Matches the
 // SQLite driver's helper so `rousseau session list` can talk
