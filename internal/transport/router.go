@@ -388,20 +388,21 @@ var syncCommands = map[string]struct{}{
 	"/clear":    {},
 	"/c":        {}, // shortcut for /clear
 	"/sessions": {},
-	"/s":        {}, // shortcut for /sessions
-	"/name":     {},
-	"/n":        {}, // shortcut for /name
-	"/resume":   {},
-	"/r":        {}, // shortcut for /resume — dual use: alone unpauses a
+	"/ls":       {}, // shortcut for /sessions (shell muscle memory —
+	// /s is Ctrl+S save)
+	"/name":   {},
+	"/n":      {}, // shortcut for /name
+	"/resume": {},
+	"/r":      {}, // shortcut for /resume — dual use: alone unpauses a
 	// running turn (control verb, exact-match), with a
 	// short-id switches sessions (router). Same shortcut
 	// works for both because canonicalCommand normalises
 	// /r → /resume before control.Decide sees it.
-	"/delete":  {},
-	"/d":       {}, // shortcut for /delete
-	"/save":    {},
-	"/sv":      {}, // shortcut for /save (/s is /sessions)
-	"/ls":      {}, // shell-alias for /sessions
+	"/delete": {},
+	"/d":      {}, // shortcut for /delete
+	"/save":   {},
+	"/s":      {}, // shortcut for /save (Ctrl+S muscle memory).
+	// /ls above lists sessions instead.
 	"/rm":      {}, // shell-alias for /delete
 	"/login":   {},
 	"/li":      {}, // shortcut for /login
@@ -431,12 +432,11 @@ var commandAliases = map[string]string{
 	"/v":  "/version",
 	"/h":  "/help",
 	"/c":  "/clear",
-	"/s":  "/sessions",
+	"/s":  "/save", // Ctrl+S muscle memory wins over "s = sessions"
 	"/n":  "/name",
 	"/r":  "/resume",
 	"/d":  "/delete",
-	"/sv": "/save",
-	"/ls": "/sessions",
+	"/ls": "/sessions", // shell muscle memory instead
 	"/rm": "/delete",
 	"/li": "/login",
 	"/lo": "/logout",
@@ -850,9 +850,9 @@ func cmdHelp() string {
 	return `*rousseau commands* — every verb has a shortcut
 
 *session*
-• /sessions (/s) — list your saved sessions
+• /save "…" (/s) — atomic snapshot of the current state (stay in current)
+• /sessions (/ls) — list your saved sessions
 • /name "…" (/n) — rename the current session
-• /save "…" (/sv) — atomic snapshot of the current state (stay in current session)
 • /resume <shortid> (/r) — switch to a saved session
 • /clear (/c) — start a fresh session
 • /delete <shortid> (/d) — remove a session (not the current one)
