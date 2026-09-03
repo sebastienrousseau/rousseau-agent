@@ -601,10 +601,10 @@ func TestRouter_HelpEnumeratesAllVerbs(t *testing.T) {
 	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/help"})
 	require.NoError(t, err)
 	for _, must := range []string{
-		"/sessions", "/s",
+		"/sessions", "/ls",
 		"/clear", "/c",
 		"/name", "/n",
-		"/save", "/sv",
+		"/save", "/s",
 		"/resume", "/r",
 		"/delete", "/d",
 		"/status", "/st",
@@ -659,7 +659,7 @@ func TestRouter_VersionShortcutAlsoWorks(t *testing.T) {
 }
 
 func TestRouter_ShortcutsCanonicalise(t *testing.T) {
-	// /c, /s, /n, /r, /d must behave identically to their
+	// /c, /s, /n, /r, /d, /ls must behave identically to their
 	// canonical forms. Pinning both the syncCommands membership
 	// AND the alias-table dispatch so a future refactor that
 	// touches one but not the other fails this test.
@@ -667,8 +667,13 @@ func TestRouter_ShortcutsCanonicalise(t *testing.T) {
 	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hi"})
 	require.NoError(t, err)
 
-	// /s should list sessions (same shape as /sessions).
+	// /s should SAVE (Ctrl+S muscle memory — same as /save).
 	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/s"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "saved snapshot")
+
+	// /ls should list sessions (shell muscle memory).
+	got, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/ls"})
 	require.NoError(t, err)
 	assert.Contains(t, got, "sessions (newest first")
 
