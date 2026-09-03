@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -135,40 +134,6 @@ func openStore(ctx context.Context, cfg config.StateConfig) (state.Store, error)
 	default:
 		return nil, fmt.Errorf("unknown state driver %q (want \"sqlite\" or \"postgres\")", driver)
 	}
-}
-
-// openSQLiteStore opens a store for the commands whose extension
-// callsites still consume the sqlite driver's concrete types
-// (cron, jidmap, oauth, session_cache, session_costs) even though
-// Postgres implementations of every one of those tables exist in
-// internal/state/postgres. Errors cleanly when the operator has
-// configured a non-sqlite driver — the alternative (silent
-// fall-through to sqlite) would silently degrade an HA deploy back
-// to per-replica state.
-//
-// Next step to remove this seam: teach each extension callsite
-// to hold either concrete type (the two drivers share method
-// signatures + type-alias the domain shapes so this is a wiring
-// change, not a redesign). Recall stays sqlite-only until FTS5 →
-// tsvector is designed separately.
-func openSQLiteStore(ctx context.Context, cfg config.StateConfig) (*sqlitestore.Store, error) {
-	driver := cfg.Driver
-	if driver == "" {
-		driver = "sqlite"
-	}
-	if driver != "sqlite" {
-		return nil, fmt.Errorf("this command still holds the sqlite driver's concrete types for its extension tables (cron/jidmap/oauth/session_cache/session_costs) — Postgres implementations of those tables exist but are not yet wired here; recall stays sqlite-only. Configure state.driver=sqlite (got %q)", driver)
-	}
-	store, err := openStore(ctx, cfg)
-	if err != nil {
-		return nil, err
-	}
-	concrete, ok := store.(*sqlitestore.Store)
-	if !ok {
-		_ = store.Close() //nolint:errcheck // best-effort cleanup on error path
-		return nil, errors.New("openSQLiteStore: driver=sqlite did not return *sqlite.Store — refusing to proceed")
-	}
-	return concrete, nil
 }
 
 func loadOrCreateSession(ctx context.Context, store state.Store, id, title string) (*agent.Session, error) {

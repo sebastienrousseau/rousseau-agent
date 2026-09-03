@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
@@ -133,14 +134,39 @@ func decodeTrustedPublisherKeys(encoded []string) ([]ed25519.PublicKey, error) {
 	return out, nil
 }
 
-// buildRecallProvider constructs an FTS-backed recall provider from
-// the sqlite store, skipping the current session's own snippets.
-func buildRecallProvider(store *sqlitestore.Store) agent.RecallProvider {
+// buildRecallProvider constructs an FTS-backed recall provider
+// from a SearchableStore, skipping the current session's own
+// snippets. Both drivers satisfy SearchableStore so this stays
+// driver-agnostic — the sqlite adapter's Search / Postgres
+// tsvector Search are called through the same interface.
+func buildRecallProvider(store SearchableStore) agent.RecallProvider {
 	if store == nil {
 		return nil
 	}
 	return &agent.FTSRecall{
-		Searcher:      sqlitestore.NewRecallSearcher(store),
+		Searcher:      &searchableRecall{store: store},
 		SkipSessionID: func(s *agent.Session) string { return s.ID },
 	}
+}
+
+// searchableRecall adapts a SearchableStore to
+// [agent.RecallSearcher]. Converts sqlite.SearchHit (the shared
+// domain type; postgres re-exports it as a type alias) into
+// agent.SearchHit so the agent package stays independent of
+// storage.
+type searchableRecall struct {
+	store SearchableStore
+}
+
+// Search satisfies [agent.RecallSearcher].
+func (r *searchableRecall) Search(ctx context.Context, query string, limit int) ([]agent.SearchHit, error) {
+	hits, err := r.store.Search(ctx, query, sqlitestore.SearchOptions{Limit: limit})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agent.SearchHit, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, agent.SearchHit{SessionID: h.SessionID, Title: h.Title, Snippet: h.Snippet})
+	}
+	return out, nil
 }

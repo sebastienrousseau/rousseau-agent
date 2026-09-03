@@ -7,24 +7,42 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/scim"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
-	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
-// scimDirectoryStore adapts the SCIM-backed sqlite store to
-// the [sso.DirectoryStore] contract so [OIDCDirectory.
+// scimDirectoryStore adapts a SCIM-backed store to the
+// [sso.DirectoryStore] contract so [OIDCDirectory.
 // ResolveTransportID] can hand back a real Identity when SCIM
 // is configured.
+//
+// Holds the SCIM store as two interfaces: the shared scim.Store
+// (LookupUserByExternalID lives there) and a groupNames helper
+// interface for UserGroupNames (which is NOT on scim.Store).
+// Both sqlite.SCIMStore and postgres.SCIMStore satisfy both.
 //
 // Kept as an anonymous adapter in cli (not exported) — the
 // coupling is one-way (sso stays independent of scim; the
 // daemon knows both). A future backend (LDAP, Azure Graph,
 // static YAML) writes its own adapter.
 type scimDirectoryStore struct {
-	store *sqlitestore.SCIMStore
+	store  scim.Store
+	groups SCIMGroupNamesStore
 }
 
-func newSCIMDirectoryStore(store *sqlitestore.SCIMStore) *scimDirectoryStore {
-	return &scimDirectoryStore{store: store}
+// newSCIMDirectoryStore is retained for backwards compatibility
+// with existing tests that hold a concrete SCIM store. New
+// callers use newSCIMDirectoryStoreFromIface which is
+// driver-agnostic.
+func newSCIMDirectoryStore(store scim.Store) *scimDirectoryStore {
+	return newSCIMDirectoryStoreFromIface(store, scimGroupNamesFrom(store))
+}
+
+// newSCIMDirectoryStoreFromIface builds the adapter from a
+// scim.Store and its matching SCIMGroupNamesStore. Called by the
+// daemon assembly with both derived from the same concrete
+// backend (sqlite or postgres) so the groups method sees the
+// same data.
+func newSCIMDirectoryStoreFromIface(store scim.Store, groups SCIMGroupNamesStore) *scimDirectoryStore {
+	return &scimDirectoryStore{store: store, groups: groups}
 }
 
 // ResolveExternalID satisfies [sso.DirectoryStore]. Returns the
@@ -54,16 +72,20 @@ func (a *scimDirectoryStore) ResolveExternalID(ctx context.Context, externalID s
 		}
 		return sso.Identity{}, fmt.Errorf("scim resolve: %w", err)
 	}
-	groups, err := a.store.UserGroupNames(ctx, u.ID)
-	if err != nil {
-		// A store hiccup on group lookup shouldn't hide an
-		// otherwise-found user — return the identity without
-		// groups, log at Warn upstream. But we haven't wired a
-		// logger into this adapter; the sso layer will log the
-		// wrapped error if it propagates. For fail-CLOSED on
-		// governance: return the error so RBAC / OPA don't
-		// see a stale-groups Identity.
-		return sso.Identity{}, fmt.Errorf("scim group lookup: %w", err)
+	// Group lookup is optional — a nil groups accessor means the
+	// backend doesn't expose UserGroupNames (should never happen
+	// with sqlite/postgres, both of which do, but tests that
+	// wrap a bare scim.Store fall through cleanly). A store
+	// hiccup on group lookup is fail-CLOSED — we return the
+	// error rather than an identity with stale (empty) groups
+	// so RBAC / OPA don't see a partial Identity.
+	var groups []string
+	if a.groups != nil {
+		var gerr error
+		groups, gerr = a.groups.UserGroupNames(ctx, u.ID)
+		if gerr != nil {
+			return sso.Identity{}, fmt.Errorf("scim group lookup: %w", gerr)
+		}
 	}
 	id := sso.Identity{
 		Subject:     u.ID,

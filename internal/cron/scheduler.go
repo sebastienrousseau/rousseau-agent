@@ -39,10 +39,20 @@ type TurnRunner interface {
 	RunOnce(ctx context.Context, prompt string) (string, error)
 }
 
+// Store is the narrow persistence surface the scheduler
+// consumes. Kept in this package so callers can wire in either
+// sqlite.CronStore or postgres.CronStore — both satisfy this
+// interface trivially since their method signatures + shared
+// CronJob type were designed identical during the §2.4a port.
+type Store interface {
+	List(ctx context.Context) ([]sqlitestore.CronJob, error)
+	RecordRun(ctx context.Context, id string, at time.Time) error
+}
+
 // Config bundles the scheduler's collaborators.
 type Config struct {
 	// Store is the persistent job catalogue.
-	Store *sqlitestore.CronStore
+	Store Store
 	// Runner executes a single prompt.
 	Runner TurnRunner
 	// Delivery ships the reply to the configured target. Nil disables
