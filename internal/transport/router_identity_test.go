@@ -369,6 +369,42 @@ func TestRouter_SessionsListsSenderOwnedOnly(t *testing.T) {
 	assert.NotContains(t, got, "chat: +bob", "alice's /sessions MUST NOT include bob's session")
 }
 
+// TestRouter_SessionsShowsLastUserPreview pins the /sessions
+// preview behaviour: each listing row should include a "↳ …"
+// snippet of the last user message on that session so
+// operators can distinguish sessions without /resume-ing into
+// each one. Multi-turn sessions should show the FRESHEST
+// user turn, not the opener.
+func TestRouter_SessionsShowsLastUserPreview(t *testing.T) {
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "opening question about deploys"})
+	require.NoError(t, err)
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "followup on staging cluster"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "↳", "preview marker must appear on the listing row")
+	assert.Contains(t, got, "followup on staging cluster", "preview must be the LATEST user message")
+	assert.NotContains(t, got, "opening question about deploys", "preview must NOT be the opener when a later user turn exists")
+}
+
+// TestRouter_SessionsPreviewTruncatesLongInput pins the
+// truncation contract: previews longer than the char cap get
+// clipped with an ellipsis so the listing stays readable in a
+// WhatsApp bubble.
+func TestRouter_SessionsPreviewTruncatesLongInput(t *testing.T) {
+	r, _, ctx := setup(t)
+	long := strings.Repeat("word ", 40) // ~200 chars
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: long})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "↳", "preview marker must appear")
+	assert.Contains(t, got, "…", "long input must truncate with an ellipsis")
+}
+
 func TestRouter_NameRenamesCurrent(t *testing.T) {
 	// /name updates the current session's Title. Verify the rename
 	// surfaces on the next /sessions listing.
