@@ -126,16 +126,28 @@ func TestDecide_IsDeterministic(t *testing.T) {
 
 func TestVerbs_ReturnsACopy(t *testing.T) {
 	got := Verbs()
-	require.Len(t, got, 4, "the first cut ships exactly four control verbs")
+	// Four canonical verbs + three shortcuts (/st /p /x).
+	// /resume has no dedicated shortcut here — see the note on
+	// TestVerbs_ContainsExactlyTheDocumentedSet.
+	require.Len(t, got, 7, "expected 4 canonical + 3 shortcut control verbs")
 	got["/wipe"] = Verb("wipe")
 	assert.NotContains(t, Verbs(), "/wipe", "Verbs must not expose the internal map")
 }
 
 func TestVerbs_ContainsExactlyTheDocumentedSet(t *testing.T) {
+	// Every control verb has a shortcut so operators never have
+	// to type the full word to steer a turn (matches the
+	// router's convention). /resume has no dedicated shortcut
+	// here — /r is owned by the router (session-lifecycle) and
+	// canonicalised to /resume BEFORE the message reaches
+	// control.Decide, so both /r and /resume land on VerbResume.
 	assert.Equal(t, map[string]Verb{
 		"/status": VerbStatus,
+		"/st":     VerbStatus,
 		"/pause":  VerbPause,
+		"/p":      VerbPause,
 		"/resume": VerbResume,
 		"/cancel": VerbCancel,
+		"/x":      VerbCancel,
 	}, Verbs())
 }

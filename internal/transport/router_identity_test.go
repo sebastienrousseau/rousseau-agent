@@ -456,6 +456,72 @@ func TestRouter_DeleteRefusesCurrent(t *testing.T) {
 	assert.Contains(t, got, "/clear")
 }
 
+func TestRouter_HelpEnumeratesAllVerbs(t *testing.T) {
+	// /help is the operator's discovery surface — every
+	// synchronous verb must appear in the listing (both full
+	// form and shortcut) so a new user can learn the CLI
+	// without reading source. Pinned so a new verb added to
+	// syncCommands without a /help entry fails this test.
+	r, _, ctx := setup(t)
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/help"})
+	require.NoError(t, err)
+	for _, must := range []string{
+		"/sessions", "/s",
+		"/clear", "/c",
+		"/name", "/n",
+		"/resume", "/r",
+		"/delete", "/d",
+		"/status", "/st",
+		"/pause", "/p",
+		"/cancel", "/x",
+		"/whoami", "/w",
+		"/link", "/lk",
+		"/unlink", "/ul",
+		"/login", "/li",
+		"/logout", "/lo",
+		"/approve", "/ap",
+		"/deny", "/ny",
+		"/version", "/v",
+		"/help", "/h",
+	} {
+		assert.Contains(t, got, must, "help listing must mention %s", must)
+	}
+}
+
+func TestRouter_HelpShortcutAlsoWorks(t *testing.T) {
+	// /h must produce identical output to /help.
+	r, _, ctx := setup(t)
+	long, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/help"})
+	require.NoError(t, err)
+	short, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/h"})
+	require.NoError(t, err)
+	assert.Equal(t, long, short)
+}
+
+func TestRouter_VersionShortcutAlsoWorks(t *testing.T) {
+	// /v must return the same build stamp as /version.
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
+	jm, err := sqlitestore.NewJIDMap(ctx, store)
+	require.NoError(t, err)
+
+	stamp := "v0.0.3-99-gdeadbee (commit deadbee, built 2026-01-01T00:00:00Z)"
+	r := transport.NewRouter(
+		&staticRunner{reply: "SHOULD NOT REACH LLM"},
+		&storeAdapter{s: store},
+		jm,
+		silent(),
+		transport.RouterOptions{BuildStamp: stamp},
+	)
+	long, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/version"})
+	require.NoError(t, err)
+	short, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/v"})
+	require.NoError(t, err)
+	assert.Equal(t, long, short)
+}
+
 func TestRouter_ShortcutsCanonicalise(t *testing.T) {
 	// /c, /s, /n, /r, /d must behave identically to their
 	// canonical forms. Pinning both the syncCommands membership

@@ -74,16 +74,29 @@ const (
 	VerbCancel Verb = "cancel"
 )
 
-// slashVerbs is the complete set of recognised control commands.
+// slashVerbs is the complete set of recognised control commands
+// (both full form and shortcut). Every verb has a shortcut so
+// the operator never has to type the full word to steer a turn.
 //
 // They are honoured whether or not a turn is running: a /status with
 // nothing in flight is answered "nothing running", which is more useful
 // than silence and cannot destroy anything.
+//
+// The shortcut set:
+//   - /st for /status (avoids /s which is the router's /sessions)
+//   - /p  for /pause
+//   - /r  for /resume  — see the router package's commandAliases;
+//     the router canonicalises /r → /resume BEFORE the message
+//     reaches control.Decide, so both /r and /resume land here
+//   - /x  for /cancel (avoids /c which is the router's /clear)
 var slashVerbs = map[string]Verb{
 	"/status": VerbStatus,
+	"/st":     VerbStatus,
 	"/pause":  VerbPause,
+	"/p":      VerbPause,
 	"/resume": VerbResume,
 	"/cancel": VerbCancel,
+	"/x":      VerbCancel,
 }
 
 // Verbs returns the recognised control commands keyed by their slash

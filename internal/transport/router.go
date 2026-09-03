@@ -258,6 +258,15 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		return r.cmdVersion(), nil
 	}
 
+	// /help is the operator's discovery surface — one place that
+	// enumerates every synchronous verb so a new user doesn't
+	// have to read source to learn the CLI. Handled here above
+	// the identity gate for the same reason /version is: no
+	// dependencies, always available.
+	if strings.TrimSpace(msg.Body) == "/help" {
+		return cmdHelp(), nil
+	}
+
 	// /clear starts a fresh session for this sender. The current
 	// session stays in the DB (so `rousseau session show <id>`
 	// still works) but the jidMap now points at a new empty
@@ -355,10 +364,21 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 //   - SSO:       /login /logout
 //   - approvals: /approve /deny
 var syncCommands = map[string]struct{}{
+	// Every verb has a shortcut — the alias table below owns
+	// the canonical-form mapping. This map only needs to
+	// declare membership so the Supervisor's SyncPeeker
+	// recognises both forms as sync commands and bypasses
+	// steering.
 	"/whoami":   {},
+	"/w":        {}, // shortcut for /whoami
 	"/link":     {},
+	"/lk":       {}, // shortcut for /link (/l would collide with /login)
 	"/unlink":   {},
+	"/ul":       {}, // shortcut for /unlink
 	"/version":  {},
+	"/v":        {}, // shortcut for /version
+	"/help":     {},
+	"/h":        {}, // shortcut for /help
 	"/clear":    {},
 	"/c":        {}, // shortcut for /clear
 	"/sessions": {},
@@ -366,30 +386,53 @@ var syncCommands = map[string]struct{}{
 	"/name":     {},
 	"/n":        {}, // shortcut for /name
 	"/resume":   {},
-	"/r":        {}, // shortcut for /resume (session-lifecycle, distinct from
-	// control /resume which is exact-match-only in the control package)
+	"/r":        {}, // shortcut for /resume — dual use: alone unpauses a
+	// running turn (control verb, exact-match), with a
+	// short-id switches sessions (router). Same shortcut
+	// works for both because canonicalCommand normalises
+	// /r → /resume before control.Decide sees it.
 	"/delete":  {},
 	"/d":       {}, // shortcut for /delete
 	"/ls":      {}, // shell-alias for /sessions
 	"/rm":      {}, // shell-alias for /delete
 	"/login":   {},
+	"/li":      {}, // shortcut for /login
 	"/logout":  {},
+	"/lo":      {}, // shortcut for /logout
 	"/approve": {},
+	"/ap":      {}, // shortcut for /approve
 	"/deny":    {},
+	"/ny":      {}, // shortcut for /deny (/d is taken by /delete)
 }
 
-// commandAliases collapses single-letter shortcuts into their
-// canonical verb so the Handle-time dispatch only has to switch
-// on one form. Kept in one place so a new alias is a single-map
-// entry, not a new case in every switch.
+// commandAliases collapses shortcuts into their canonical verb
+// so the Handle-time dispatch only has to switch on one form.
+// Every verb has an entry here — see cmdHelp for the full
+// operator-facing listing.
+//
+// The scheme:
+//   - single-letter shortcuts for the highest-frequency verbs
+//     (/v /h /c /s /n /r /d /w)
+//   - two-letter shortcuts for verbs whose first letter is
+//     already taken (/lk /ul /li /lo /ap /ny)
+//   - shell-metaphor aliases (/ls /rm) as bonuses
 var commandAliases = map[string]string{
+	"/w":  "/whoami",
+	"/lk": "/link",
+	"/ul": "/unlink",
+	"/v":  "/version",
+	"/h":  "/help",
 	"/c":  "/clear",
 	"/s":  "/sessions",
 	"/n":  "/name",
 	"/r":  "/resume",
 	"/d":  "/delete",
-	"/ls": "/sessions", // shell muscle memory
+	"/ls": "/sessions",
 	"/rm": "/delete",
+	"/li": "/login",
+	"/lo": "/logout",
+	"/ap": "/approve",
+	"/ny": "/deny",
 }
 
 // canonicalCommand returns the canonical form of the leading
@@ -684,6 +727,54 @@ func trimQuotes(s string) string {
 		return s[1 : len(s)-1]
 	}
 	return s
+}
+
+// cmdHelp returns the operator-facing command listing. Kept as
+// a plain function (not a method) because it depends on nothing
+// on Router — a static reference card the user can pull up
+// with /help or /h from any chat state.
+//
+// Groups verbs by operator intent (session > turn > identity >
+// ops). Long-form + short-form on the same line so the reader
+// only scans once. Deliberately does NOT enumerate every alias
+// (e.g. /ls, /rm) — noise adds up on a phone screen; the
+// canonical + one-char forms are enough for discovery.
+//
+// The /resume dual-use note is deliberately explicit: same
+// verb name shows up in both the session group AND the turn-
+// control group. Without the callout users type /resume alone
+// expecting session-switch, get "nothing running", and are
+// confused.
+func cmdHelp() string {
+	return `rousseau commands (every verb has a shortcut):
+
+session:
+  /sessions   /s     list your saved sessions
+  /name "…"   /n     rename the current session
+  /resume <shortid>  /r     switch to a saved session
+  /clear      /c     start a fresh session
+  /delete <shortid>  /d     remove a saved session (not the current one)
+
+turn control (while a reply is in flight):
+  /status     /st    what is the current turn doing right now?
+  /pause      /p     pause at the next safe checkpoint
+  /resume     /r     unpause (no args) — /r <shortid> switches sessions instead
+  /cancel     /x     abort the current turn
+
+identity + sso:
+  /whoami     /w                             show my identity + linked handles
+  /link <transport>:<sender>     /lk         link an additional handle
+  /unlink <transport>:<sender>   /ul         remove a handle
+  /login      /li                            begin an SSO handshake (when enabled)
+  /logout     /lo                            end the SSO session
+
+approvals:
+  /approve <token>   /ap                     approve a pending multi-party request
+  /deny <token>      /ny                     deny a pending multi-party request
+
+ops:
+  /version    /v     show the daemon build stamp
+  /help       /h     this listing`
 }
 
 func (r *Router) cmdWhoami(ctx context.Context, from string) string {
