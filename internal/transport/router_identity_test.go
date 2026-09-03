@@ -46,6 +46,10 @@ func (a *storeAdapter) Delete(ctx context.Context, id string) error {
 	return a.s.Delete(ctx, id)
 }
 
+func (a *storeAdapter) SearchBySender(ctx context.Context, sender, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error) {
+	return a.s.SearchBySender(ctx, sender, query, opts)
+}
+
 func silent() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // setup returns a fully-wired router with an identity resolver so
@@ -56,6 +60,11 @@ func setup(t *testing.T) (*transport.Router, *sqlitestore.IdentityStore, context
 	store, err := sqlitestore.Open(ctx, ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
+
+	// EnsureSearch installs the FTS5 virtual table + triggers so
+	// /find works end-to-end in tests — the production daemon
+	// calls this once at boot; test setup mirrors that.
+	require.NoError(t, store.EnsureSearch(ctx))
 
 	jm, err := sqlitestore.NewJIDMap(ctx, store)
 	require.NoError(t, err)
@@ -730,4 +739,69 @@ func TestRouter_NilIdentityDisablesCommandInterception(t *testing.T) {
 	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/whoami"})
 	require.NoError(t, err)
 	assert.Equal(t, "handled by LLM", got, "with no identity, /whoami must reach the LLM")
+}
+
+// TestRouter_FindIsScopedToSender pins the scope-isolation
+// invariant for /find: sender A's search must never surface a
+// hit that lives on sender B's session, even if the word is
+// present verbatim in B's payload. Fails if a refactor drops
+// the sender filter in state.SearchBySender or wires /find to
+// the un-scoped state.Search variant.
+func TestRouter_FindIsScopedToSender(t *testing.T) {
+	r, _, ctx := setup(t)
+
+	// Alice creates a session mentioning "kubernetes".
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "let's discuss kubernetes"})
+	require.NoError(t, err)
+
+	// Bob creates a separate session mentioning "kubernetes" too.
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+bob", Body: "kubernetes clustering notes"})
+	require.NoError(t, err)
+
+	// Alice searches for "kubernetes". Hit(s) must include her
+	// own session's short-id but never bob's.
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/find "kubernetes"`})
+	require.NoError(t, err)
+	assert.Contains(t, got, "matches for", "alice's /find must return the hit banner")
+	assert.Contains(t, got, "chat: +alice", "alice's own session must appear")
+	assert.NotContains(t, got, "chat: +bob", "bob's session must NEVER surface in alice's /find")
+}
+
+// TestRouter_FindEmptyReturnsUsage covers the "no arg" UX —
+// consistent with other verbs whose no-arg form shows the
+// usage line rather than triggering a stray query.
+func TestRouter_FindEmptyReturnsUsage(t *testing.T) {
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hi"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/find"})
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(got), "usage:")
+}
+
+// TestRouter_FindShortcutAlsoWorks covers the /f alias — same
+// canonicalisation surface as every other shortcut, but /find
+// is new so pin it explicitly.
+func TestRouter_FindShortcutAlsoWorks(t *testing.T) {
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "discussing terraform modules"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/f "terraform"`})
+	require.NoError(t, err)
+	assert.Contains(t, got, "matches for")
+	assert.Contains(t, got, "chat: +alice")
+}
+
+// TestRouter_FindNoHitsIsFriendly covers the empty-result path
+// — must not error, must reply with something a human reads.
+func TestRouter_FindNoHitsIsFriendly(t *testing.T) {
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "unrelated content"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/find "kafka"`})
+	require.NoError(t, err)
+	assert.Contains(t, got, "no matches for")
 }
