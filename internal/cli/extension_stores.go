@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/auth/scim"
+	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	pgstore "github.com/sebastienrousseau/rousseau-agent/internal/state/postgres"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
@@ -56,11 +60,11 @@ type SessionCostStoreI interface {
 // install their FTS surface via EnsureSearch on first open — the
 // helper does that here so callers don't have to remember.
 //
-// This is the driver-agnostic replacement for openSQLiteStore
-// for the read-side commands (session, mcp). The daemon still
-// uses openSQLiteStore because its extension-hungry constructors
-// (identity, jidmap, claude cache, audit chain, scim) are not
-// yet driver-agnostic — that is the next follow-up.
+// Used by every rousseau command that touches state (session,
+// mcp, cron, daemon). Combined with the openXxxStore extension
+// factories below, this is what lets the whole daemon accept
+// either driver end-to-end — the openSQLiteStore fail-CLOSED
+// gate that predated this seam has been retired.
 func openSearchableStore(ctx context.Context, cfg config.StateConfig) (SearchableStore, error) {
 	store, err := openStore(ctx, cfg)
 	if err != nil {
@@ -108,6 +112,127 @@ func openSessionCostStore(ctx context.Context, store SearchableStore) (SessionCo
 		return pgstore.NewSessionCostStore(ctx, s)
 	default:
 		return nil, errors.New("cli: unknown store type for session costs")
+	}
+}
+
+// JIDMapI is the narrow surface the transport router consumes to
+// map (transport, sender) → session ID. Both drivers implement
+// the same three-method surface with the same signatures.
+type JIDMapI interface {
+	Get(ctx context.Context, jid string) (sessionID string, ok bool, err error)
+	Put(ctx context.Context, jid, sessionID string) error
+}
+
+// ClaudeSessionCacheI is the narrow surface the claudecli
+// provider consumes to remember Claude Code session IDs across
+// daemon restarts. Both drivers ship matching IsKnown / Remember
+// signatures.
+type ClaudeSessionCacheI interface {
+	IsKnown(id string) bool
+	Remember(id string)
+}
+
+// SCIMGroupNamesStore is the SSO-adapter surface (looks up group
+// display-names for a SCIM user ID). Both drivers expose the
+// method with the same signature — kept as a separate interface
+// from scim.Store because the SCIM HTTP handler doesn't need it
+// and threading a wider interface through cli/sso_scim_adapter.go
+// would force test doubles to implement CRUD they never touch.
+type SCIMGroupNamesStore interface {
+	UserGroupNames(ctx context.Context, userID string) ([]string, error)
+}
+
+// openIdentityStore constructs a driver-appropriate
+// identity.Resolver on top of an already-open SearchableStore.
+// Same dispatch pattern as openCronStore / openSessionCostStore.
+func openIdentityStore(ctx context.Context, store SearchableStore) (identity.Resolver, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		return sqlitestore.NewIdentityStore(ctx, s)
+	case *pgstore.Store:
+		return pgstore.NewIdentityStore(ctx, s)
+	default:
+		return nil, errors.New("cli: unknown store type for identity")
+	}
+}
+
+// openJIDMap constructs a driver-appropriate JID → session map
+// on top of an already-open SearchableStore.
+func openJIDMap(ctx context.Context, store SearchableStore) (JIDMapI, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		return sqlitestore.NewJIDMap(ctx, s)
+	case *pgstore.Store:
+		return pgstore.NewJIDMap(ctx, s)
+	default:
+		return nil, errors.New("cli: unknown store type for jidmap")
+	}
+}
+
+// openClaudeSessionCache constructs a driver-appropriate
+// Claude-session cache on top of an already-open SearchableStore.
+func openClaudeSessionCache(ctx context.Context, store SearchableStore) (ClaudeSessionCacheI, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		return sqlitestore.NewClaudeSessionCache(ctx, s)
+	case *pgstore.Store:
+		return pgstore.NewClaudeSessionCache(ctx, s)
+	default:
+		return nil, errors.New("cli: unknown store type for claude session cache")
+	}
+}
+
+// openAuditChainState constructs a driver-appropriate audit
+// chain-state store — the ChainedSink loads it at boot and saves
+// after every emit.
+func openAuditChainState(ctx context.Context, store SearchableStore) (audit_egress.ChainStore, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		return sqlitestore.NewAuditChainState(ctx, s)
+	case *pgstore.Store:
+		return pgstore.NewAuditChainState(ctx, s)
+	default:
+		return nil, errors.New("cli: unknown store type for audit chain state")
+	}
+}
+
+// openSCIMStore constructs a driver-appropriate scim.Store on
+// top of an already-open SearchableStore. Returned as the shared
+// scim.Store interface so the HTTP handler layer doesn't have to
+// see driver-specific types.
+func openSCIMStore(ctx context.Context, store SearchableStore) (scim.Store, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		return sqlitestore.NewSCIMStore(ctx, s)
+	case *pgstore.Store:
+		return pgstore.NewSCIMStore(ctx, s)
+	default:
+		return nil, errors.New("cli: unknown store type for scim")
+	}
+}
+
+// scimGroupNamesFrom returns the group-names accessor for a
+// concrete SCIM store. Both drivers expose UserGroupNames with
+// the same signature (not on scim.Store), so we re-assert here.
+// Returns nil on unknown types — callers treat nil as "no group
+// data available" (SSO adapter falls back to token claims).
+func scimGroupNamesFrom(s scim.Store) SCIMGroupNamesStore {
+	if gs, ok := s.(SCIMGroupNamesStore); ok {
+		return gs
+	}
+	return nil
+}
+
+// openSSOBindings constructs a driver-appropriate sso.BindingStore
+// on top of an already-open SearchableStore.
+func openSSOBindings(ctx context.Context, store SearchableStore) (sso.BindingStore, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		return sqlitestore.NewSSOBindings(ctx, s)
+	case *pgstore.Store:
+		return pgstore.NewSSOBindings(ctx, s)
+	default:
+		return nil, errors.New("cli: unknown store type for sso bindings")
 	}
 }
 

@@ -64,18 +64,6 @@ func TestOpenStore_UnknownDriverRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "unknown state driver")
 }
 
-func TestOpenSQLiteStore_RejectsPostgresDriver(t *testing.T) {
-	// Extension-hungry commands (mcp, session, daemon) still hold
-	// the sqlite driver's concrete types even though Postgres
-	// implementations of every extension table now exist — the
-	// wiring change to consume either driver at each callsite is
-	// its own follow-up. Until then openSQLiteStore must surface
-	// a legible error rather than silently degrade an HA deploy.
-	_, err := openSQLiteStore(context.Background(), config.StateConfig{Driver: "postgres", DSN: "postgres://x"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "state.driver=sqlite")
-}
-
 func TestLoadOrCreateSession_New(t *testing.T) {
 	dir := t.TempDir()
 	store, err := openStore(context.Background(), config.StateConfig{Path: filepath.Join(dir, "s.db")})

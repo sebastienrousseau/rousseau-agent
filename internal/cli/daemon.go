@@ -15,6 +15,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/control"
 	rcron "github.com/sebastienrousseau/rousseau-agent/internal/cron"
+	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
 	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
@@ -48,19 +49,19 @@ type daemonWiring struct {
 	Agent       *agent.Agent
 	Registry    *tools.Registry
 	Router      *transport.Router
-	CronStore   *sqlitestore.CronStore
+	CronStore   CronStoreI
 	Sessions    state.Store // the underlying interface
-	Concrete    *sqlitestore.Store
-	JIDMap      *sqlitestore.JIDMap
-	ClaudeCache *sqlitestore.ClaudeSessionCache
-	CostStore   *sqlitestore.SessionCostStore
+	Concrete    SearchableStore
+	JIDMap      JIDMapI
+	ClaudeCache ClaudeSessionCacheI
+	CostStore   SessionCostStoreI
 	// Identities is the cross-transport identity resolver. Wired
 	// into every per-transport router via routerFor so /whoami,
 	// /link, /unlink and the SSO-identity stash all work. Not the
 	// same as SSOBindings — Identities owns the "one person, many
 	// handles" graph; SSOBindings owns "handle → verified OIDC
 	// subject". A /login binding uses both.
-	Identities *sqlitestore.IdentityStore
+	Identities identity.Resolver
 
 	// routerOpts snapshots the RouterOptions surface used by
 	// assembleDaemon so routerFor can rebuild per-transport
@@ -212,29 +213,35 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		return nil, err
 	}
 
-	concrete, err := openSQLiteStore(ctx, cfg.State)
+	// openSearchableStore dispatches on cfg.Driver — accepts
+	// either sqlite or postgres and applies the FTS surface. This
+	// is the last-mile step that lets the daemon run
+	// multi-replica on Postgres end-to-end: every extension store
+	// below is constructed via a driver-agnostic factory that
+	// consumes the same interface.
+	concrete, err := openSearchableStore(ctx, cfg.State)
 	if err != nil {
 		return nil, err
 	}
 	sessions := state.Store(concrete)
 
-	identities, err := sqlitestore.NewIdentityStore(ctx, concrete)
+	identities, err := openIdentityStore(ctx, concrete)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
 
-	jidMap, err := sqlitestore.NewJIDMap(ctx, concrete)
+	jidMap, err := openJIDMap(ctx, concrete)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
-	claudeCache, err := sqlitestore.NewClaudeSessionCache(ctx, concrete)
+	claudeCache, err := openClaudeSessionCache(ctx, concrete)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
-	costStore, err := sqlitestore.NewSessionCostStore(ctx, concrete)
+	costStore, err := openSessionCostStore(ctx, concrete)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
@@ -339,7 +346,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// without chained=true leaves the row untouched (harmless).
 	var chainStore audit_egress.ChainStore
 	if cfg.Observability.AuditEgress.Chained {
-		cs, csErr := sqlitestore.NewAuditChainState(ctx, concrete)
+		cs, csErr := openAuditChainState(ctx, concrete)
 		if csErr != nil {
 			_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 			return nil, fmt.Errorf("cli: audit chain state: %w", csErr)
@@ -376,10 +383,14 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Compressor:     buildCompressor(cfg.Agent.Compression, provider),
 		SkillsProvider: skillsProv,
 		RecallProvider: buildRecallProvider(concrete),
-		CostRecorder:   sqlitestore.NewCostRecorder(costStore, nil),
-		Hooks:          buildHooks(cfg.Hooks, opts.Logger),
-		Progress:       progressBus,
-		AuditSink:      auditSink,
+		// CostRecorder wraps a driver-agnostic costWriter — both
+		// sqlite.SessionCostStore and postgres.SessionCostStore
+		// satisfy the widened interface. Kept in the sqlite
+		// package for locality with pricing; the type is neutral.
+		CostRecorder: sqlitestore.NewCostRecorder(costStore, nil),
+		Hooks:        buildHooks(cfg.Hooks, opts.Logger),
+		Progress:     progressBus,
+		AuditSink:    auditSink,
 	})
 
 	// Build the optional SCIM Service Provider — pull-based
@@ -421,7 +432,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, routerOpts)
 
-	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
+	cronStore, err := openCronStore(ctx, concrete)
 	if err != nil {
 		closeMCPClients(mcpClients, opts.Logger)
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
@@ -468,7 +479,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 // On success returns a wired *scim.Server + the addr so the
 // transport runner can spawn ListenAndServe with its own
 // context.
-func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Checker, store *sqlitestore.Store, logger *slog.Logger) (*scim.Server, string, error) {
+func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Checker, store SearchableStore, logger *slog.Logger) (*scim.Server, string, error) {
 	if cfg.Addr == "" {
 		return nil, "", nil
 	}
@@ -487,7 +498,7 @@ func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Check
 		)
 		return nil, "", nil
 	}
-	scimStore, err := sqlitestore.NewSCIMStore(ctx, store)
+	scimStore, err := openSCIMStore(ctx, store)
 	if err != nil {
 		return nil, "", fmt.Errorf("cli: scim store: %w", err)
 	}
@@ -633,7 +644,7 @@ func licenseSnapshotResult(info license.Info) string {
 // backing store (when SSO could plausibly be used) or a
 // NoBindings fail-safe. The router's Lookup path guards on
 // store errors, but nil would just be a panic waiting to happen.
-func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker, store *sqlitestore.Store, logger *slog.Logger) (sso.Directory, sso.BindingStore, error) {
+func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker, store SearchableStore, logger *slog.Logger) (sso.Directory, sso.BindingStore, error) {
 	if cfg.Kind == "" {
 		return nil, sso.NoBindings{}, nil
 	}
@@ -642,7 +653,7 @@ func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker
 	// previously-licensed run persisted. Keeping those readable
 	// lets an operator downgrade + re-upgrade without users
 	// having to /login again.
-	bindings, err := sqlitestore.NewSSOBindings(ctx, store)
+	bindings, err := openSSOBindings(ctx, store)
 	if err != nil {
 		return nil, sso.NoBindings{}, fmt.Errorf("cli: sso bindings: %w", err)
 	}
@@ -661,14 +672,14 @@ func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker
 	// answers with real user data instead of ErrNotFound. The
 	// underlying scim table is created here idempotently
 	// (CREATE TABLE IF NOT EXISTS) — safe even when buildSCIM
-	// also opened one against the same *sqlitestore.Store.
+	// also opened one against the same driver-native Store.
 	if cfg.SCIM.Addr != "" && checker != nil && checker.IsEnabled(license.FeatureSSO) {
-		scimStore, err := sqlitestore.NewSCIMStore(ctx, store)
+		scimStore, err := openSCIMStore(ctx, store)
 		if err != nil {
 			return nil, bindings, fmt.Errorf("cli: sso scim adapter: %w", err)
 		}
 		if oidcDir, ok := dir.(*sso.OIDCDirectory); ok {
-			oidcDir.WithStore(newSCIMDirectoryStore(scimStore))
+			oidcDir.WithStore(newSCIMDirectoryStoreFromIface(scimStore, scimGroupNamesFrom(scimStore)))
 		}
 	}
 	return dir, bindings, nil
