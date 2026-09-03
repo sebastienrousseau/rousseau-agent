@@ -232,6 +232,17 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		}
 	}
 
+	// /version is unconditionally synchronous — no identity, no
+	// storage, no LLM. Handled here BEFORE the identity gate so it
+	// works even in deployments that never wired an Identity
+	// resolver (which is the daemon's current default). Without
+	// this, an operator sending /version watches the message fall
+	// through to the LLM and gets a fabricated "Unknown command"
+	// reply, defeating the whole point of the verb.
+	if strings.TrimSpace(msg.Body) == "/version" {
+		return r.cmdVersion(), nil
+	}
+
 	// Chat-command interception: /whoami, /link, /unlink handled
 	// before the LLM sees the message so they run instantly + free.
 	// Only fires when an Identity resolver is configured — the

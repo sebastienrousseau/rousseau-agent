@@ -177,6 +177,38 @@ func TestRouter_VersionFallbackWhenBuildStampEmpty(t *testing.T) {
 	assert.Contains(t, got, "unknown build")
 }
 
+func TestRouter_VersionWorksWithoutIdentityResolver(t *testing.T) {
+	// Regression pin: the daemon does NOT wire an Identity resolver
+	// today (see cli/daemon.go — RouterOptions{} has no Identity
+	// field). Before this fix, /version was buried inside
+	// handleIdentityCommand which is gated on `r.identity != nil`,
+	// so /version fell through to the LLM and returned fabricated
+	// text like "Unknown command." /version has no identity
+	// dependency; it must answer regardless of whether identity is
+	// wired.
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
+	jm, err := sqlitestore.NewJIDMap(ctx, store)
+	require.NoError(t, err)
+
+	stamp := "v0.0.3-99-gdeadbee (commit deadbee, built 2026-01-01T00:00:00Z)"
+	r := transport.NewRouter(
+		&staticRunner{reply: "SHOULD NOT REACH LLM"},
+		&storeAdapter{s: store},
+		jm,
+		silent(),
+		transport.RouterOptions{
+			BuildStamp: stamp,
+			// Deliberately no Identity — mirrors production.
+		},
+	)
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/version"})
+	require.NoError(t, err)
+	assert.Equal(t, "rousseau "+stamp, got, "/version must answer even without an Identity resolver")
+}
+
 func TestRouter_NilIdentityDisablesCommandInterception(t *testing.T) {
 	// A router without an Identity resolver treats /whoami as
 	// regular text (no interception) — backwards-compat guarantee.
