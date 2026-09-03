@@ -604,18 +604,28 @@ func (r *Router) cmdSessions(ctx context.Context, from string) (string, error) {
 }
 
 // cmdName renames the CURRENT session (the one jidMap points
-// at). Empty name → usage help. A rename is a pure Title
-// update — the message history + session ID are untouched, so
-// downstream references (`rousseau session show <id>`, cost
-// queries) keep working.
+// at). Empty name → shows the current name plus usage help,
+// which is more discoverable than a bare usage line for
+// operators who type /name to check what session they're in.
+// A rename is a pure Title update — the message history +
+// session ID are untouched, so downstream references
+// (`rousseau session show <id>`, cost queries) keep working.
 func (r *Router) cmdName(ctx context.Context, from, name string) (string, error) {
 	name = trimQuotes(strings.TrimSpace(name))
-	if name == "" {
-		return "usage: /name \"friendly session name\"", nil
-	}
 	sess, err := r.sessionFor(ctx, from)
 	if err != nil {
 		return "", fmt.Errorf("session for: %w", err)
+	}
+	if name == "" {
+		current := sess.Title
+		if current == "" {
+			current = "(untitled)"
+		}
+		r.logger.Info("router.name_shown_current",
+			slog.String("from", from),
+			slog.String("current_title", current),
+		)
+		return fmt.Sprintf("current session name: %q\nusage: /name \"new name\"  (or /n for short)", current), nil
 	}
 	sess.Title = name
 	if err := r.store.Save(ctx, sess); err != nil {
@@ -673,7 +683,12 @@ func (r *Router) cmdResume(ctx context.Context, from, arg string) (string, error
 func (r *Router) cmdSave(ctx context.Context, from, name string) (string, error) {
 	name = trimQuotes(strings.TrimSpace(name))
 	if name == "" {
-		return "usage: /save \"checkpoint name\"  (takes an atomic snapshot of the current session that you can /resume later)", nil
+		// No name → auto-generate a timestamped label. Users who
+		// type just /save clearly want to save NOW without
+		// stopping to think of a name; forcing them to retry
+		// with a name is bad UX. They can /name "…" later to
+		// give it a memorable label.
+		name = "snapshot " + time.Now().UTC().Format("2006-01-02 15:04")
 	}
 	// Load the current session to snapshot its messages.
 	sess, err := r.sessionFor(ctx, from)
@@ -778,9 +793,29 @@ func shortSessionID(id string) string {
 // from a string. Users typing /name "foo bar" on WhatsApp send
 // the literal quotes; without stripping the session title would
 // include them.
+// trimQuotes strips a single surrounding quote pair from s.
+// Handles the four quote shapes WhatsApp / iMessage / iOS
+// autocorrect actually produce in the wild:
+//
+//   - ASCII double quotes "…" (what users type on desktop)
+//   - Smart double quotes “…” (iOS autocorrect result)
+//   - ASCII single quotes '…' (Android alternate)
+//   - Smart single quotes ‘…’ (iOS autocorrect result)
+//
+// Prior behaviour only stripped ASCII double quotes, so a name
+// typed on an iPhone landed with the curly quotes intact and
+// looked like "“chat”" in /sessions listings.
 func trimQuotes(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
+	pairs := []struct{ open, close string }{
+		{`"`, `"`}, // ASCII double
+		{"“", "”"}, // “ ”
+		{`'`, `'`}, // ASCII single
+		{"‘", "’"}, // ‘ ’
+	}
+	for _, p := range pairs {
+		if strings.HasPrefix(s, p.open) && strings.HasSuffix(s, p.close) && len(s) >= len(p.open)+len(p.close) {
+			return s[len(p.open) : len(s)-len(p.close)]
+		}
 	}
 	return s
 }

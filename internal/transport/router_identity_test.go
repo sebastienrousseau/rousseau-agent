@@ -376,10 +376,20 @@ func TestRouter_NameRenamesCurrent(t *testing.T) {
 	assert.Contains(t, sessions, "deploy planning")
 }
 
-func TestRouter_NameEmptyReturnsUsage(t *testing.T) {
+func TestRouter_NameEmptyShowsCurrentName(t *testing.T) {
+	// /name with no args used to just print usage. That's not
+	// discoverable — operators expect "show me the current
+	// value" from a no-arg query. Now it shows the current
+	// session's title AND the usage line so both use cases
+	// work.
 	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hi"})
+	require.NoError(t, err)
+
 	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/name"})
 	require.NoError(t, err)
+	assert.Contains(t, got, "current session name")
+	assert.Contains(t, got, `"chat: +alice"`, "current title must be echoed")
 	assert.Contains(t, strings.ToLower(got), "usage:")
 }
 
@@ -418,6 +428,26 @@ func TestRouter_ResumeUnknownShortidReplies(t *testing.T) {
 	assert.Contains(t, got, "no session found")
 }
 
+func TestRouter_NameStripsSmartQuotes(t *testing.T) {
+	// iOS autocorrect converts ASCII " into curly “ ”. Before
+	// the trimQuotes widening, an iPhone user typing
+	// /name "planning" landed with title = `“planning”` (curly
+	// quotes as literal chars). Pin the fix: all four quote
+	// shapes (straight double / curly double / straight single
+	// / curly single) must strip cleanly.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hi"})
+	require.NoError(t, err)
+
+	// Smart double quotes (what iOS autocorrect actually sends).
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/name “deploy plan”"})
+	require.NoError(t, err)
+	listing, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, listing, "deploy plan", "curly-quoted name must strip to plain text")
+	assert.NotContains(t, listing, "“deploy", "curly quotes must NOT survive")
+}
+
 func TestRouter_SaveSnapshotsCurrent(t *testing.T) {
 	// /save "name" forks the current session into a named
 	// snapshot the user can /resume later. Verifies:
@@ -442,12 +472,25 @@ func TestRouter_SaveSnapshotsCurrent(t *testing.T) {
 	assert.Contains(t, listing, "checkpoint-1", "snapshot must be listed")
 }
 
-func TestRouter_SaveEmptyReturnsUsage(t *testing.T) {
+func TestRouter_SaveEmptyAutoNamesWithTimestamp(t *testing.T) {
+	// UX evolution: /save alone used to return the usage line,
+	// but operators reasonably expect "just save it now" to
+	// mean "just save it now." Default to a timestamped
+	// snapshot name so the verb always does something useful.
 	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hi"})
+	require.NoError(t, err)
+
 	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/save"})
 	require.NoError(t, err)
-	assert.Contains(t, strings.ToLower(got), "usage:")
-	assert.Contains(t, got, "atomic snapshot")
+	assert.Contains(t, got, "saved snapshot")
+	assert.Contains(t, got, "snapshot 20", "auto-name should include a timestamp like 'snapshot 2026-…'")
+
+	// The snapshot should appear in /sessions with a
+	// timestamp-shaped title.
+	listing, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, listing, "snapshot 20", "auto-named snapshot must appear in /sessions")
 }
 
 func TestRouter_SaveDoesNotSwitchCurrentSession(t *testing.T) {
