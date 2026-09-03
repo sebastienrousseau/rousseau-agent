@@ -50,6 +50,7 @@ Sections:
 - Six additional transports with the same Dispatch shape + image ingestion + Router-integrated allowlist: Slack, Discord, Telegram, Matrix, Signal (via `signal-cli` JSON-RPC), iMessage (via BlueBubbles), plus SMS + email variants.
 - Tier-1/2/3 live progress UX on WhatsApp: emoji-reaction ack, sequential Claude-CLI-style bullet feed (one message per action with a 2s coalescing floor), ✅/❌ completion reaction. Reply is always a fresh message (never an edit of the placeholder) so notifications fire and the running log stays as thread history.
 - Cross-transport identity: `/whoami`, `/link`, `/unlink` commands resolve one identity across every transport a user signs in from.
+- Operator probes: `/version` echoes the daemon's ldflag-injected build stamp (tag + commit + build date) — post-redeploy sanity check without needing shell access to the container.
 
 ### 1.5 UI surfaces
 
@@ -198,14 +199,14 @@ Two deliverables in one workstream because they only matter together:
 
 Ships free — deployment ergonomics belong in the core because every enterprise trial starts with "can I deploy this in my cluster?". A hard-to-deploy OSS product has no paid conversion funnel.
 
-**Delivered so far (PR #116):** `internal/state/postgres/` implements the canonical `state.Store` (Save/Load/List/Delete/Close) on top of pgx v5. `StateConfig` gains `driver` + `dsn` fields; empty driver defaults to sqlite so existing single-replica installs are byte-compatible. `openStore` dispatches on driver; extension-hungry commands (mcp, session, daemon) now go through `openSQLiteStore` which errors cleanly if the operator has selected postgres — prevents a silent HA regression where a "postgres-configured" deploy quietly falls back to per-replica SQLite for cron/jidmap/oauth. `rousseau doctor` surfaces `state.driver` + a redacted `state.dsn`.
+**Delivered so far (PR #116):** `internal/state/postgres/` implements the canonical `state.Store` (Save/Load/List/Delete/Close) on top of pgx v5. `StateConfig` gains `driver` + `dsn` fields; empty driver defaults to sqlite so existing single-replica installs are byte-compatible. `openStore` dispatches on driver; extension-hungry commands (mcp, session, daemon) still hold the sqlite driver's concrete types and go through `openSQLiteStore` which errors cleanly if the operator has selected postgres — prevents a silent HA regression where a "postgres-configured" deploy quietly falls back to per-replica SQLite. Postgres implementations of every relational extension table now exist (see follow-ups); wiring each callsite to consume either driver is the last mile before HA works end-to-end. `rousseau doctor` surfaces `state.driver` + a redacted `state.dsn`.
 
 **Follow-ups:**
-- Port the extension tables (cron, jidmap, oauth, recall, session_cache, session_costs) to Postgres so the whole daemon (not just sessions) is HA — one PR per table so each keeps a small review surface. **`cron` shipped in PR #136** (`internal/state/postgres/cron.go`, interface-compatible with the SQLite driver: `TIMESTAMPTZ` for timestamps, `BOOLEAN` for enabled; integration tests guarded on `ROUSSEAU_TEST_POSTGRES_URL`). Remaining tables (`jidmap`, `oauth`, `recall`, `session_cache`, `session_costs`) unchanged. Cron CLI still requires `state.driver=sqlite` via `openSQLiteStore`; a follow-up PR grows driver dispatch there once ≥ 2 extension tables have Postgres backings.
+- ~~Port the extension tables (cron, jidmap, oauth, recall, session_cache, session_costs) to Postgres~~ — **five of six delivered**: cron (#136), jidmap (#137), session_cache (#138), oauth (#139), session_costs (#140). Every table mirrors the SQLite driver's method signatures + type-aliases the domain shape from the sqlite package, so the daemon can hold either concrete type without a shared interface. Cron CLI still requires `state.driver=sqlite` via `openSQLiteStore`; a follow-up PR grows driver dispatch there. Only `recall` remains, and it is deferred — Postgres full-text search (tsvector/tsquery) is not a mechanical port of SQLite FTS5, it is a separate design choice about ranking behaviour.
 - ~~Helm chart under `deploy/helm/`~~ — **delivered in PR #121** (chart at `deploy/helm/rousseau-agent`). Values.yaml with commented defaults, Deployment / Service / ConfigMap / Secret / PVC / ServiceAccount / ServiceMonitor templates, NOTES.txt with licence + multi-replica warnings. `helm lint --strict` clean. No Postgres subchart dependency — enterprises bring their own DSN.
 - Redis session-cache adapter for read-hot session lookups.
 
-**Estimate:** Postgres pilot shipped in 1 day. Extension ports ≈ 3 days. Helm chart shipped in 1 day. Redis cache ≈ 1 day.
+**Estimate:** Postgres pilot shipped in 1 day. Extension ports for the five relational tables shipped. Helm chart shipped in 1 day. Redis cache ≈ 1 day. `recall` Postgres FTS port ≈ 2 days once the ranking / stemming call is made.
 
 ---
 
