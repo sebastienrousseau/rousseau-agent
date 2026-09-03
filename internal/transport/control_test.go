@@ -165,6 +165,91 @@ func TestSupervisor_SteersOrdinaryTextIntoTheRunningTurn(t *testing.T) {
 	assert.Equal(t, []string{"summarize as bullets"}, steered)
 }
 
+// syncPeeker is a tiny Handler implementing SyncPeeker for tests
+// where we want to exercise the peek path without pulling in the
+// full Router.
+type syncPeeker struct {
+	sync  map[string]struct{}
+	reply string
+	seen  int32 // count of Handle invocations for assertions
+}
+
+func (p *syncPeeker) IsSyncCommand(msg IncomingMessage) bool {
+	_, ok := p.sync[msg.Body]
+	return ok
+}
+
+func (p *syncPeeker) Handle(_ context.Context, _ IncomingMessage) (string, error) {
+	atomic.AddInt32(&p.seen, 1)
+	return p.reply, nil
+}
+
+func TestSupervisor_SyncCommandBypassesSteerDuringRunningTurn(t *testing.T) {
+	// The bug this test pins: /version arriving during a running
+	// turn was being folded into that turn as prompt text, so the
+	// operator got SteerAck instead of the build stamp. The fix is
+	// SyncPeeker — Wrap consults IsSyncCommand and, if true,
+	// invokes next.Handle directly instead of steering.
+	sup := newSupervisor()
+	peeker := &syncPeeker{
+		sync:  map[string]struct{}{"/version": {}},
+		reply: "rousseau v0.0.3-test",
+	}
+	h := sup.Wrap(peeker)
+
+	// Start a turn manually so the registry has a running key.
+	_, turn := sup.reg.Begin(context.Background(), "wa:1")
+	t.Cleanup(turn.End)
+
+	got, err := h.Handle(context.Background(), IncomingMessage{From: "wa:1", Body: "/version"})
+	require.NoError(t, err)
+	assert.Equal(t, "rousseau v0.0.3-test", got, "/version must return the sync reply, not SteerAck")
+	assert.NotEqual(t, SteerAck, got)
+}
+
+func TestSupervisor_UnknownSlashStillSteersDuringRunningTurn(t *testing.T) {
+	// The peek is opt-in — only commands IsSyncCommand recognises
+	// bypass steering. An unknown slash (or plain text) must still
+	// steer as before, so the fix does not create concurrent turns
+	// on the same session key.
+	sup := newSupervisor()
+	peeker := &syncPeeker{
+		sync:  map[string]struct{}{"/version": {}}, // /wat NOT listed
+		reply: "sync",
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	// Wrap a handler that blocks the running turn so we can race
+	// the /wat probe into it and observe steer semantics.
+	base := HandlerFunc(func(_ context.Context, _ IncomingMessage) (string, error) {
+		close(entered)
+		<-release
+		return "done", nil
+	})
+	// Combine base + peeker into one handler via a small adapter
+	// so Wrap sees both capabilities.
+	combined := struct {
+		Handler
+		SyncPeeker
+	}{Handler: base, SyncPeeker: peeker}
+	h := sup.Wrap(combined)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err := h.Handle(context.Background(), IncomingMessage{From: "wa:1", Body: "write the report"})
+		assert.NoError(t, err)
+	}()
+	<-entered
+
+	ack, err := h.Handle(context.Background(), IncomingMessage{From: "wa:1", Body: "/wat"})
+	require.NoError(t, err)
+	assert.Equal(t, SteerAck, ack, "unknown slash must still steer, not bypass")
+
+	close(release)
+	<-done
+}
+
 func TestSupervisor_FallsBackToAFreshTurnWhenSteeringLosesTheRace(t *testing.T) {
 	// A turn that is cancelled but not yet deregistered must not
 	// swallow the next message.
