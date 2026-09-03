@@ -54,6 +54,20 @@ type daemonWiring struct {
 	JIDMap      *sqlitestore.JIDMap
 	ClaudeCache *sqlitestore.ClaudeSessionCache
 	CostStore   *sqlitestore.SessionCostStore
+	// Identities is the cross-transport identity resolver. Wired
+	// into every per-transport router via routerFor so /whoami,
+	// /link, /unlink and the SSO-identity stash all work. Not the
+	// same as SSOBindings — Identities owns the "one person, many
+	// handles" graph; SSOBindings owns "handle → verified OIDC
+	// subject". A /login binding uses both.
+	Identities *sqlitestore.IdentityStore
+
+	// routerOpts snapshots the RouterOptions surface used by
+	// assembleDaemon so routerFor can rebuild per-transport
+	// routers with identical config. Kept as a single struct
+	// rather than nine separate fields to make new options
+	// automatic in the per-transport routers too.
+	routerOpts transport.RouterOptions
 	// Licence is the loaded [license.Checker] the daemon consults
 	// at every gated code path. Never nil — falls back to
 	// [license.Core] when unlicensed.
@@ -95,6 +109,16 @@ type daemonWiring struct {
 	// on the same logger the daemon used at startup.
 	Logger *slog.Logger
 
+	// routers holds one transport.Router per transport name.
+	// Lazily populated on first routerFor call. Each per-transport
+	// router carries its Transport name so identity + SSO lookups
+	// key by (transport, sender) — a bare shared router would
+	// collide handles that happen to be equal across transports
+	// (e.g. a Slack user "U12345" and a Signal number that happens
+	// to render the same). Kept behind the same mutex as the
+	// supervisor cache since both are built on the same "first
+	// use of transport X" trigger.
+	routers map[string]*transport.Router
 	// supervisors holds one transport.Supervisor per transport name.
 	// Lazily populated on first TransportHandler call so a transport
 	// that does not run in this process pays no allocation. Each
@@ -193,6 +217,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		return nil, err
 	}
 	sessions := state.Store(concrete)
+
+	identities, err := sqlitestore.NewIdentityStore(ctx, concrete)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
 
 	jidMap, err := sqlitestore.NewJIDMap(ctx, concrete)
 	if err != nil {
@@ -375,7 +405,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		return nil, err
 	}
 
-	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, transport.RouterOptions{
+	// routerOpts is the shared option surface. routerFor uses it
+	// verbatim per-transport, overriding only Identity+Transport.
+	// The base w.Router below is kept for backwards compatibility
+	// with callers that reach in via wiring.Router directly (e.g.
+	// daemon_test) — TransportHandler goes through routerFor.
+	routerOpts := transport.RouterOptions{
 		Allowlist:     allowlist,
 		SSO:           ssoDir,
 		SSOStore:      ssoStore,
@@ -383,7 +418,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		AuditSink:     auditSink,
 		Approvals:     pendingApprovals,
 		BuildStamp:    fmt.Sprintf("%s (commit %s, built %s)", version, commit, buildDate),
-	})
+	}
+	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, routerOpts)
 
 	cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
 	if err != nil {
@@ -403,6 +439,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		JIDMap:       jidMap,
 		ClaudeCache:  claudeCache,
 		CostStore:    costStore,
+		Identities:   identities,
+		routerOpts:   routerOpts,
 		MCPClients:   mcpClients,
 		RateLimiters: rateLimiters,
 		Logger:       opts.Logger,
@@ -664,13 +702,46 @@ func transportMappingsFromConfig(in []config.SSOTransportMapping) []sso.Transpor
 // transports never collide.
 func (w *daemonWiring) TransportHandler(name string, logger *slog.Logger) transport.Handler {
 	sup := w.supervisorFor(name, logger)
-	h := transport.Handler(w.Router)
+	h := transport.Handler(w.routerFor(name))
 	h = sup.Wrap(h)
 	h = resilience.Recover(h, name, logger)
 	if lim, ok := w.RateLimiters[name]; ok {
 		h = ratelimit.Wrap(h, lim, name, "")
 	}
 	return h
+}
+
+// routerFor returns the transport.Router for transport name,
+// building it on first call and caching it thereafter. The
+// per-transport router carries the correct Transport name so
+// Identity + SSO lookups key by (transport, sender) — a shared
+// router with a hardcoded Transport would collide identical
+// handles across transports.
+//
+// Reuses the same components the base w.Router was built from
+// (agent, sessions, jidMap, allowlist, SSO surface, audit sink,
+// approvals, build stamp) plus the Identities resolver so
+// /whoami, /link, /unlink and the SSO identity stash all work.
+// Kept behind supervisorMu since it's the same lifetime + safety
+// story as supervisorFor.
+func (w *daemonWiring) routerFor(name string) *transport.Router {
+	w.supervisorMu.Lock()
+	defer w.supervisorMu.Unlock()
+	if r, ok := w.routers[name]; ok {
+		return r
+	}
+	if w.routers == nil {
+		w.routers = map[string]*transport.Router{}
+	}
+	// Reuse the identical option surface as w.Router (snapshotted
+	// in routerOpts during assembleDaemon) — the only per-transport
+	// difference is Transport and the Identity wiring.
+	opts := w.routerOpts
+	opts.Identity = w.Identities
+	opts.Transport = name
+	r := transport.NewRouter(w.Agent, w.Sessions, w.JIDMap, w.Logger, opts)
+	w.routers[name] = r
+	return r
 }
 
 // supervisorFor returns the Supervisor for transport name, creating
