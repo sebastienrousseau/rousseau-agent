@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,13 +41,13 @@ func newSessionCostCmd(opts *Options) *cobra.Command {
 			"--since window (default 7d).",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			base, err := openSessionStore(cmd.Context(), opts)
+			base, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = base.Close() }() //nolint:errcheck // best-effort cleanup
 
-			costStore, err := sqlitestore.NewSessionCostStore(cmd.Context(), base)
+			costStore, err := openSessionCostStore(cmd.Context(), base)
 			if err != nil {
 				return err
 			}
@@ -130,7 +129,7 @@ func newSessionListCmd(opts *Options) *cobra.Command {
 		Short: "List recent sessions newest-first",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, err := openSessionStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
@@ -165,7 +164,7 @@ func newSessionSearchCmd(opts *Options) *cobra.Command {
 			"AND/OR/NOT, prefix search with 'kub*'.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openSessionStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
@@ -196,7 +195,7 @@ func newSessionShowCmd(opts *Options) *cobra.Command {
 		Short: "Print the full transcript of a session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openSessionStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
@@ -240,7 +239,7 @@ func newSessionDeleteCmd(opts *Options) *cobra.Command {
 			if !confirm {
 				return errors.New("refusing to delete without --yes")
 			}
-			store, err := openSessionStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
@@ -250,14 +249,6 @@ func newSessionDeleteCmd(opts *Options) *cobra.Command {
 	}
 	c.Flags().BoolVar(&confirm, "yes", false, "confirm deletion")
 	return c
-}
-
-func openSessionStore(ctx context.Context, opts *Options) (*sqlitestore.Store, error) {
-	concrete, err := openSQLiteStore(ctx, opts.Config.State)
-	if err != nil {
-		return nil, err
-	}
-	return concrete, nil
 }
 
 func shortID(s string) string {

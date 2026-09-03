@@ -6,7 +6,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/mcp"
-	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
 func newMCPCmd(opts *Options) *cobra.Command {
@@ -21,19 +20,19 @@ func newMCPCmd(opts *Options) *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
-			concrete, err := openSQLiteStore(ctx, opts.Config.State)
+			store, err := openSearchableStore(ctx, opts.Config.State)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = concrete.Close() }() //nolint:errcheck // best-effort cleanup
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
-			cronStore, err := sqlitestore.NewCronStore(ctx, concrete)
+			cronStore, err := openCronStore(ctx, store)
 			if err != nil {
 				return err
 			}
 
 			s := mcp.NewServer("rousseau", version, opts.Logger)
-			mcp.RegisterRousseauTools(s, mcp.NewStoreBackend(concrete, cronStore))
+			mcp.RegisterRousseauTools(s, mcp.NewStoreBackendFromIface(store, cronStore))
 			return s.Serve(ctx, os.Stdin, os.Stdout)
 		},
 	}

@@ -583,13 +583,28 @@ func TestCronCmds_StoreOpenFailures(t *testing.T) {
 	}
 }
 
-func TestOpenCronStore_DefaultsToHome(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	// The default path lives under a directory that does not exist
-	// yet; openCronStore does not create it, so the open must fail
-	// rather than silently write somewhere unexpected.
-	_, err := openCronStore(context.Background(), &Options{Config: &config.Config{}})
-	assert.Error(t, err)
+func TestOpenCronStore_DispatchesOnDriver(t *testing.T) {
+	// The old openCronStore(opts) helper opened SQLite directly at
+	// a hardcoded path and errored if the parent dir was missing.
+	// The new openCronStore(ctx, store) sits on top of an already-
+	// open SearchableStore and dispatches on the underlying
+	// concrete type — sqlite or postgres. Verify the sqlite branch
+	// wires up an idempotent cron store on an in-memory sqlite base.
+	tmp := t.TempDir()
+	cfg := config.StateConfig{Path: tmp + "/s.db"}
+	store, err := openSearchableStore(context.Background(), cfg)
+	require.NoError(t, err)
+	defer func() { _ = store.Close() }() //nolint:errcheck // test cleanup
+
+	cs, err := openCronStore(context.Background(), store)
+	require.NoError(t, err)
+	require.NotNil(t, cs)
+	// List on an empty store returns an empty slice + nil — pins
+	// that the constructor actually applied its schema (List would
+	// error otherwise with "no such table: cron_jobs").
+	jobs, err := cs.List(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, jobs)
 }
 
 func TestCronAddCmd_DuplicateNameSurfacesStoreError(t *testing.T) {
