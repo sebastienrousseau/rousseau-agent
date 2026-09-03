@@ -260,6 +260,52 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 	return firstText(final), nil
 }
 
+// syncCommands lists every leading token the router answers
+// without touching the LLM. Kept in one place so IsSyncCommand
+// stays in lockstep with the Handle-time dispatch — a new
+// synchronous verb needs one entry here plus its handler case.
+//
+// Groupings (comment only, not enforced):
+//   - identity:  /whoami /link /unlink /version
+//   - SSO:       /login /logout
+//   - approvals: /approve /deny
+var syncCommands = map[string]struct{}{
+	"/whoami":  {},
+	"/link":    {},
+	"/unlink":  {},
+	"/version": {},
+	"/login":   {},
+	"/logout":  {},
+	"/approve": {},
+	"/deny":    {},
+}
+
+// IsSyncCommand reports whether msg would be answered by one of
+// the router's synchronous handlers rather than reaching the LLM.
+// Satisfies [SyncPeeker] so [Supervisor.Wrap] bypasses steer/
+// begin for these — otherwise a /version arriving during a
+// running turn would be folded into the turn as prompt text
+// instead of returning the build stamp.
+//
+// Only inspects the leading token — it is a peek, not a
+// permission decision. Actual dispatch (allowlist, SSO stash,
+// per-handler validation) still happens in Handle. An
+// unauthorised sender's /whoami will bypass steer, reach Handle,
+// and be rejected there — the same outcome as when no turn is
+// running.
+func (r *Router) IsSyncCommand(msg IncomingMessage) bool {
+	body := strings.TrimSpace(msg.Body)
+	if !strings.HasPrefix(body, "/") {
+		return false
+	}
+	parts := strings.Fields(body)
+	if len(parts) == 0 {
+		return false
+	}
+	_, ok := syncCommands[parts[0]]
+	return ok
+}
+
 // handleIdentityCommand recognises the router's synchronous chat
 // commands — identity (/whoami, /link, /unlink) plus the build-stamp
 // echo (/version) — and returns the reply text. Second return value

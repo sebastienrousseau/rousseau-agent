@@ -50,6 +50,25 @@ func (s *Supervisor) Registry() *control.Registry { return s.reg }
 // exhaustion warn path without staging a real race.
 var beginRetryBudget = 8
 
+// SyncPeeker is the optional capability a downstream Handler
+// implements to opt into "answer this synchronously, do not
+// steer" behaviour. When Wrap's next handler satisfies this
+// interface, Wrap calls IsSyncCommand before touching the turn
+// registry — the handler returns true for messages it can answer
+// without running a turn (e.g. /whoami, /version, /link, /unlink),
+// or false for anything else.
+//
+// Without this, a chat message like /version arriving during a
+// running turn is steered — the "/version" text becomes prompt
+// content fed to the running LLM, and the operator never sees
+// the build stamp they asked for. When IsSyncCommand returns
+// true Wrap calls next.Handle directly, letting the router
+// dispatch to its existing synchronous handlers without any
+// duplicated logic in the supervisor.
+type SyncPeeker interface {
+	IsSyncCommand(msg IncomingMessage) bool
+}
+
 // Wrap returns a Handler that applies the supervision rules before
 // delegating to next.
 //
@@ -60,7 +79,14 @@ var beginRetryBudget = 8
 // Lookup finds the winner's turn and folds the loser's text in via
 // Steer, so the LLM sees one turn that received two messages instead
 // of two turns racing on the same claude session.
+//
+// When next implements SyncPeeker, Wrap consults IsSyncCommand
+// first so downstream-synchronous chat commands (identity verbs,
+// /version, SSO, approval votes) answer immediately regardless of
+// turn state — instead of being steered into a running turn as
+// prompt text.
 func (s *Supervisor) Wrap(next Handler) Handler {
+	peeker, _ := next.(SyncPeeker)
 	return HandlerFunc(func(ctx context.Context, msg IncomingMessage) (string, error) {
 		key := msg.From
 		d := control.Decide(msg.Body)
@@ -69,6 +95,10 @@ func (s *Supervisor) Wrap(next Handler) Handler {
 				slog.String("from", key),
 				slog.String("verb", string(d.Verb)))
 			return s.reg.Apply(d, key), nil
+		}
+		if peeker != nil && peeker.IsSyncCommand(msg) {
+			s.logger.Info("transport.sync_command", slog.String("from", key))
+			return next.Handle(ctx, msg)
 		}
 		if d.Prompt == "" {
 			return "", nil
