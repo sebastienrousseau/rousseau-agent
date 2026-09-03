@@ -418,6 +418,98 @@ func TestRouter_ResumeUnknownShortidReplies(t *testing.T) {
 	assert.Contains(t, got, "no session found")
 }
 
+func TestRouter_SaveSnapshotsCurrent(t *testing.T) {
+	// /save "name" forks the current session into a named
+	// snapshot the user can /resume later. Verifies:
+	// - snapshot appears in /sessions
+	// - current session is NOT switched (jidMap still points at
+	//   the original) — user continues where they were
+	// - snapshot has its own short-id distinct from the current
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hello"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/save "checkpoint-1"`})
+	require.NoError(t, err)
+	assert.Contains(t, got, "saved snapshot")
+	assert.Contains(t, got, "checkpoint-1")
+	assert.Contains(t, got, "current session")
+
+	// /sessions shows both the current AND the snapshot.
+	listing, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, listing, "chat: +alice", "current session must still be listed")
+	assert.Contains(t, listing, "checkpoint-1", "snapshot must be listed")
+}
+
+func TestRouter_SaveEmptyReturnsUsage(t *testing.T) {
+	r, _, ctx := setup(t)
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/save"})
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(got), "usage:")
+	assert.Contains(t, got, "atomic snapshot")
+}
+
+func TestRouter_SaveDoesNotSwitchCurrentSession(t *testing.T) {
+	// Critical invariant: /save is a FORK, not a rename or
+	// switch. After /save the user's next message must land
+	// on the ORIGINAL session, not the snapshot. Pinned so a
+	// well-meaning refactor that treats /save like /clear
+	// would fail this test.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "first"})
+	require.NoError(t, err)
+
+	// Grab the pre-save session id via /sessions.
+	before, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	originalShortID := lastToken(firstMatchingLine(before, "chat: +alice"))
+	require.Len(t, originalShortID, 8)
+
+	// /save creates the snapshot.
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/save "snap"`})
+	require.NoError(t, err)
+
+	// After /save, /sessions must show the original marked as current.
+	after, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	currentLine := firstMatchingLine(after, "chat: +alice")
+	assert.Contains(t, currentLine, "*", "original session must still be marked current")
+	assert.Contains(t, currentLine, originalShortID, "original session must still be at the same short-id")
+	snapLine := firstMatchingLine(after, "snap")
+	assert.NotContains(t, snapLine, "*", "snapshot must NOT be the current session")
+}
+
+func TestRouter_SaveIsAtomicSnapshot(t *testing.T) {
+	// A snapshot must contain a frozen copy of the messages —
+	// future appends to the live session must NOT mutate the
+	// snapshot. Pinned so a shallow-copy bug would fail here.
+	// (staticRunner doesn't append its reply, so each inbound
+	// adds exactly one message to the session.)
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "first"})
+	require.NoError(t, err)
+
+	// Snapshot at msg-count = 1 (user "first").
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/save "snap"`})
+	require.NoError(t, err)
+
+	// Continue the conversation in the live session.
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "second"})
+	require.NoError(t, err)
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "third"})
+	require.NoError(t, err)
+
+	// The snapshot listing must still show the snap-time count
+	// even though the current session has grown to 3.
+	listing, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	snapLine := firstMatchingLine(listing, "snap")
+	assert.Contains(t, snapLine, "(1 msg)", "snapshot must be frozen at snap-time msg count")
+	currentLine := firstMatchingLine(listing, "chat: +alice")
+	assert.Contains(t, currentLine, "(3 msg)", "current session must have grown past snapshot")
+}
+
 func TestRouter_DeleteRemovesNonCurrentSession(t *testing.T) {
 	// /delete requires a shortid AND refuses to delete the
 	// current session. Sequence: provision → clear (creates 2nd
@@ -469,6 +561,7 @@ func TestRouter_HelpEnumeratesAllVerbs(t *testing.T) {
 		"/sessions", "/s",
 		"/clear", "/c",
 		"/name", "/n",
+		"/save", "/sv",
 		"/resume", "/r",
 		"/delete", "/d",
 		"/status", "/st",
