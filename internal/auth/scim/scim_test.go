@@ -7,11 +7,13 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -490,4 +492,352 @@ func TestUsers_NestedPathRejected(t *testing.T) {
 	resp := doJSON(t, ts, http.MethodGet, "/scim/v2/Users/abc/def", nil)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestGroups_NestedPathRejected(t *testing.T) {
+	// Same as the Users variant — /Groups/<id>/<extra> is not a
+	// SCIM path shape and must not be silently mistreated.
+	ts, _ := newTestServer(t)
+	resp := doJSON(t, ts, http.MethodGet, "/scim/v2/Groups/abc/def", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// -- Users: additional gaps --
+
+func TestUsers_MethodNotAllowedOnItem(t *testing.T) {
+	// Only GET / PUT / DELETE are defined on /Users/<id> in the
+	// pilot; PATCH is not yet implemented and must be rejected
+	// cleanly rather than silently succeeding.
+	ts, _ := newTestServer(t)
+	resp := doJSON(t, ts, http.MethodPatch, "/scim/v2/Users/does-not-matter", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+func TestUsers_ReplaceMalformedJSON(t *testing.T) {
+	// The Body-decode error branch of replaceUser was silent —
+	// pin that PUT with junk body returns 400 invalidSyntax
+	// so an IdP with a broken serialiser gets a clear message.
+	ts, _ := newTestServer(t)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut,
+		ts.URL+"/scim/v2/Users/some-id", strings.NewReader("{not json"))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/scim+json")
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestUsers_DeleteStoreFailure(t *testing.T) {
+	// deleteUser's error-branch was uncovered — surface the 500
+	// so an IdP retry loop sees a real failure not a silent 204.
+	srv, err := scim.NewServer(scim.ServerConfig{
+		Store:       alwaysErrStore{},
+		BearerToken: testToken,
+		Logger:      silentLogger(),
+	})
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp := doJSON(t, ts, http.MethodDelete, "/scim/v2/Users/any-id", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+// -- Groups: parity with Users --
+
+func TestGroups_MethodNotAllowedOnCollection(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp := doJSON(t, ts, http.MethodPatch, "/scim/v2/Groups", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+func TestGroups_MethodNotAllowedOnItem(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp := doJSON(t, ts, http.MethodPatch, "/scim/v2/Groups/anything", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+func TestGroups_CreateMalformedJSON(t *testing.T) {
+	ts, _ := newTestServer(t)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		ts.URL+"/scim/v2/Groups", strings.NewReader("{"))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/scim+json")
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestGroups_GetMissingReturnsNotFound(t *testing.T) {
+	// Symmetric to the users variant — /Groups/<unknown> must
+	// map to a 404 error envelope, not a bare 500.
+	ts, _ := newTestServer(t)
+	resp := doJSON(t, ts, http.MethodGet, "/scim/v2/Groups/nope", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestGroups_ReplaceUpdatesFields(t *testing.T) {
+	// replaceGroup was 0% covered — PUT /Groups/<id> is what
+	// Okta uses when the operator renames a group or edits its
+	// members. Pin the happy path.
+	ts, _ := newTestServer(t)
+	postResp := doJSON(t, ts, http.MethodPost, "/scim/v2/Groups", scim.Group{
+		DisplayName: "old-name",
+		Members:     []scim.Ref{{Value: "user-1"}},
+	})
+	defer postResp.Body.Close()
+	require.Equal(t, http.StatusCreated, postResp.StatusCode)
+	var created scim.Group
+	require.NoError(t, json.NewDecoder(postResp.Body).Decode(&created))
+
+	created.DisplayName = "new-name"
+	created.Members = append(created.Members, scim.Ref{Value: "user-2"})
+	putResp := doJSON(t, ts, http.MethodPut, "/scim/v2/Groups/"+created.ID, created)
+	defer putResp.Body.Close()
+	require.Equal(t, http.StatusOK, putResp.StatusCode)
+	var updated scim.Group
+	require.NoError(t, json.NewDecoder(putResp.Body).Decode(&updated))
+	assert.Equal(t, "new-name", updated.DisplayName)
+	assert.Len(t, updated.Members, 2)
+}
+
+func TestGroups_ReplaceMissingReturnsNotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp := doJSON(t, ts, http.MethodPut, "/scim/v2/Groups/nope", scim.Group{DisplayName: "x"})
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestGroups_ReplaceMalformedJSON(t *testing.T) {
+	ts, _ := newTestServer(t)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPut,
+		ts.URL+"/scim/v2/Groups/some-id", strings.NewReader("garbage"))
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/scim+json")
+	resp, err := ts.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestGroups_DeleteMissingIsNoop(t *testing.T) {
+	// Symmetric to users — SCIM §3.6 idempotent-delete guidance.
+	ts, _ := newTestServer(t)
+	resp := doJSON(t, ts, http.MethodDelete, "/scim/v2/Groups/gone", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestGroups_DeleteStoreFailure(t *testing.T) {
+	srv, err := scim.NewServer(scim.ServerConfig{
+		Store:       alwaysErrStore{},
+		BearerToken: testToken,
+		Logger:      silentLogger(),
+	})
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp := doJSON(t, ts, http.MethodDelete, "/scim/v2/Groups/any-id", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+func TestGroups_StoreFailureBecomes500(t *testing.T) {
+	// Mirrors TestUsers_StoreFailureBecomes500 for the Groups
+	// collection endpoint so a broken store surfaces the same
+	// way across both resource kinds.
+	srv, err := scim.NewServer(scim.ServerConfig{
+		Store:       alwaysErrStore{},
+		BearerToken: testToken,
+		Logger:      silentLogger(),
+	})
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp := doJSON(t, ts, http.MethodGet, "/scim/v2/Groups", nil)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+// -- decorate / meta --
+
+func TestDecorate_UsesRelativeLocationWhenNoBaseURL(t *testing.T) {
+	// The BaseURL-empty branch of decorateUser / decorateGroup
+	// was previously uncovered. When operator hasn't configured
+	// auth.sso.scim.base_url the Location must fall back to the
+	// relative path — still spec-compliant, just missing the
+	// canonical hostname.
+	store := newMemStore()
+	srv, err := scim.NewServer(scim.ServerConfig{
+		Store:       store,
+		BearerToken: testToken,
+		Logger:      silentLogger(),
+		// BaseURL deliberately empty.
+	})
+	require.NoError(t, err)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// User path.
+	createUser := doJSON(t, ts, http.MethodPost, "/scim/v2/Users", scim.User{UserName: "alice"})
+	defer createUser.Body.Close()
+	var u scim.User
+	require.NoError(t, json.NewDecoder(createUser.Body).Decode(&u))
+	assert.Equal(t, "/scim/v2/Users/"+u.ID, u.Meta.Location, "no BaseURL → relative Location")
+
+	// Group path.
+	createGroup := doJSON(t, ts, http.MethodPost, "/scim/v2/Groups", scim.Group{DisplayName: "eng"})
+	defer createGroup.Body.Close()
+	var g scim.Group
+	require.NoError(t, json.NewDecoder(createGroup.Body).Decode(&g))
+	assert.Equal(t, "/scim/v2/Groups/"+g.ID, g.Meta.Location, "no BaseURL → relative Location")
+}
+
+// -- filter / pagination parsing --
+
+func TestListPagination_InvalidCountFallsBackToDefault(t *testing.T) {
+	// parseIntWithDefault's invalid / negative branches were the
+	// least-covered code in the file. Exercised via ?count=<junk>
+	// on the users list — the server must interpret as "no cap"
+	// (fallback 0), not return an error.
+	ts, _ := newTestServer(t)
+	for _, name := range []string{"a", "b", "c"} {
+		r := doJSON(t, ts, http.MethodPost, "/scim/v2/Users", scim.User{UserName: name})
+		require.NoError(t, r.Body.Close())
+	}
+	// Junk count string → parseIntWithDefault falls back.
+	resp := doJSON(t, ts, http.MethodGet, "/scim/v2/Users?count=not-a-number", nil)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var list scim.ListResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&list))
+	assert.Equal(t, 3, list.TotalResults)
+
+	// Negative count string → also fallback.
+	respNeg := doJSON(t, ts, http.MethodGet, "/scim/v2/Users?count=-5", nil)
+	defer respNeg.Body.Close()
+	require.Equal(t, http.StatusOK, respNeg.StatusCode)
+}
+
+func TestListFilter_NonMatchingAttributeReturnsAllRows(t *testing.T) {
+	// parseFilter returns "" (all rows) when the filter names an
+	// attribute the endpoint does not recognise. Some IdPs send
+	// `active eq true` speculatively during discovery — we must
+	// not error, just ignore.
+	ts, _ := newTestServer(t)
+	for _, name := range []string{"a", "b"} {
+		r := doJSON(t, ts, http.MethodPost, "/scim/v2/Users", scim.User{UserName: name})
+		require.NoError(t, r.Body.Close())
+	}
+	resp := doJSON(t, ts, http.MethodGet, `/scim/v2/Users?filter=active+eq+%22true%22`, nil)
+	defer resp.Body.Close()
+	var list scim.ListResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&list))
+	assert.Equal(t, 2, list.TotalResults, "unknown filter attribute → treat as no filter")
+}
+
+func TestListFilter_URLEncodedQuotesAccepted(t *testing.T) {
+	// unquoteSCIM decodes %22-encoded quotes so IdPs that URL-
+	// escape aggressively still work end-to-end. This test
+	// specifically hits the URL-encoded path (not the bare
+	// quote path already covered by ListWithFilter).
+	ts, _ := newTestServer(t)
+	r := doJSON(t, ts, http.MethodPost, "/scim/v2/Users", scim.User{UserName: "alice"})
+	require.NoError(t, r.Body.Close())
+
+	resp := doJSON(t, ts, http.MethodGet,
+		"/scim/v2/Users?filter=userName%20eq%20%22alice%22", nil)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var list scim.ListResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&list))
+	assert.Equal(t, 1, list.TotalResults)
+}
+
+func TestListFilter_MalformedFilterReturnsAll(t *testing.T) {
+	// Various malformed filter shapes must degrade to "no filter"
+	// rather than error — the spec allows the server to ignore
+	// unrecognised filters and IdPs rely on that gracefully.
+	ts, _ := newTestServer(t)
+	for _, name := range []string{"a", "b"} {
+		r := doJSON(t, ts, http.MethodPost, "/scim/v2/Users", scim.User{UserName: name})
+		require.NoError(t, r.Body.Close())
+	}
+	for _, filter := range []string{
+		"only-one-token",               // fewer than 3 parts
+		"userName+gt+%22alice%22",      // unrecognised operator
+		"userName+eq+alice-not-quoted", // value not quoted
+	} {
+		resp := doJSON(t, ts, http.MethodGet, "/scim/v2/Users?filter="+filter, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode, filter)
+		var list scim.ListResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&list))
+		assert.Equal(t, 2, list.TotalResults, "filter %q should degrade to no-filter", filter)
+		resp.Body.Close()
+	}
+}
+
+// -- ListenAndServe lifecycle --
+
+func TestListenAndServe_StartsAndShutsDownOnContextCancel(t *testing.T) {
+	// ListenAndServe was 0% covered. Pin the lifecycle: it
+	// returns nil when ctx is cancelled (graceful shutdown path)
+	// so a caller wiring it into daemon-shutdown does not see a
+	// spurious error. Uses port :0 so parallel test runs cannot
+	// collide.
+	srv, err := scim.NewServer(scim.ServerConfig{
+		Store:       newMemStore(),
+		BearerToken: testToken,
+		Logger:      silentLogger(),
+	})
+	require.NoError(t, err)
+
+	// Bind to an ephemeral port and hand back the address the
+	// kernel chose. We resolve via a throwaway listener so we
+	// avoid the port-race entirely.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close()) // ListenAndServe will re-bind
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.ListenAndServe(ctx, addr) }()
+
+	// Wait briefly for the goroutine to reach ListenAndServe
+	// so cancel actually triggers the ctx.Done branch (not the
+	// early-return-before-serve one).
+	//
+	// Poll instead of a fixed sleep so slow CI does not flake
+	// and fast local runs do not waste time.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close() //nolint:errcheck // probe close is best-effort
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		assert.NoError(t, err, "context-cancel path returns nil")
+	case <-time.After(6 * time.Second):
+		t.Fatal("ListenAndServe did not return within shutdown grace")
+	}
 }
