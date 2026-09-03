@@ -245,6 +245,55 @@ func TestRouter_ClearOnFreshSenderIsIdempotent(t *testing.T) {
 	assert.Contains(t, reply, "cleared")
 }
 
+func TestRouter_ClearIsScopedToSender(t *testing.T) {
+	// The critical safety invariant: /clear from sender A must
+	// NOT touch sender B's session. jidMap.Put upserts on the
+	// (from) key, so a single-key write cannot spill across
+	// senders — but the invariant is important enough to pin
+	// explicitly so a future "helpful" refactor that batches
+	// writes or uses a broader key would fail this test.
+	//
+	// Real-world concern: an operator's WhatsApp bot may be
+	// paired via multi-device to their personal account. Even
+	// though the router only handles messages sent to the
+	// allowlisted destination, the DB shape needs to guarantee
+	// per-sender isolation.
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, ":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
+	jm, err := sqlitestore.NewJIDMap(ctx, store)
+	require.NoError(t, err)
+
+	r := transport.NewRouter(
+		&staticRunner{reply: "ok"},
+		&storeAdapter{s: store},
+		jm,
+		silent(),
+		transport.RouterOptions{},
+	)
+
+	// Sender A gets a session assigned via a first message.
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hello"})
+	require.NoError(t, err)
+	// Sender B likewise.
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+bob", Body: "hi"})
+	require.NoError(t, err)
+
+	bobBefore, ok, err := jm.Get(ctx, "+bob")
+	require.NoError(t, err)
+	require.True(t, ok, "bob must have a session assigned before the /clear probe")
+
+	// Sender A clears. This must NOT touch bob's mapping.
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/clear"})
+	require.NoError(t, err)
+
+	bobAfter, ok, err := jm.Get(ctx, "+bob")
+	require.NoError(t, err)
+	require.True(t, ok, "bob's session must still exist after alice's /clear")
+	assert.Equal(t, bobBefore, bobAfter, "alice's /clear MUST NOT rewrite bob's session mapping")
+}
+
 func TestRouter_ClearWorksWithoutIdentityResolver(t *testing.T) {
 	// Same regression class as TestRouter_VersionWorksWithoutIdentityResolver:
 	// /clear must run even in the daemon's default no-identity
