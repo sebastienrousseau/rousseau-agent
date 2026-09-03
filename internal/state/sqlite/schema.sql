@@ -4,8 +4,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     payload        TEXT NOT NULL,
     message_count  INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL,
-    updated_at     TEXT NOT NULL
+    updated_at     TEXT NOT NULL,
+    sender         TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
     ON sessions(updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_sender_updated
+    ON sessions(sender, updated_at DESC);

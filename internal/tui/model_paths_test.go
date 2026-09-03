@@ -62,8 +62,11 @@ func (f *failingStore) Load(context.Context, string) (*agent.Session, error) {
 	return nil, errors.New("not implemented")
 }
 func (f *failingStore) List(context.Context, int) ([]state.Summary, error) { return nil, nil }
-func (f *failingStore) Delete(context.Context, string) error               { return nil }
-func (f *failingStore) Close() error                                       { return nil }
+func (f *failingStore) ListBySender(context.Context, string, int) ([]state.Summary, error) {
+	return nil, nil
+}
+func (f *failingStore) Delete(context.Context, string) error { return nil }
+func (f *failingStore) Close() error                         { return nil }
 
 var _ state.Store = (*failingStore)(nil)
 

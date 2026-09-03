@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 )
 
 type memStore struct {
@@ -47,6 +48,37 @@ func (m *memStore) Load(_ context.Context, id string) (*agent.Session, error) {
 		return nil, errors.New("not found")
 	}
 	return s, nil
+}
+
+// ListBySender satisfies the widened SessionStore interface. The
+// existing tests don't exercise the /sessions verb so a simple
+// scan is fine; if new tests need better performance we can
+// index on write.
+func (m *memStore) ListBySender(_ context.Context, sender string, limit int) ([]state.Summary, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []state.Summary
+	for _, s := range m.sessions {
+		if s.Sender != sender {
+			continue
+		}
+		out = append(out, state.Summary{
+			ID: s.ID, Title: s.Title, MessageCount: len(s.Messages),
+			UpdatedAt: s.UpdatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+		})
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// Delete satisfies the widened SessionStore interface.
+func (m *memStore) Delete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.sessions, id)
+	return nil
 }
 
 type memJID struct {

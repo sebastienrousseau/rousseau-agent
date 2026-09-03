@@ -51,6 +51,15 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, fmt.Errorf("sqlite: apply schema: %w", err)
 	}
+	// Runtime migration: pre-lifecycle-verbs databases lack the
+	// sender column on sessions. SQLite has no IF NOT EXISTS on
+	// ALTER TABLE ADD COLUMN, so we probe via PRAGMA table_info
+	// and add the column + index only when missing. Idempotent
+	// on every open.
+	if err := ensureSenderColumn(ctx, db); err != nil {
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
+		return nil, err
+	}
 	s := &Store{db: db}
 	if err := s.EnsureSearch(ctx); err != nil {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
@@ -65,19 +74,24 @@ func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
 	if err != nil {
 		return fmt.Errorf("sqlite: marshal session: %w", err)
 	}
+	// sender is persisted both in the payload (for round-trip via
+	// Load's json.Unmarshal) and in a top-level column so
+	// ListBySender can index-scan without decoding every row.
 	const q = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     title=excluded.title,
     payload=excluded.payload,
     message_count=excluded.message_count,
-    updated_at=excluded.updated_at
+    updated_at=excluded.updated_at,
+    sender=excluded.sender
 `
 	_, err = s.db.ExecContext(ctx, q,
 		sess.ID, sess.Title, string(payload), len(sess.Messages),
 		sess.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
 		sess.UpdatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
+		sess.Sender,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: save session: %w", err)
@@ -140,6 +154,91 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 
 // Close releases the underlying database handle.
 func (s *Store) Close() error { return s.db.Close() }
+
+// ListBySender returns Session summaries for the given sender,
+// newest-first, capped at limit (0 disables the cap).
+//
+// Used by the transport-side /sessions verb — the sender is
+// the JID / handle that typed the command, and the list must
+// only include sessions belonging to that sender (never any
+// other JID's sessions, and never legacy sessions with empty
+// sender). Enforced by the WHERE clause so no application-
+// level filtering is needed.
+func (s *Store) ListBySender(ctx context.Context, sender string, limit int) ([]state.Summary, error) {
+	if sender == "" {
+		// A per-sender query keyed on the empty string would
+		// return every legacy row — the opposite of what the
+		// caller wants. Return empty explicitly.
+		return nil, nil
+	}
+	q := `SELECT id, title, message_count, updated_at FROM sessions WHERE sender = ? ORDER BY updated_at DESC`
+	if limit > 0 {
+		q += fmt.Sprintf(" LIMIT %d", limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, sender)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: list sessions by sender: %w", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
+
+	var out []state.Summary
+	for rows.Next() {
+		var sum state.Summary
+		if err := rows.Scan(&sum.ID, &sum.Title, &sum.MessageCount, &sum.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("sqlite: scan summary: %w", err)
+		}
+		out = append(out, sum)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate summaries: %w", err)
+	}
+	return out, nil
+}
+
+// ensureSenderColumn adds the sender column + its index to a
+// pre-lifecycle-verbs sessions table. SQLite has no
+// IF NOT EXISTS on ALTER TABLE ADD COLUMN so we probe first via
+// PRAGMA table_info and no-op when the column is already there.
+// Idempotent — the CREATE TABLE in schema.sql already includes
+// the column for fresh installs, so this function is exercised
+// only on old databases.
+func ensureSenderColumn(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("sqlite: probe sessions columns: %w", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
+	haveSender := false
+	for rows.Next() {
+		var (
+			cid         int
+			name, ctype string
+			notnull, pk int
+			dflt        sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return fmt.Errorf("sqlite: scan sessions column info: %w", err)
+		}
+		if name == "sender" {
+			haveSender = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: iterate sessions column info: %w", err)
+	}
+	if haveSender {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx,
+		`ALTER TABLE sessions ADD COLUMN sender TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("sqlite: add sender column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_sender_updated ON sessions(sender, updated_at DESC)`); err != nil {
+		return fmt.Errorf("sqlite: index sender: %w", err)
+	}
+	return nil
+}
 
 // Compile-time interface satisfaction check.
 var _ state.Store = (*Store)(nil)

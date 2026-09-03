@@ -8,9 +8,19 @@ import (
 
 // Session is a persistent conversation identified by ID. Messages are
 // append-only in insertion order.
+//
+// Sender is the transport-scoped identifier of the sender who
+// owns the session ("+447…@s.whatsapp.net" for WhatsApp, a Slack
+// user id for Slack, etc.). Populated by the router when the
+// session is provisioned; left empty for sessions created
+// outside a transport context (rousseau chat, direct
+// state.Store consumers). Used by the transport-side session
+// lifecycle verbs (/sessions, /resume, /delete) to filter
+// per-sender without a broader query.
 type Session struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
+	Sender    string    `json:"sender,omitempty"`
 	Messages  []Message `json:"messages"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

@@ -83,6 +83,12 @@ func TestOpen_HappyPathAppliesSchema(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	require.NoError(t, err)
 	mock.ExpectPing()
+	// Open now runs three Execs: schema, ADD COLUMN IF NOT EXISTS
+	// (sender), CREATE INDEX IF NOT EXISTS. Match each with the
+	// permissive ".*" pattern the original test used — we're not
+	// testing the exact DDL here, just that Open runs to completion.
+	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
 
 	orig := openDB
@@ -98,13 +104,14 @@ func TestOpen_HappyPathAppliesSchema(t *testing.T) {
 // -- Save ----------------------------------------------------------
 
 const saveQuery = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE SET
     title = EXCLUDED.title,
     payload = EXCLUDED.payload,
     message_count = EXCLUDED.message_count,
-    updated_at = EXCLUDED.updated_at
+    updated_at = EXCLUDED.updated_at,
+    sender = EXCLUDED.sender
 `
 
 func TestSave_HappyPath(t *testing.T) {
@@ -113,7 +120,7 @@ func TestSave_HappyPath(t *testing.T) {
 	sess.Append(agent.NewUserText("hi"))
 
 	mock.ExpectExec(q(saveQuery)).
-		WithArgs(sess.ID, sess.Title, sqlmock.AnyArg(), 1, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WithArgs(sess.ID, sess.Title, sqlmock.AnyArg(), 1, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	require.NoError(t, store.Save(context.Background(), sess))

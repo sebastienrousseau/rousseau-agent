@@ -80,6 +80,19 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		_ = db.Close() //nolint:errcheck // constructor rollback; primary error already returned
 		return nil, fmt.Errorf("postgres: apply schema: %w", err)
 	}
+	// Runtime migration for pre-lifecycle-verbs databases.
+	// Idempotent — Postgres supports IF NOT EXISTS on both
+	// ADD COLUMN and CREATE INDEX so this is a single SQL each.
+	if _, err := db.ExecContext(ctx,
+		`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sender TEXT NOT NULL DEFAULT ''`); err != nil {
+		_ = db.Close() //nolint:errcheck // constructor rollback; primary error already returned
+		return nil, fmt.Errorf("postgres: add sender column: %w", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_sender_updated ON sessions(sender, updated_at DESC)`); err != nil {
+		_ = db.Close() //nolint:errcheck // constructor rollback; primary error already returned
+		return nil, fmt.Errorf("postgres: index sender: %w", err)
+	}
 	return &Store{db: db}, nil
 }
 
@@ -91,18 +104,22 @@ func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
 	if err != nil {
 		return fmt.Errorf("postgres: marshal session: %w", err)
 	}
+	// sender is stored both in the payload (round-trips through
+	// Load's json.Unmarshal) and as a top-level column so
+	// ListBySender can index-scan without decoding every row.
 	const q = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (id) DO UPDATE SET
     title = EXCLUDED.title,
     payload = EXCLUDED.payload,
     message_count = EXCLUDED.message_count,
-    updated_at = EXCLUDED.updated_at
+    updated_at = EXCLUDED.updated_at,
+    sender = EXCLUDED.sender
 `
 	_, err = s.db.ExecContext(ctx, q,
 		sess.ID, sess.Title, string(payload), len(sess.Messages),
-		sess.CreatedAt.UTC(), sess.UpdatedAt.UTC(),
+		sess.CreatedAt.UTC(), sess.UpdatedAt.UTC(), sess.Sender,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: save session: %w", err)
@@ -174,6 +191,50 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 		return fmt.Errorf("postgres: delete session: %w", err)
 	}
 	return nil
+}
+
+// ListBySender returns Session summaries for the given sender,
+// newest-first, capped at limit (0 disables the cap). Mirrors
+// the SQLite driver's contract — empty sender short-circuits to
+// nil so a per-sender query never accidentally returns every
+// legacy row.
+//
+// Used by the transport-side /sessions verb — the sender is the
+// JID / handle that typed the command, and the list must only
+// include that sender's sessions (never another JID's). Enforced
+// by the WHERE clause; no application-level filtering needed.
+func (s *Store) ListBySender(ctx context.Context, sender string, limit int) ([]state.Summary, error) {
+	if sender == "" {
+		return nil, nil
+	}
+	q := `SELECT id, title, message_count, updated_at FROM sessions WHERE sender = $1 ORDER BY updated_at DESC`
+	args := []any{sender}
+	if limit > 0 {
+		q += ` LIMIT $2`
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: list sessions by sender: %w", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
+
+	var out []state.Summary
+	for rows.Next() {
+		var (
+			sum       state.Summary
+			updatedAt time.Time
+		)
+		if err := rows.Scan(&sum.ID, &sum.Title, &sum.MessageCount, &updatedAt); err != nil {
+			return nil, fmt.Errorf("postgres: scan summary: %w", err)
+		}
+		sum.UpdatedAt = updatedAt.UTC().Format("2006-01-02T15:04:05.000Z")
+		out = append(out, sum)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: iterate summaries: %w", err)
+	}
+	return out, nil
 }
 
 // Close releases the underlying pool.
