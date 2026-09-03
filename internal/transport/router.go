@@ -243,6 +243,27 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		return r.cmdVersion(), nil
 	}
 
+	// /clear starts a fresh session for this sender. The current
+	// session stays in the DB (so `rousseau session show <id>`
+	// still works) but the jidMap now points at a new empty
+	// session — every subsequent inbound builds context from
+	// scratch. Same "runs above the identity gate" reason as
+	// /version: /clear needs the jidMap + session store, both
+	// of which the router always holds.
+	//
+	// Mid-turn safety: a running turn holds `sess *agent.Session`
+	// captured at Handle time. Its later Save writes back to the
+	// OLD session ID — untouched by /clear. The fresh session
+	// only affects future inbound, which is the operator-visible
+	// intent.
+	if strings.TrimSpace(msg.Body) == "/clear" {
+		reply, err := r.cmdClear(ctx, msg.From)
+		if err != nil {
+			return "", fmt.Errorf("router: clear: %w", err)
+		}
+		return reply, nil
+	}
+
 	// Chat-command interception: /whoami, /link, /unlink handled
 	// before the LLM sees the message so they run instantly + free.
 	// Only fires when an Identity resolver is configured — the
@@ -285,6 +306,7 @@ var syncCommands = map[string]struct{}{
 	"/link":    {},
 	"/unlink":  {},
 	"/version": {},
+	"/clear":   {},
 	"/login":   {},
 	"/logout":  {},
 	"/approve": {},
@@ -363,6 +385,39 @@ func (r *Router) cmdVersion() string {
 		return "rousseau (unknown build — daemon started without a build stamp)"
 	}
 	return "rousseau " + r.buildStamp
+}
+
+// cmdClear starts a fresh session for the sender. The old
+// session is NOT deleted — it stays in the DB so
+// `rousseau session show <id>` and audit / cost queries still
+// work — but the jidMap now points at a new empty session, so
+// every subsequent inbound builds LLM context from scratch.
+//
+// Idempotent: /clear on a sender with no existing session still
+// provisions a fresh one and returns success. Operators can
+// re-clear without needing to check state first.
+//
+// Mid-turn race note: a turn started before /clear holds a
+// pointer to the OLD session and continues writing to it. That
+// is intentional — the running work isn't interrupted, and the
+// user's next message picks up the empty new session. Users
+// wanting to kill an in-flight turn should use /cancel first.
+func (r *Router) cmdClear(ctx context.Context, from string) (string, error) {
+	sess := agent.NewSession("chat: " + from)
+	if err := r.store.Save(ctx, sess); err != nil {
+		return "", fmt.Errorf("save fresh session: %w", err)
+	}
+	// Overwrites the previous mapping via Put's upsert
+	// semantics. Both driver implementations expose this as
+	// ON CONFLICT DO UPDATE — no delete step needed.
+	if err := r.jidMap.Put(ctx, from, sess.ID); err != nil {
+		return "", fmt.Errorf("rebind jid: %w", err)
+	}
+	r.logger.Info("router.session_cleared",
+		slog.String("from", from),
+		slog.String("new_session_id", sess.ID),
+	)
+	return "conversation cleared. next message starts a fresh session.", nil
 }
 
 func (r *Router) cmdWhoami(ctx context.Context, from string) string {
