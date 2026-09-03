@@ -195,13 +195,29 @@ func (s *Store) ListBySender(ctx context.Context, sender string, limit int) ([]s
 	return out, nil
 }
 
-// ensureSenderColumn adds the sender column + its index to a
-// pre-lifecycle-verbs sessions table. SQLite has no
-// IF NOT EXISTS on ALTER TABLE ADD COLUMN so we probe first via
-// PRAGMA table_info and no-op when the column is already there.
-// Idempotent — the CREATE TABLE in schema.sql already includes
-// the column for fresh installs, so this function is exercised
-// only on old databases.
+// ensureSenderColumn adds the sender column (when missing) and
+// its index to the sessions table. Runs on every Open —
+// idempotent by design:
+//
+//   - Fresh install: sessions.CREATE TABLE in schema.sql already
+//     includes the sender column, so the ADD COLUMN branch is
+//     skipped. The CREATE INDEX runs and finds an empty index
+//     to bootstrap.
+//   - Legacy install (pre-lifecycle-verbs): schema.sql's
+//     CREATE TABLE IF NOT EXISTS no-ops on the existing table.
+//     PRAGMA table_info(sessions) shows no sender column, so
+//     we ADD COLUMN then CREATE INDEX.
+//
+// SQLite has no IF NOT EXISTS on ALTER TABLE ADD COLUMN, so the
+// PRAGMA probe is the only portable way to make the migration
+// idempotent. CREATE INDEX IF NOT EXISTS handles its own
+// idempotency in both branches so it is safe to run
+// unconditionally.
+//
+// The index cannot live in schema.sql because a legacy DB
+// without the sender column would fail the CREATE INDEX at
+// schema-apply time — before this migration has a chance to
+// add the column.
 func ensureSenderColumn(ctx context.Context, db *sql.DB) error {
 	rows, err := db.QueryContext(ctx, `PRAGMA table_info(sessions)`)
 	if err != nil {
@@ -226,13 +242,15 @@ func ensureSenderColumn(ctx context.Context, db *sql.DB) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("sqlite: iterate sessions column info: %w", err)
 	}
-	if haveSender {
-		return nil
+	if !haveSender {
+		if _, err := db.ExecContext(ctx,
+			`ALTER TABLE sessions ADD COLUMN sender TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("sqlite: add sender column: %w", err)
+		}
 	}
-	if _, err := db.ExecContext(ctx,
-		`ALTER TABLE sessions ADD COLUMN sender TEXT NOT NULL DEFAULT ''`); err != nil {
-		return fmt.Errorf("sqlite: add sender column: %w", err)
-	}
+	// Always safe: CREATE INDEX IF NOT EXISTS is a no-op if the
+	// index already exists, and both branches above guarantee
+	// the sender column is present when we reach here.
 	if _, err := db.ExecContext(ctx,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_sender_updated ON sessions(sender, updated_at DESC)`); err != nil {
 		return fmt.Errorf("sqlite: index sender: %w", err)
