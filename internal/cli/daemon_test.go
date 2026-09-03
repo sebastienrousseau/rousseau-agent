@@ -85,6 +85,32 @@ func TestAssembleDaemon_HappyPath(t *testing.T) {
 	assert.NotNil(t, wiring.Sessions)
 	assert.NotNil(t, wiring.JIDMap)
 	assert.NotNil(t, wiring.ClaudeCache)
+	assert.NotNil(t, wiring.Identities, "Identities must be wired so /whoami, /link, /unlink work")
+}
+
+func TestTransportHandler_RouterCarriesIdentity(t *testing.T) {
+	// Regression pin: /whoami, /link, /unlink used to fall through
+	// to the LLM in every real deployment because assembleDaemon
+	// built a Router without an Identity resolver — the resolver
+	// exists in state, it just wasn't wired. routerFor now builds
+	// per-transport routers that carry both Identity + Transport,
+	// so identity-based chat commands actually answer.
+	opts := makeDaemonOpts(t)
+	opts.Config.Provider = "anthropic"
+	opts.Config.Anthropic = config.AnthropicConfig{APIKey: "sk-test", Model: "claude"}
+
+	wiring, err := assembleDaemon(context.Background(), opts, nil)
+	require.NoError(t, err)
+	defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // test cleanup
+
+	// TransportHandler triggers routerFor("whatsapp"). Repeated
+	// calls must return the cached router, not build fresh ones.
+	_ = wiring.TransportHandler("whatsapp", silentLogger())
+	_ = wiring.TransportHandler("whatsapp", silentLogger())
+	assert.Len(t, wiring.routers, 1, "routerFor must cache per-transport")
+
+	r := wiring.routers["whatsapp"]
+	require.NotNil(t, r)
 }
 
 func TestStartCron_StartsAndShutsDownCleanly(t *testing.T) {
