@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/google/uuid"
 	"github.com/robfig/cron/v3"
@@ -47,13 +45,13 @@ func newCronAddCmd(opts *Options) *cobra.Command {
 			if _, err := cron.ParseStandard(schedule); err != nil {
 				return fmt.Errorf("invalid cron expression: %w", err)
 			}
-			store, err := openCronStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
-			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
+			cs, err := openCronStore(cmd.Context(), store)
 			if err != nil {
 				return err
 			}
@@ -85,13 +83,13 @@ func newCronListCmd(opts *Options) *cobra.Command {
 		Short: "List every scheduled job",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			store, err := openCronStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
-			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
+			cs, err := openCronStore(cmd.Context(), store)
 			if err != nil {
 				return err
 			}
@@ -127,12 +125,12 @@ func newCronRemoveCmd(opts *Options) *cobra.Command {
 		Short: "Delete a scheduled job",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openCronStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
-			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
+			cs, err := openCronStore(cmd.Context(), store)
 			if err != nil {
 				return err
 			}
@@ -153,28 +151,16 @@ func newCronToggleCmd(opts *Options, enable bool) *cobra.Command {
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			store, err := openCronStore(cmd.Context(), opts)
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
 			if err != nil {
 				return err
 			}
 			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
-			cs, err := sqlitestore.NewCronStore(cmd.Context(), store)
+			cs, err := openCronStore(cmd.Context(), store)
 			if err != nil {
 				return err
 			}
 			return cs.SetEnabled(cmd.Context(), args[0], enable)
 		},
 	}
-}
-
-func openCronStore(ctx context.Context, opts *Options) (*sqlitestore.Store, error) {
-	path := opts.Config.State.Path
-	if path == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		path = home + "/.local/share/rousseau/sessions.db"
-	}
-	return sqlitestore.Open(ctx, path)
 }

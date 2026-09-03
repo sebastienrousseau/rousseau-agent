@@ -22,17 +22,53 @@ type SessionsBackend interface {
 	CronList(ctx context.Context) ([]sqlitestore.CronJob, error)
 }
 
-// storeBackend adapts a *sqlitestore.Store + *sqlitestore.CronStore to
-// SessionsBackend. Kept internal so callers only see the interface.
-type storeBackend struct {
-	sessions *sqlitestore.Store
-	cron     *sqlitestore.CronStore
+// SessionsSource is the minimum surface StoreBackend needs from a
+// state Store — narrower than state.Store because MCP tools never
+// mutate. Both sqlite.Store and postgres.Store satisfy it (both
+// via the shared sqlitestore.SearchHit / SearchOptions types).
+type SessionsSource interface {
+	Search(ctx context.Context, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error)
+	List(ctx context.Context, limit int) ([]state.Summary, error)
+	Load(ctx context.Context, id string) (*agent.Session, error)
 }
 
-// NewStoreBackend builds a SessionsBackend from an already-open Store.
-// The cron accessor is optional — if nil, the cron_list tool returns
-// an empty list rather than erroring.
+// CronSource is the minimum surface StoreBackend needs from a
+// cron store. Both sqlite.CronStore and postgres.CronStore
+// satisfy it — same method signatures, shared CronJob type.
+// Nil is allowed and means "no cron backend" (cron_list returns
+// an empty list rather than erroring).
+type CronSource interface {
+	List(ctx context.Context) ([]sqlitestore.CronJob, error)
+}
+
+// storeBackend adapts SessionsSource + CronSource to
+// SessionsBackend. Kept internal so callers only see the
+// interface.
+type storeBackend struct {
+	sessions SessionsSource
+	cron     CronSource
+}
+
+// NewStoreBackend builds a SessionsBackend from a sqlite Store +
+// CronStore pair. Preserved for backwards compatibility with
+// callers still holding concrete sqlite types (tests). New
+// callers should prefer NewStoreBackendFromIface which is
+// driver-agnostic.
 func NewStoreBackend(s *sqlitestore.Store, c *sqlitestore.CronStore) SessionsBackend {
+	// The concrete sqlite CronStore may be nil; wrap only when
+	// non-nil so the CronList branch reads r.cron == nil cleanly.
+	var cs CronSource
+	if c != nil {
+		cs = c
+	}
+	return &storeBackend{sessions: s, cron: cs}
+}
+
+// NewStoreBackendFromIface builds a SessionsBackend from a
+// SessionsSource + CronSource — the driver-agnostic entry point.
+// A nil CronSource is allowed and disables cron_list (returns
+// an empty list).
+func NewStoreBackendFromIface(s SessionsSource, c CronSource) SessionsBackend {
 	return &storeBackend{sessions: s, cron: c}
 }
 

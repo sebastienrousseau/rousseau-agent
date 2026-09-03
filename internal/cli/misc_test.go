@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
 // TestDisplayWindow_ZeroReturnsAll pins the tiny window formatter so
@@ -91,19 +92,20 @@ func TestVersion_ReturnsStampedString(t *testing.T) {
 	assert.Equal(t, version, got, "Version() must return exactly the package var")
 }
 
-func TestOpenSessionStore_HappyPathReturnsConcreteStore(t *testing.T) {
-	// openSessionStore is the "session commands" specialisation of
-	// openStore: it demands the *sqlitestore.Store concrete type so
-	// the session commands can reach the FTS5 surface. Verifies the
-	// happy path (on-disk sqlite in a tmp dir) returns a usable
-	// store — the error path is exercised by the failing openStore
-	// tests elsewhere.
+func TestOpenSearchableStore_HappyPathAppliesSearchSchema(t *testing.T) {
+	// openSearchableStore is the driver-agnostic replacement for
+	// the old openSessionStore. It dispatches on cfg.Driver, opens
+	// the base store, and applies EnsureSearch so the FTS surface
+	// is ready. Verifies the happy path (on-disk sqlite in a tmp
+	// dir) returns a usable store with search capability.
 	tmp := t.TempDir()
-	opts := &Options{
-		Config: &config.Config{State: config.StateConfig{Path: filepath.Join(tmp, "s.db")}},
-	}
-	store, err := openSessionStore(context.Background(), opts)
+	cfg := config.StateConfig{Path: filepath.Join(tmp, "s.db")}
+	store, err := openSearchableStore(context.Background(), cfg)
 	require.NoError(t, err)
 	require.NotNil(t, store)
+	// Search on an empty store must return a legible "empty query"
+	// error, not panic — proves the FTS surface is wired.
+	_, err = store.Search(context.Background(), "", sqlitestore.SearchOptions{})
+	assert.Error(t, err)
 	assert.NoError(t, store.Close())
 }
