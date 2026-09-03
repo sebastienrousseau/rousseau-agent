@@ -567,7 +567,11 @@ func (r *Router) cmdClear(ctx context.Context, from string) (string, error) {
 		slog.String("from", from),
 		slog.String("new_session_id", sess.ID),
 	)
-	return "conversation cleared. next message starts a fresh session.", nil
+	// Reply is deliberately explicit about scope: /clear resets
+	// my memory of the conversation (a DB record), not the chat
+	// bubbles in your WhatsApp thread — those live on your phone
+	// and only you can remove them.
+	return "conversation cleared from my memory. next message starts a fresh session.\n(your WhatsApp chat bubbles stay — I can't reach your phone's chat history.)", nil
 }
 
 // cmdSessions lists the sender's sessions newest-first with a
@@ -748,7 +752,11 @@ func (r *Router) cmdDelete(ctx context.Context, from, arg string) (string, error
 	if title == "" {
 		title = "(untitled)"
 	}
-	return fmt.Sprintf("deleted session %q.", title), nil
+	// Same scope callout as /clear — the WhatsApp thread is
+	// not the bot's DB, and the bot doesn't call WhatsApp's
+	// message-delete API. Users chasing "remove the bubbles"
+	// have to delete on the phone side themselves.
+	return fmt.Sprintf("deleted session %q from my memory.\n(your WhatsApp chat bubbles stay — I can't reach your phone's chat history.)", title), nil
 }
 
 // findSessionForSender resolves a short-id (or full ID) to a
@@ -849,13 +857,13 @@ func cmdHelp() string {
 	// the daemon speaks.
 	return `*rousseau commands* — every verb has a shortcut
 
-*session*
+*session* (my memory of the conversation — not your WhatsApp chat bubbles)
 • /save "…" (/s) — atomic snapshot of the current state (stay in current)
 • /sessions (/ls) — list your saved sessions
 • /name "…" (/n) — rename the current session
 • /resume <shortid> (/r) — switch to a saved session
-• /clear (/c) — start a fresh session
-• /delete <shortid> (/d) — remove a session (not the current one)
+• /clear (/c) — start a fresh session (bot forgets, chat bubbles stay)
+• /delete <shortid> (/d) — remove a session (not the current one; bubbles stay)
 
 *turn control* — while a reply is in flight
 • /status (/st) — what is the current turn doing?
