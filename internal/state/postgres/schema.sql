@@ -27,8 +27,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     payload        TEXT NOT NULL,
     message_count  INTEGER NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ NOT NULL,
-    updated_at     TIMESTAMPTZ NOT NULL
+    updated_at     TIMESTAMPTZ NOT NULL,
+    sender         TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
     ON sessions(updated_at DESC);
+
+-- Per-sender secondary index: the /sessions chat verb filters
+-- by sender, so the query has to hit an index rather than seq-
+-- scan a large sessions table on every list.
+CREATE INDEX IF NOT EXISTS idx_sessions_sender_updated
+    ON sessions(sender, updated_at DESC);

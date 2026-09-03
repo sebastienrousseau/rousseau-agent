@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
@@ -32,8 +33,17 @@ type storeAdapter struct{ s *sqlitestore.Store }
 func (a *storeAdapter) Save(ctx context.Context, sess *agent.Session) error {
 	return a.s.Save(ctx, sess)
 }
+
 func (a *storeAdapter) Load(ctx context.Context, id string) (*agent.Session, error) {
 	return a.s.Load(ctx, id)
+}
+
+func (a *storeAdapter) ListBySender(ctx context.Context, sender string, limit int) ([]state.Summary, error) {
+	return a.s.ListBySender(ctx, sender, limit)
+}
+
+func (a *storeAdapter) Delete(ctx context.Context, id string) error {
+	return a.s.Delete(ctx, id)
 }
 
 func silent() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -317,6 +327,180 @@ func TestRouter_ClearWorksWithoutIdentityResolver(t *testing.T) {
 	reply, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/clear"})
 	require.NoError(t, err)
 	assert.Contains(t, reply, "cleared", "/clear must answer even without an Identity resolver")
+}
+
+// -- session lifecycle verbs -----------------------------------------------
+
+func TestRouter_SessionsEmptyGuidesFirstUse(t *testing.T) {
+	// A never-messaged sender running /sessions must see a
+	// friendly onboarding message, not a bare "(none)" that
+	// leaves them wondering if the command worked.
+	r, _, ctx := setup(t)
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+555", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "no saved sessions yet")
+	assert.Contains(t, got, "/name")
+}
+
+func TestRouter_SessionsListsSenderOwnedOnly(t *testing.T) {
+	// After a first message provisions a session, /sessions
+	// lists it and marks it current. Sender B's session must NOT
+	// appear in sender A's listing — the scope-isolation invariant.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hello"})
+	require.NoError(t, err)
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+bob", Body: "hi"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "sessions (newest first")
+	assert.Contains(t, got, "chat: +alice")
+	assert.Contains(t, got, "*") // current marker
+	assert.NotContains(t, got, "chat: +bob", "alice's /sessions MUST NOT include bob's session")
+}
+
+func TestRouter_NameRenamesCurrent(t *testing.T) {
+	// /name updates the current session's Title. Verify the rename
+	// surfaces on the next /sessions listing.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hello"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/name "deploy planning"`})
+	require.NoError(t, err)
+	assert.Contains(t, got, "deploy planning")
+
+	sessions, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	assert.Contains(t, sessions, "deploy planning")
+}
+
+func TestRouter_NameEmptyReturnsUsage(t *testing.T) {
+	r, _, ctx := setup(t)
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/name"})
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(got), "usage:")
+}
+
+func TestRouter_ResumeSwitchesActiveSession(t *testing.T) {
+	// /clear creates session-2 while session-1 stays in the DB.
+	// /sessions shows both; /resume <shortid-of-session-1>
+	// switches back so the next inbound continues session-1.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "first message"})
+	require.NoError(t, err)
+	// Grab session-1's id via /sessions before /clear.
+	before, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	// Extract the short-id from the listing (last field on the
+	// first row after the header + blank).
+	shortID := lastToken(firstMatchingLine(before, "chat: +alice"))
+	require.Len(t, shortID, 8)
+
+	// Clear → session-2 becomes current.
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/clear"})
+	require.NoError(t, err)
+
+	// Resume by short-id → session-1 becomes current again.
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/resume " + shortID})
+	require.NoError(t, err)
+	assert.Contains(t, got, "resumed session")
+}
+
+func TestRouter_ResumeUnknownShortidReplies(t *testing.T) {
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hello"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/resume deadbeef"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "no session found")
+}
+
+func TestRouter_DeleteRemovesNonCurrentSession(t *testing.T) {
+	// /delete requires a shortid AND refuses to delete the
+	// current session. Sequence: provision → clear (creates 2nd
+	// session) → find shortid of the OLD session (first-created)
+	// → /delete it.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "first"})
+	require.NoError(t, err)
+	listing, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	oldShortID := lastToken(firstMatchingLine(listing, "chat: +alice"))
+	require.Len(t, oldShortID, 8)
+
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/clear"})
+	require.NoError(t, err)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/delete " + oldShortID})
+	require.NoError(t, err)
+	assert.Contains(t, got, "deleted session")
+}
+
+func TestRouter_DeleteRefusesCurrent(t *testing.T) {
+	// Deleting the currently-active session would leave the user
+	// pointing at a non-existent id. Refuse and nudge to /clear.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hello"})
+	require.NoError(t, err)
+	listing, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/sessions"})
+	require.NoError(t, err)
+	currentShortID := lastToken(firstMatchingLine(listing, "chat: +alice"))
+	require.Len(t, currentShortID, 8)
+
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/delete " + currentShortID})
+	require.NoError(t, err)
+	assert.Contains(t, got, "refusing to delete the current session")
+	assert.Contains(t, got, "/clear")
+}
+
+func TestRouter_ShortcutsCanonicalise(t *testing.T) {
+	// /c, /s, /n, /r, /d must behave identically to their
+	// canonical forms. Pinning both the syncCommands membership
+	// AND the alias-table dispatch so a future refactor that
+	// touches one but not the other fails this test.
+	r, _, ctx := setup(t)
+	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "hi"})
+	require.NoError(t, err)
+
+	// /s should list sessions (same shape as /sessions).
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/s"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "sessions (newest first")
+
+	// /c should clear (same as /clear).
+	got, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: "/c"})
+	require.NoError(t, err)
+	assert.Contains(t, got, "cleared")
+
+	// /n "..." should rename (same as /name).
+	got, err = r.Handle(ctx, transport.IncomingMessage{From: "+alice", Body: `/n "shortcut test"`})
+	require.NoError(t, err)
+	assert.Contains(t, got, "shortcut test")
+}
+
+// firstMatchingLine returns the first line of text that contains
+// needle, or "" if none. Small local helper — keeps the tests
+// tolerant of layout drift in the /sessions reply format.
+func firstMatchingLine(text, needle string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, needle) {
+			return line
+		}
+	}
+	return ""
+}
+
+// lastToken returns the whitespace-delimited last token of s
+// (used to pull the short-id off the end of a /sessions row).
+func lastToken(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[len(fields)-1]
 }
 
 func TestRouter_NilIdentityDisablesCommandInterception(t *testing.T) {

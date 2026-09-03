@@ -22,6 +22,12 @@ type Store interface {
 	// List returns Session summaries newest-first, capped at limit
 	// (0 disables the cap).
 	List(ctx context.Context, limit int) ([]Summary, error)
+	// ListBySender returns summaries for sessions owned by the
+	// given sender, newest-first, capped at limit (0 disables the
+	// cap). Empty sender returns nil so a per-sender query never
+	// accidentally surfaces legacy rows with empty sender. Backs
+	// the transport-side /sessions chat verb.
+	ListBySender(ctx context.Context, sender string, limit int) ([]Summary, error)
 	// Delete removes the Session identified by id. Deleting a missing
 	// Session is not an error.
 	Delete(ctx context.Context, id string) error

@@ -15,14 +15,23 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
+	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 )
 
 // SessionStore is the subset of state.Store the Router needs. Declared
 // here so the transport package does not import internal/state
-// concretely.
+// concretely for method-level types (though state.Summary in
+// ListBySender does require a shallow import).
+//
+// ListBySender + Delete are on this interface so the
+// session-lifecycle chat verbs (/sessions, /delete) work
+// driver-agnostically. Both sqlite.Store and postgres.Store
+// satisfy this shape.
 type SessionStore interface {
 	Save(ctx context.Context, s *agent.Session) error
 	Load(ctx context.Context, id string) (*agent.Session, error)
+	ListBySender(ctx context.Context, sender string, limit int) ([]state.Summary, error)
+	Delete(ctx context.Context, id string) error
 }
 
 // JIDMapper persists which agent Session belongs to which platform
@@ -192,6 +201,12 @@ func (r *Router) emitAuthAudit(ctx context.Context, verb, actor, from, result st
 
 // Handle implements Handler.
 func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error) {
+	// Canonicalise single-letter shortcuts (/c → /clear, /s →
+	// /sessions, …) up-front so every downstream dispatch site
+	// switches on the canonical form. Keeps the alias table in
+	// one place instead of duplicating in every case.
+	msg.Body = canonicalCommand(msg.Body)
+
 	// Chat-command interception runs BEFORE the allowlist check so
 	// /login can bootstrap a new sender via SSO without the operator
 	// having to pre-approve their number. Other commands
@@ -264,6 +279,44 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		return reply, nil
 	}
 
+	// Session-lifecycle verbs. All keyed on msg.From so they
+	// operate on the sender's own sessions only — a listing / rename
+	// / resume / delete from Alice can never touch Bob's data.
+	// Same "runs above the identity gate" reasoning as /clear.
+	if body := strings.TrimSpace(msg.Body); strings.HasPrefix(body, "/") {
+		parts := strings.SplitN(body, " ", 2)
+		var arg string
+		if len(parts) == 2 {
+			arg = strings.TrimSpace(parts[1])
+		}
+		switch parts[0] {
+		case "/sessions":
+			reply, err := r.cmdSessions(ctx, msg.From)
+			if err != nil {
+				return "", fmt.Errorf("router: sessions: %w", err)
+			}
+			return reply, nil
+		case "/name":
+			reply, err := r.cmdName(ctx, msg.From, arg)
+			if err != nil {
+				return "", fmt.Errorf("router: name: %w", err)
+			}
+			return reply, nil
+		case "/resume":
+			reply, err := r.cmdResume(ctx, msg.From, arg)
+			if err != nil {
+				return "", fmt.Errorf("router: resume: %w", err)
+			}
+			return reply, nil
+		case "/delete":
+			reply, err := r.cmdDelete(ctx, msg.From, arg)
+			if err != nil {
+				return "", fmt.Errorf("router: delete: %w", err)
+			}
+			return reply, nil
+		}
+	}
+
 	// Chat-command interception: /whoami, /link, /unlink handled
 	// before the LLM sees the message so they run instantly + free.
 	// Only fires when an Identity resolver is configured — the
@@ -302,15 +355,59 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 //   - SSO:       /login /logout
 //   - approvals: /approve /deny
 var syncCommands = map[string]struct{}{
-	"/whoami":  {},
-	"/link":    {},
-	"/unlink":  {},
-	"/version": {},
-	"/clear":   {},
+	"/whoami":   {},
+	"/link":     {},
+	"/unlink":   {},
+	"/version":  {},
+	"/clear":    {},
+	"/c":        {}, // shortcut for /clear
+	"/sessions": {},
+	"/s":        {}, // shortcut for /sessions
+	"/name":     {},
+	"/n":        {}, // shortcut for /name
+	"/resume":   {},
+	"/r":        {}, // shortcut for /resume (session-lifecycle, distinct from
+	// control /resume which is exact-match-only in the control package)
+	"/delete":  {},
+	"/d":       {}, // shortcut for /delete
+	"/ls":      {}, // shell-alias for /sessions
+	"/rm":      {}, // shell-alias for /delete
 	"/login":   {},
 	"/logout":  {},
 	"/approve": {},
 	"/deny":    {},
+}
+
+// commandAliases collapses single-letter shortcuts into their
+// canonical verb so the Handle-time dispatch only has to switch
+// on one form. Kept in one place so a new alias is a single-map
+// entry, not a new case in every switch.
+var commandAliases = map[string]string{
+	"/c":  "/clear",
+	"/s":  "/sessions",
+	"/n":  "/name",
+	"/r":  "/resume",
+	"/d":  "/delete",
+	"/ls": "/sessions", // shell muscle memory
+	"/rm": "/delete",
+}
+
+// canonicalCommand returns the canonical form of the leading
+// token in body. Returns the input unchanged when body is not
+// a slash command or the token is not an alias.
+func canonicalCommand(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if !strings.HasPrefix(trimmed, "/") {
+		return body
+	}
+	parts := strings.SplitN(trimmed, " ", 2)
+	if canon, ok := commandAliases[parts[0]]; ok {
+		if len(parts) == 2 {
+			return canon + " " + parts[1]
+		}
+		return canon
+	}
+	return body
 }
 
 // IsSyncCommand reports whether msg would be answered by one of
@@ -404,6 +501,7 @@ func (r *Router) cmdVersion() string {
 // wanting to kill an in-flight turn should use /cancel first.
 func (r *Router) cmdClear(ctx context.Context, from string) (string, error) {
 	sess := agent.NewSession("chat: " + from)
+	sess.Sender = from // so it surfaces in /sessions later
 	if err := r.store.Save(ctx, sess); err != nil {
 		return "", fmt.Errorf("save fresh session: %w", err)
 	}
@@ -418,6 +516,174 @@ func (r *Router) cmdClear(ctx context.Context, from string) (string, error) {
 		slog.String("new_session_id", sess.ID),
 	)
 	return "conversation cleared. next message starts a fresh session.", nil
+}
+
+// cmdSessions lists the sender's sessions newest-first with a
+// number, friendly title, message count, and short-id. The
+// short-id is what /resume + /delete accept — numbers are
+// display-only (stateful "last-listed cache" would race under
+// concurrent inbounds; short-id is stateless).
+func (r *Router) cmdSessions(ctx context.Context, from string) (string, error) {
+	const listCap = 20
+	summaries, err := r.store.ListBySender(ctx, from, listCap)
+	if err != nil {
+		return "", fmt.Errorf("list sessions: %w", err)
+	}
+	if len(summaries) == 0 {
+		return "no saved sessions yet. any message you send here starts one — use /name \"…\" to give it a memorable label.", nil
+	}
+	current, _, _ := r.jidMap.Get(ctx, from) //nolint:errcheck // "unknown" is a valid state → current == ""
+	var b strings.Builder
+	fmt.Fprintf(&b, "sessions (newest first, up to %d):\n", listCap)
+	for i, s := range summaries {
+		marker := " "
+		if s.ID == current {
+			marker = "*"
+		}
+		title := s.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		fmt.Fprintf(&b, "%s %2d. %s  (%d msg)  %s\n",
+			marker, i+1, title, s.MessageCount, shortSessionID(s.ID))
+	}
+	b.WriteString("\n* = current • /resume <shortid> to switch • /delete <shortid> to remove • /name \"…\" to rename")
+	return b.String(), nil
+}
+
+// cmdName renames the CURRENT session (the one jidMap points
+// at). Empty name → usage help. A rename is a pure Title
+// update — the message history + session ID are untouched, so
+// downstream references (`rousseau session show <id>`, cost
+// queries) keep working.
+func (r *Router) cmdName(ctx context.Context, from, name string) (string, error) {
+	name = trimQuotes(strings.TrimSpace(name))
+	if name == "" {
+		return "usage: /name \"friendly session name\"", nil
+	}
+	sess, err := r.sessionFor(ctx, from)
+	if err != nil {
+		return "", fmt.Errorf("session for: %w", err)
+	}
+	sess.Title = name
+	if err := r.store.Save(ctx, sess); err != nil {
+		return "", fmt.Errorf("save renamed session: %w", err)
+	}
+	r.logger.Info("router.session_renamed",
+		slog.String("from", from),
+		slog.String("session_id", sess.ID),
+		slog.String("name", name))
+	return fmt.Sprintf("renamed current session → %q", name), nil
+}
+
+// cmdResume repoints the sender's jidMap entry at the target
+// session so subsequent inbound builds LLM context from that
+// session's history. The current session isn't deleted (still
+// listable via /sessions).
+//
+// Target is addressed by short-id (first N chars of the UUID);
+// numbers from the last /sessions listing are display-only.
+func (r *Router) cmdResume(ctx context.Context, from, arg string) (string, error) {
+	arg = trimQuotes(strings.TrimSpace(arg))
+	if arg == "" {
+		return "usage: /resume <shortid>  (use /sessions to find the short-id)", nil
+	}
+	target, err := r.findSessionForSender(ctx, from, arg)
+	if err != nil {
+		return err.Error(), nil //nolint:nilerr // legible chat text; the actual error is user-facing
+	}
+	if err := r.jidMap.Put(ctx, from, target.ID); err != nil {
+		return "", fmt.Errorf("rebind jid: %w", err)
+	}
+	r.logger.Info("router.session_resumed",
+		slog.String("from", from),
+		slog.String("session_id", target.ID))
+	title := target.Title
+	if title == "" {
+		title = "(untitled)"
+	}
+	return fmt.Sprintf("resumed session %q (%d msg). next message continues that thread.",
+		title, target.MessageCount), nil
+}
+
+// cmdDelete removes a session by short-id. Refuses to delete
+// the current session — the user should /clear first (which
+// keeps the old session for audit AND repoints the jidMap to a
+// fresh one). Prevents the "I just deleted the conversation I
+// was in the middle of" foot-gun.
+func (r *Router) cmdDelete(ctx context.Context, from, arg string) (string, error) {
+	arg = trimQuotes(strings.TrimSpace(arg))
+	if arg == "" {
+		return "usage: /delete <shortid>  (use /sessions to find the short-id; /clear if you want to reset the current session)", nil
+	}
+	target, err := r.findSessionForSender(ctx, from, arg)
+	if err != nil {
+		return err.Error(), nil //nolint:nilerr // legible chat text
+	}
+	current, _, _ := r.jidMap.Get(ctx, from) //nolint:errcheck // unknown-current is fine
+	if current == target.ID {
+		return "refusing to delete the current session — /clear first to move to a fresh one, then /delete this short-id.", nil
+	}
+	if err := r.store.Delete(ctx, target.ID); err != nil {
+		return "", fmt.Errorf("delete session: %w", err)
+	}
+	r.logger.Info("router.session_deleted",
+		slog.String("from", from),
+		slog.String("session_id", target.ID))
+	title := target.Title
+	if title == "" {
+		title = "(untitled)"
+	}
+	return fmt.Sprintf("deleted session %q.", title), nil
+}
+
+// findSessionForSender resolves a short-id (or full ID) to a
+// session summary owned by the sender. Refuses to return
+// sessions owned by anyone else — the scope-isolation invariant
+// /clear guarantees. Ambiguous short-id (matches >1 session)
+// returns a legible chat error; caller wraps as reply text.
+func (r *Router) findSessionForSender(ctx context.Context, from, needle string) (state.Summary, error) {
+	summaries, err := r.store.ListBySender(ctx, from, 0) // 0 = uncapped
+	if err != nil {
+		return state.Summary{}, fmt.Errorf("list sessions: %w", err)
+	}
+	var matches []state.Summary
+	for _, s := range summaries {
+		if strings.HasPrefix(s.ID, needle) {
+			matches = append(matches, s)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return state.Summary{}, fmt.Errorf("no session found for short-id %q (try /sessions to see the list)", needle)
+	case 1:
+		return matches[0], nil
+	default:
+		return state.Summary{}, fmt.Errorf("short-id %q is ambiguous (%d matches) — use more characters", needle, len(matches))
+	}
+}
+
+// shortSessionID returns the first 8 chars of a UUID for
+// human-facing addressing. 8 chars is enough to disambiguate
+// hundreds of sessions per sender without being unwieldy on a
+// phone screen.
+func shortSessionID(id string) string {
+	const short = 8
+	if len(id) <= short {
+		return id
+	}
+	return id[:short]
+}
+
+// trimQuotes strips a single pair of surrounding double quotes
+// from a string. Users typing /name "foo bar" on WhatsApp send
+// the literal quotes; without stripping the session title would
+// include them.
+func trimQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
 func (r *Router) cmdWhoami(ctx context.Context, from string) string {
@@ -673,6 +939,7 @@ func (r *Router) sessionFor(ctx context.Context, jid string) (*agent.Session, er
 		r.logger.Warn("router.stale_mapping", slog.String("jid", jid), slog.String("err", err.Error()))
 	}
 	sess := agent.NewSession("chat: " + jid)
+	sess.Sender = jid // enables /sessions to list this session for the sender later
 	if err := r.store.Save(ctx, sess); err != nil {
 		return nil, err
 	}
