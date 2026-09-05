@@ -125,6 +125,15 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 - `slsa.yml` example-verification comment referenced `v0.1.0` (a
   version that only comes after v0.0.999 per the project's
   monotonic +0.0.1 policy); corrected to `v0.0.1`.
+- **Quadlet restart policy** (`docker/rousseau-agent.container`) —
+  `Restart=on-failure` → `Restart=always`. whatsmeow exits cleanly
+  (`status=0`) when its WhatsApp session is displaced
+  (`StreamReplaced`, stream-end frame), which `on-failure` doesn't
+  match, so a displacement left the bridge dead until manual
+  restart. Now auto-recovers in ~10s. Rate-limited by
+  `StartLimitBurst=5` / `StartLimitIntervalSec=600` so a genuinely
+  broken image surfaces as `failed` in `systemctl status` rather
+  than spinning silently.
 
 ### Housekeeping
 
@@ -132,6 +141,14 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 - `docs/compatibility.md` documents the stability contract for
   `pkg/`, CLI flags, config schema, container tags, MCP protocol,
   providers, transports, metrics, and on-disk formats.
+- **`make deploy`** — one-command update pipeline for the Quadlet
+  daemon: rebuilds `localhost/rousseau-agent:local`, runs
+  `systemctl --user restart rousseau-agent.service`, polls for
+  `is-active`, then execs `rousseau version` inside the container
+  to confirm the new binary is live. Replaces the previous
+  three-step `make image && systemctl --user restart … && podman
+  exec … version` incantation. Podman-only; guards on the unit
+  being installed.
 
 ## [v0.0.1] — first tagged release
 
