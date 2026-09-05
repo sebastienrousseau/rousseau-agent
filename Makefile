@@ -1,6 +1,6 @@
 .PHONY: help setup build install test test-race lint vet vuln check clean tidy fmt bench fuzz \
         image image-base image-builder image-daemon image-distroless image-lite \
-        images quadlet-install quadlet-status container-check cover cover-html cover-gate
+        images quadlet-install quadlet-status deploy container-check cover cover-html cover-gate
 
 BIN         := bin/rousseau
 PKG         := ./...
@@ -138,6 +138,28 @@ quadlet-install: ## Install Quadlet + credential-watch units into ~/.config
 
 quadlet-status: ## Show status of both Quadlet units
 	@systemctl --user status rousseau-agent agent-builder --no-pager || true
+
+# Name of the generated systemd unit for the WhatsApp bridge. Override
+# if you renamed the Quadlet file to something other than
+# rousseau-agent.container.
+QUADLET_SERVICE ?= rousseau-agent.service
+
+deploy: image ## Rebuild rousseau-agent image and restart the Quadlet service (podman only)
+	@if [ "$(ENGINE)" != "podman" ]; then \
+		echo "deploy requires podman (ENGINE=$(ENGINE))"; exit 1; fi
+	@if ! systemctl --user cat $(QUADLET_SERVICE) >/dev/null 2>&1; then \
+		echo "deploy: $(QUADLET_SERVICE) is not installed — run 'make quadlet-install' first"; exit 1; fi
+	@echo "restarting $(QUADLET_SERVICE) ..."
+	@systemctl --user restart $(QUADLET_SERVICE)
+	@for i in 1 2 3 4 5; do \
+		if systemctl --user is-active --quiet $(QUADLET_SERVICE); then \
+			systemctl --user is-active $(QUADLET_SERVICE); \
+			$(ENGINE) exec rousseau-agent /usr/local/bin/rousseau version 2>/dev/null || true; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "deploy: $(QUADLET_SERVICE) did not become active — check 'podman logs rousseau-agent'"; exit 1
 
 container-check: ## Verify the host can run the hardened containers rootlessly
 	@bash docker/preflight.sh
