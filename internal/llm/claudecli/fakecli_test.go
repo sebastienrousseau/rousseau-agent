@@ -540,7 +540,7 @@ func TestClassifyLine_Table(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kind, delta, final, isResult := classifyLine(json.RawMessage(tc.line))
+			kind, delta, final, isResult, _ := classifyLine(json.RawMessage(tc.line))
 			assert.Equal(t, tc.kind, kind)
 			assert.Equal(t, tc.delta, delta)
 			assert.Equal(t, tc.isResult, isResult)
