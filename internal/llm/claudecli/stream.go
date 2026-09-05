@@ -145,6 +145,13 @@ func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, 
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	var final agent.Response
 	var haveResult bool
+	// lastResultErr captures a `type:"result"` line whose parseResult
+	// returned an error (is_error:true, or a malformed result JSON).
+	// Without this the caller sees the generic "stream ended without
+	// a result line" and has no way to know whether the CLI actually
+	// emitted a result the parser rejected. Preserved separately from
+	// haveResult so the happy path stays untouched.
+	var lastResultErr error
 
 	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
@@ -152,17 +159,23 @@ func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, 
 			continue
 		}
 		raw := append(json.RawMessage(nil), line...)
-		kind, delta, res, isResult := classifyLine(raw)
+		kind, delta, res, isResult, resultErr := classifyLine(raw)
 		events <- agent.StreamEvent{Kind: kind, Delta: delta, Raw: raw}
 		if isResult {
 			final = res
 			haveResult = true
+			lastResultErr = nil
+		} else if resultErr != nil {
+			lastResultErr = resultErr
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return agent.Response{}, fmt.Errorf("claudecli: read stream: %w", err)
 	}
 	if !haveResult {
+		if lastResultErr != nil {
+			return agent.Response{}, lastResultErr
+		}
 		return agent.Response{}, errors.New("claudecli: stream ended without a result line")
 	}
 	return final, nil
@@ -171,7 +184,15 @@ func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, 
 // classifyLine maps a single NDJSON envelope to a StreamEvent. It is
 // deliberately liberal: unknown types return StreamOther so callers can
 // still forward the raw payload.
-func classifyLine(raw json.RawMessage) (kind agent.StreamEventKind, delta string, final agent.Response, isResult bool) {
+//
+// The resultErr return carries the parseResult failure when the line
+// was a `type:"result"` envelope the parser rejected (is_error:true,
+// truncated JSON, etc). The caller in parseStream promotes this to a
+// terminal error when the stream ends without a successful result —
+// without it, a legitimate CLI-side error (bad --resume id, model
+// error, rate-limit) was masked by the generic "stream ended without
+// a result line".
+func classifyLine(raw json.RawMessage) (kind agent.StreamEventKind, delta string, final agent.Response, isResult bool, resultErr error) {
 	var head struct {
 		Type    string          `json:"type"`
 		Message json.RawMessage `json:"message"`
@@ -181,34 +202,34 @@ func classifyLine(raw json.RawMessage) (kind agent.StreamEventKind, delta string
 		} `json:"delta"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil {
-		return StreamOther, "", agent.Response{}, false
+		return StreamOther, "", agent.Response{}, false, nil
 	}
 	switch head.Type {
 	case "system":
-		return StreamStart, "", agent.Response{}, false
+		return StreamStart, "", agent.Response{}, false, nil
 	case "assistant":
 		if len(head.Message) > 0 {
 			if d, ok := extractTextDelta(head.Message); ok {
-				return StreamTextDelta, d, agent.Response{}, false
+				return StreamTextDelta, d, agent.Response{}, false, nil
 			}
 			if hasToolUse(head.Message) {
-				return StreamToolUse, "", agent.Response{}, false
+				return StreamToolUse, "", agent.Response{}, false, nil
 			}
 		}
 		if head.Delta.Type == "text_delta" && head.Delta.Text != "" {
-			return StreamTextDelta, head.Delta.Text, agent.Response{}, false
+			return StreamTextDelta, head.Delta.Text, agent.Response{}, false, nil
 		}
-		return StreamOther, "", agent.Response{}, false
+		return StreamOther, "", agent.Response{}, false, nil
 	case "user":
-		return StreamOther, "", agent.Response{}, false
+		return StreamOther, "", agent.Response{}, false, nil
 	case "result":
 		res, err := parseResult(raw)
 		if err != nil {
-			return StreamOther, "", agent.Response{}, false
+			return StreamOther, "", agent.Response{}, false, err
 		}
-		return StreamResult, "", res, true
+		return StreamResult, "", res, true, nil
 	default:
-		return StreamOther, "", agent.Response{}, false
+		return StreamOther, "", agent.Response{}, false, nil
 	}
 }
 
