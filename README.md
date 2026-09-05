@@ -676,6 +676,14 @@ image builds work under Docker (`make images ENGINE=docker`), but
 Quadlet, `UserNS=keep-id`, and the `pasta` network stack are podman
 features.
 
+After the initial install, ship a new build with `make deploy` —
+rebuilds the daemon image, restarts the Quadlet service, and confirms
+the new binary is live by execing `rousseau version` inside the
+container. Podman-only; refuses to run if the service is not installed.
+Prior `make build` alone only updated `./bin/rousseau` on the host and
+left the containerised daemon on the old image, which drifted silently
+until the next explicit image rebuild.
+
 ### Runtime posture
 
 Every line below is in `docker/rousseau-agent.container`.
