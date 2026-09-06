@@ -65,7 +65,7 @@ func TestTurn_RecordsReliabilitySamplesOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	samples := rec.get()
-	require.Len(t, samples, 3, "successful Turn must emit three samples: latency + safety turn + fault stratification")
+	require.Len(t, samples, 5, "successful Turn must emit five samples: latency + safety turn + fault stratification + tokens + tool-call count")
 
 	// Latency sample: consistency dimension, resource_cv_latency,
 	// value ≥ 0ms, bucketed + tagged by session id.
@@ -100,7 +100,7 @@ func TestTurn_RecordsSafetyZeroOnError(t *testing.T) {
 	require.ErrorIs(t, err, ErrEmptySession)
 
 	samples := rec.get()
-	require.Len(t, samples, 3, "failed Turn must still emit all three samples so the reliability window sees the failure")
+	require.Len(t, samples, 5, "failed Turn must still emit all samples so the reliability window sees the failure")
 
 	for _, s := range samples {
 		if s.SubMetric == "turn" {
@@ -141,13 +141,218 @@ func TestTurn_HandlesNilSession(t *testing.T) {
 	rec := &recordingRecorder{}
 	a := New(&stubProvider{}, tools.NewRegistry(), silentLogger(), Options{Reliability: rec})
 	assert.NotPanics(t, func() {
-		a.recordReliabilitySamples(nil, time.Now(), errors.New("boom"))
+		a.recordReliabilitySamples(nil, time.Now(), errors.New("boom"), nil, Message{})
 	})
 	// Samples still emitted with empty SessionID + Bucket.
 	samples := rec.get()
 	require.Len(t, samples, 3)
 	for _, s := range samples {
 		assert.Empty(t, s.SessionID, "nil session yields empty SessionID")
+	}
+}
+
+// -- turnStats accumulation -----------------------------------------
+
+// TestTurn_AccumulatesTokensAndToolCalls verifies the two new
+// Consistency C_res sub-metrics (tokens, tool_calls) are emitted
+// with values matching the actual per-turn accumulation across
+// every provider.Complete round-trip.
+func TestTurn_AccumulatesTokensAndToolCalls(t *testing.T) {
+	rec := &recordingRecorder{}
+	// Two provider round-trips: first triggers a tool call
+	// (StopToolUse with one tool_use content block), second
+	// completes the turn (StopEndTurn). Total tokens = 30+70 =
+	// 100 in + 20+40 = 60 out. Tool calls = 1.
+	registry := tools.NewRegistry()
+	require.NoError(t, registry.Register(&stubTool{name: "echo", out: "pong"}))
+	prov := &stubProvider{
+		responses: []Response{
+			{
+				Message: Message{
+					Role: RoleAssistant,
+					Content: []Content{
+						{Kind: ContentToolUse, ToolUse: &ToolUse{ID: "t1", Name: "echo", Input: []byte(`{"in":"ping"}`)}},
+					},
+				},
+				StopReason: StopToolUse,
+				Usage:      Usage{InputTokens: 30, OutputTokens: 20},
+			},
+			{
+				Message: Message{
+					Role:    RoleAssistant,
+					Content: []Content{{Kind: ContentText, Text: "done"}},
+				},
+				StopReason: StopEndTurn,
+				Usage:      Usage{InputTokens: 70, OutputTokens: 40},
+			},
+		},
+	}
+	a := New(prov, registry, silentLogger(), Options{Reliability: rec})
+	s := NewSession("t-tokens")
+	s.Append(NewUserText("go"))
+
+	_, err := a.Turn(context.Background(), s)
+	require.NoError(t, err)
+
+	var tokens, calls *reliability.Sample
+	for i := range rec.get() {
+		s := &rec.get()[i]
+		switch s.SubMetric {
+		case "resource_cv_tokens":
+			tokens = s
+		case "resource_cv_calls":
+			calls = s
+		}
+	}
+	require.NotNil(t, tokens)
+	require.NotNil(t, calls)
+	assert.Equal(t, 160.0, tokens.Value, "accumulator must sum input+output tokens across every round-trip")
+	assert.Equal(t, 1.0, calls.Value, "tool_use content blocks in a StopToolUse response count as tool calls")
+}
+
+// -- confidence elicitation ------------------------------------------
+
+func TestParseConfidence_TableDriven(t *testing.T) {
+	cases := []struct {
+		name  string
+		text  string
+		want  float64
+		found bool
+	}{
+		{"canonical form", "reply body\n<confidence>0.85</confidence>", 0.85, true},
+		{"missing tag", "reply body without tag", 0, false},
+		{"integer 1", "<confidence>1</confidence>", 1.0, true},
+		{"integer 0", "<confidence>0</confidence>", 0.0, true},
+		{"decimal without leading zero", "<confidence>.95</confidence>", 0.95, true},
+		{"whitespace tolerated", "<confidence>  0.5  </confidence>", 0.5, true},
+		{"malformed value", "<confidence>abc</confidence>", 0, false},
+		{"multiple tags — last wins", "<confidence>0.3</confidence> then <confidence>0.9</confidence>", 0.9, true},
+		{"clamped above 1", "<confidence>1.5</confidence>", 1.0, true},
+		{"clamped below 0", "<confidence>-0.3</confidence>", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseConfidence(tc.text)
+			assert.Equal(t, tc.found, ok)
+			if tc.found {
+				assert.InDelta(t, tc.want, got, 1e-9)
+			}
+		})
+	}
+}
+
+func TestFinalText_ConcatenatesTextBlocks(t *testing.T) {
+	m := Message{
+		Role: RoleAssistant,
+		Content: []Content{
+			{Kind: ContentText, Text: "first"},
+			{Kind: ContentToolUse, ToolUse: &ToolUse{Name: "x"}},
+			{Kind: ContentText, Text: "second"},
+		},
+	}
+	assert.Equal(t, "first\nsecond", finalText(m))
+}
+
+func TestFinalText_EmptyMessage(t *testing.T) {
+	assert.Empty(t, finalText(Message{}))
+}
+
+func TestTurn_ConfidenceElicitationAppendsPromptAndEmitsPair(t *testing.T) {
+	rec := &recordingRecorder{}
+	prov := &stubProvider{
+		responses: []Response{
+			{
+				Message: Message{
+					Role: RoleAssistant,
+					Content: []Content{
+						{Kind: ContentText, Text: "here you go\n<confidence>0.75</confidence>"},
+					},
+				},
+				StopReason: StopEndTurn,
+			},
+		},
+	}
+	a := New(prov, tools.NewRegistry(), silentLogger(), Options{
+		Reliability:                 rec,
+		EnableConfidenceElicitation: true,
+	})
+	s := NewSession("conf-test")
+	s.Append(NewUserText("go"))
+	_, err := a.Turn(context.Background(), s)
+	require.NoError(t, err)
+
+	// A pair sample must have fired with value=0.75 and outcome=1.
+	var pair *reliability.Sample
+	for i := range rec.get() {
+		if rec.get()[i].SubMetric == "pair" {
+			pair = &rec.get()[i]
+			break
+		}
+	}
+	require.NotNil(t, pair, "confidence elicitation on + <confidence> tag present must emit a Predictability pair sample")
+	assert.Equal(t, reliability.DimPredictability, pair.Dimension)
+	assert.InDelta(t, 0.75, pair.Value, 1e-9)
+	assert.Equal(t, "1", pair.Metadata["outcome"], "clean turn = outcome 1")
+}
+
+func TestTurn_ConfidenceElicitationOffDoesNotEmitPair(t *testing.T) {
+	rec := &recordingRecorder{}
+	prov := &stubProvider{
+		responses: []Response{
+			{
+				Message: Message{
+					Role: RoleAssistant,
+					Content: []Content{
+						{Kind: ContentText, Text: "hi <confidence>0.9</confidence>"},
+					},
+				},
+				StopReason: StopEndTurn,
+			},
+		},
+	}
+	// EnableConfidenceElicitation left false — even if the model
+	// happens to emit the tag (verbatim from a prior conversation
+	// / hardcoded), we must NOT emit a pair sample.
+	a := New(prov, tools.NewRegistry(), silentLogger(), Options{Reliability: rec})
+	s := NewSession("no-conf")
+	s.Append(NewUserText("go"))
+	_, err := a.Turn(context.Background(), s)
+	require.NoError(t, err)
+
+	for _, s := range rec.get() {
+		assert.NotEqual(t, "pair", s.SubMetric,
+			"pair sample must only fire when EnableConfidenceElicitation is true")
+	}
+}
+
+func TestTurn_ConfidenceElicitationMissingTagIsSilent(t *testing.T) {
+	// Model didn't emit the tag despite the instruction → no
+	// pair sample, no error. Some turns (tool-heavy, aborted)
+	// legitimately don't reach the closing instruction.
+	rec := &recordingRecorder{}
+	prov := &stubProvider{
+		responses: []Response{
+			{
+				Message: Message{
+					Role:    RoleAssistant,
+					Content: []Content{{Kind: ContentText, Text: "done"}},
+				},
+				StopReason: StopEndTurn,
+			},
+		},
+	}
+	a := New(prov, tools.NewRegistry(), silentLogger(), Options{
+		Reliability:                 rec,
+		EnableConfidenceElicitation: true,
+	})
+	s := NewSession("no-tag")
+	s.Append(NewUserText("go"))
+	_, err := a.Turn(context.Background(), s)
+	require.NoError(t, err)
+
+	for _, s := range rec.get() {
+		assert.NotEqual(t, "pair", s.SubMetric,
+			"missing tag means no pair sample — legitimate for tool-heavy turns")
 	}
 }
 

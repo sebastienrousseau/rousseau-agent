@@ -158,29 +158,42 @@ samples" so nobody misreads "n/a" as "we tried and failed."
 
 ### Pending in follow-on commits
 
-1. **Live wiring** — instrument `agent.Turn` (record latency,
-   tokens, tool_calls into resource_cv_*), `agent.Approver`
-   (record safety `turn` and `violation` samples), and the
-   transport router (record `fault` samples on `handler_failed`
-   with fault stratification). One commit; touches
-   `internal/agent/`, `internal/agent/approval/`,
-   `internal/transport/`.
-2. **Persistent store** — SQLite `reliability_samples` table so
-   restarts don't lose data. Rolling 30-day retention; older
-   samples pruned by an existing cron. Same commit as live wiring.
-3. **Prometheus exporter** — histogram + gauge metrics per the
-   naming convention in this doc (`rousseau_agent_consistency_score`,
-   `rousseau_agent_confidence_score{outcome="success|failure"}`
-   etc.). Scrape-ready for the Grafana panel a compliance-tier
-   customer will demand.
-4. **Confidence elicitation** — one-shot `<confidence>` prompt
-   addendum to the system prompt so `pair` samples for Predictability
-   have a real signal. Alternative: log-prob capture when the
-   provider exposes it.
-5. **Synthetic runs (`rousseau eval`)** — protocol-perturbation
+1. **Synthetic runs (`rousseau eval`)** — protocol-perturbation
    harness for prompt robustness + outcome consistency (K=5 repeats
    of canned tasks). Turns the "partial" dimensions into "fully
    measured" via a nightly cron.
+
+### Shipped since first release of this doc
+
+1. **Live wiring** ✅ — `agent.Turn` records latency + tokens +
+   tool-call count into `resource_cv_*`; `RecordingApprover`
+   emits Safety `violation` samples with severity metadata on
+   every denial; `agent.Turn` also emits Robustness `fault`
+   samples with an upstream-fault stratification heuristic
+   (timeout / EOF / refused / deadline / provider: /
+   subprocess / exit status).
+2. **Persistent store** ✅ — SQLite `reliability_samples` table
+   with fire-and-forget inserts, `LoadSince` for CLI reads,
+   `PruneBefore` for retention. Postgres port ships as a
+   drop-in twin with the same interface — daemon assembly
+   picks the driver automatically.
+3. **Prometheus exporter** ✅ — `reliability.PrometheusRecorder`
+   registers against the existing `observability.Registry` so
+   the running daemon's `/metrics` endpoint scrapes the full
+   reliability surface without any operator config change.
+   Metric names follow the naming convention above; missing
+   metadata defaults to `unknown` (never empty labels).
+4. **Confidence elicitation** ✅ — opt-in via
+   `agent.enable_confidence_elicitation: true` in `config.yaml`.
+   Appends a terse `<confidence>0.NN</confidence>` instruction
+   to the system prompt; `agent.Turn` parses the tag, clamps to
+   [0,1], and emits a Predictability `pair` sample paired with
+   the outcome. Missing tag is silently skipped (some turns
+   legitimately don't reach the closing instruction).
+5. **Retention cron** ✅ — `reliability.RunPruner` runs in the
+   daemon at every 6 hours (defaults), prunes samples older
+   than 30 days, silent-on-zero-rows so healthy daemons don't
+   spam logs.
 
 ## Prometheus metric naming (reference)
 

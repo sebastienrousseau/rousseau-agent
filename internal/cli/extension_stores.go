@@ -212,16 +212,7 @@ func openReliabilitySampleStore(ctx context.Context, store SearchableStore, logg
 	case *sqlitestore.Store:
 		return sqlitestore.NewReliabilitySampleStore(ctx, s, logger)
 	case *pgstore.Store:
-		// Postgres port pending — return nil rather than an error
-		// so a Postgres deployment still boots with in-memory-only
-		// reliability data.
-		_ = s
-		if logger != nil {
-			logger.Info("reliability.postgres_pending",
-				slog.String("hint", "postgres reliability_samples port ships in a follow-on wave; using in-memory recorder only"),
-			)
-		}
-		return nil, nil
+		return pgstore.NewReliabilitySampleStore(ctx, s, logger)
 	default:
 		return nil, errors.New("cli: unknown store type for reliability samples")
 	}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,11 +83,29 @@ type Options struct {
 	//   - resource_cv_calls (Consistency): tool-call count per turn.
 	//   - turn (Safety): 1 when the turn completed without a
 	//     harmful-tool denial, 0 otherwise.
+	//   - fault (Robustness): 1/0 outcome stratified by whether an
+	//     upstream fault was observed.
+	//   - pair (Predictability): (confidence, outcome) when
+	//     EnableConfidenceElicitation is true and the model emitted
+	//     a <confidence>0.XX</confidence> tag.
 	//
 	// Nil recorder means no telemetry (NopRecorder). Wired by the
 	// daemon assembly to a [reliability.MultiRecorder] fanning to
 	// the process-scoped Aggregator + the SQLite persistent store.
 	Reliability reliability.Recorder
+	// EnableConfidenceElicitation appends a short instruction to the
+	// system prompt asking the model to close every turn with a
+	// <confidence>0.XX</confidence> tag. Turn parses the value,
+	// pairs it with the outcome (success = end_turn without error,
+	// failure = anything else), and emits a Predictability "pair"
+	// sample. The Brier score aggregator in package reliability
+	// consumes these pairs.
+	//
+	// Off by default because it costs a few tokens per turn and
+	// isn't useful without a running reliability collector. Turn
+	// on when you want Predictability numbers in `rousseau
+	// reliability`.
+	EnableConfidenceElicitation bool
 }
 
 // CostRecorder is the seam the agent loop uses to persist per-call
@@ -155,10 +175,23 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	start := time.Now()
 	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
-	msg, err := a.turn(ctx, s)
+	stats := &turnStats{}
+	msg, err := a.turnWithStats(ctx, s, stats)
 	a.emitTerminal(ctx, s, start, err)
-	a.recordReliabilitySamples(s, start, err)
+	a.recordReliabilitySamples(s, start, err, stats, msg)
 	return msg, err
+}
+
+// turnStats accumulates per-turn counters the outer Turn wants to
+// record after the loop returns — tokens across every provider
+// round-trip, tool calls attempted (allowed OR denied), iteration
+// count. Kept simple: no mutex because turn() is single-goroutine.
+// Nil is treated as "don't accumulate" so callers who never look
+// at stats can pass nil safely.
+type turnStats struct {
+	inputTokens  int
+	outputTokens int
+	toolCalls    int
 }
 
 // recordReliabilitySamples fires one Sample per dimension the agent
@@ -181,7 +214,7 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 // instrumentation (provider.Complete, tool dispatch, confidence
 // prompt) — this method only records what Turn can see at the
 // outer bracket without touching the inner loop.
-func (a *Agent) recordReliabilitySamples(s *Session, start time.Time, turnErr error) {
+func (a *Agent) recordReliabilitySamples(s *Session, start time.Time, turnErr error, stats *turnStats, final Message) {
 	rec := a.opts.Reliability
 	if rec == nil {
 		return
@@ -232,6 +265,69 @@ func (a *Agent) recordReliabilitySamples(s *Session, start time.Time, turnErr er
 			"fault": faultObservedFromError(turnErr),
 		},
 	})
+	// Consistency C_res sub-metrics: token totals + tool-call
+	// count per turn, bucketed by session so cross-turn CV
+	// within a conversation rolls up. Zero values still emitted
+	// so the histograms have observations even on trivial turns
+	// (the CV computation ignores zero-mean buckets anyway).
+	if stats != nil {
+		tokens := float64(stats.inputTokens + stats.outputTokens)
+		rec.Record(reliability.Sample{
+			At:        now,
+			Dimension: reliability.DimConsistency,
+			SubMetric: "resource_cv_tokens",
+			Value:     tokens,
+			SessionID: sessID,
+			Bucket:    sessID,
+		})
+		rec.Record(reliability.Sample{
+			At:        now,
+			Dimension: reliability.DimConsistency,
+			SubMetric: "resource_cv_calls",
+			Value:     float64(stats.toolCalls),
+			SessionID: sessID,
+			Bucket:    sessID,
+		})
+	}
+	// Predictability pair sample when confidence elicitation is on
+	// AND the model actually emitted the tag. A missing tag is not
+	// an error — some turns are aborted / tool-heavy and never
+	// reach the closing instruction. Aggregator's Brier/ECE/AUROC
+	// simply see fewer pairs.
+	if a.opts.EnableConfidenceElicitation {
+		if conf, ok := parseConfidence(finalText(final)); ok {
+			outcome := "1"
+			if turnErr != nil {
+				outcome = "0"
+			}
+			rec.Record(reliability.Sample{
+				At:        now,
+				Dimension: reliability.DimPredictability,
+				SubMetric: "pair",
+				Value:     conf,
+				SessionID: sessID,
+				Metadata: map[string]string{
+					"outcome": outcome,
+				},
+			})
+		}
+	}
+}
+
+// finalText concatenates the ContentText blocks of a message into
+// one string so parseConfidence has a single-shot input regardless
+// of how the model split its reply across content blocks.
+func finalText(m Message) string {
+	var b strings.Builder
+	for _, c := range m.Content {
+		if c.Kind == ContentText && c.Text != "" {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
 }
 
 // faultObservedFromError classifies whether the turn's terminal
@@ -271,9 +367,23 @@ func faultObservedFromError(err error) string {
 	return "false"
 }
 
-// turn is Turn's body, split out so Turn can bracket it with the
-// progress turn_started / terminal pair on every exit path.
+// turn is the legacy body signature (nil stats). Retained for
+// call sites that don't need per-turn accumulation — internal
+// callers should prefer turnWithStats.
 func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
+	return a.turnWithStats(ctx, s, nil)
+}
+
+// turnWithStats is Turn's body, split out so Turn can bracket it
+// with the progress turn_started / terminal pair on every exit
+// path AND accumulate per-turn reliability counters (tokens,
+// tool-call count) that Turn emits as Consistency resource_cv_*
+// samples after the loop returns.
+//
+// stats may be nil — most callers pass nil; the outer Turn passes
+// a fresh struct. The nil check is per-callsite for zero
+// per-iteration overhead when accumulation is off.
+func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats) (Message, error) {
 	if len(s.Messages) == 0 {
 		return Message{}, ErrEmptySession
 	}
@@ -315,6 +425,25 @@ func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
 		if err != nil {
 			observability.ProviderErrors.WithLabelValues(a.provider.Name(), "other").Inc()
 			return Message{}, fmt.Errorf("provider: %w", err)
+		}
+		// Accumulate per-turn resource counters for Consistency
+		// C_res: token totals and tool-call count. Silent no-op
+		// when stats is nil so the legacy turn() call site pays
+		// nothing extra.
+		if stats != nil {
+			stats.inputTokens += resp.Usage.InputTokens
+			stats.outputTokens += resp.Usage.OutputTokens
+			// A response with StopReason == StopToolUse triggered
+			// at least one tool call — count it here so an
+			// aborted-mid-tool turn still records the call
+			// attempt.
+			if resp.StopReason == StopToolUse {
+				for _, c := range resp.Message.Content {
+					if c.Kind == ContentToolUse {
+						stats.toolCalls++
+					}
+				}
+			}
 		}
 
 		// Record cost telemetry — best effort. Nil recorder disables.
@@ -372,7 +501,7 @@ func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
 // slow providers that block will delay the model round-trip and are
 // caller-visible.
 func (a *Agent) systemPrompt(ctx context.Context, s *Session) string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if a.opts.SystemPrompt != "" {
 		parts = append(parts, a.opts.SystemPrompt)
 	}
@@ -386,10 +515,54 @@ func (a *Agent) systemPrompt(ctx context.Context, s *Session) string {
 			parts = append(parts, x)
 		}
 	}
+	if a.opts.EnableConfidenceElicitation {
+		parts = append(parts, confidencePromptAddendum)
+	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// confidencePromptAddendum is the one-shot instruction that turns
+// on the Predictability "pair" signal. Deliberately terse — a few
+// tokens per turn is worth the closed-loop calibration metric,
+// but not a paragraph. Post-hoc self-assessment is the paper's
+// (arXiv:2602.16666 §3.3) recommended elicitation shape:
+// evaluate AFTER the task, not before.
+const confidencePromptAddendum = `Close every reply with a single line containing your calibrated confidence that the response satisfies the user's request, in the exact form: <confidence>0.NN</confidence> where 0.00 = certain-wrong and 1.00 = certain-correct. The tag is machine-parsed for reliability metrics; do not add commentary before or after it. Do not mention the tag to the user.`
+
+// confidenceRegex extracts the value inside <confidence>0.NN</confidence>.
+// Tolerates spaces around the number, accepts 0.9 / 0.95 / 1 / 0 /
+// .95, and permits a leading minus so a mis-calibrated model
+// emitting "-0.3" still parses (the clamp in parseConfidence
+// normalises to 0 — better than silently dropping the sample).
+var confidenceRegex = regexp.MustCompile(`<confidence>\s*(-?[0-9]*\.?[0-9]+)\s*</confidence>`)
+
+// parseConfidence returns the last <confidence>0.NN</confidence>
+// value found in text, clamped to [0,1]. Returns (0, false) when
+// no tag is present or the value is malformed. "Last" wins so a
+// model that opens with a placeholder and closes with the real
+// value still calibrates correctly.
+func parseConfidence(text string) (float64, bool) {
+	matches := confidenceRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return 0, false
+	}
+	last := matches[len(matches)-1][1]
+	v, err := strconv.ParseFloat(last, 64)
+	if err != nil {
+		return 0, false
+	}
+	// Clamp to [0,1] — the aggregator's ECE/AUROC/Brier
+	// implementations assume that domain.
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	return v, true
 }
 
 func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Content, error) {
