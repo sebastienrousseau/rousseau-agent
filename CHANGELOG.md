@@ -135,6 +135,31 @@ Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
   broken image surfaces as `failed` in `systemctl status` rather
   than spinning silently.
 
+### Licensing
+
+- **Core relicensed to
+  [FSL-1.1-Apache-2.0](https://fsl.software/FSL-1.1-Apache-2.0.template.md)**
+  (Functional Source License, Version 1.1, Apache 2.0 Future
+  License). Each version automatically transitions to Apache 2.0
+  on the second anniversary of its release — the same fair-source
+  pattern Sentry adopted. Rationale: block the hyperscaler-fork
+  attack that forced HashiCorp / Elastic / MongoDB / Sentry to
+  relicense under commercial pressure. Migration executed at
+  ~1 GitHub star, when the cost is negligible.
+
+  Versions v0.0.3 and earlier remain under the original Apache-2.0
+  OR MIT dual license. `LICENSE-APACHE` and `LICENSE-MIT` are
+  preserved in the tree as evidence of those historical terms.
+  New versions ship under FSL-1.1-Apache-2.0 (see `LICENSE`). Full
+  reasoning in `docs/LICENSE-RATIONALE.md`.
+- **Contributor License Agreement adopted (Developer Certificate
+  of Origin).** Every commit must carry a `Signed-off-by:` trailer
+  (`git commit -s`). CI enforces via
+  `.github/workflows/dco.yml`; the check emits paste-ready
+  remediation commands on failure. Full text of the DCO
+  attestation, corporate-contribution guidance, and rationale for
+  DCO over a copyright-assignment CLA in `CLA.md`.
+
 ### Housekeeping
 
 - `.gitignore` excludes `test/benchmarks/results/`.

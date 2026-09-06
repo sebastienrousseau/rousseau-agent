@@ -1,22 +1,32 @@
-# Licensing rationale — proposal, pending decision
+# Licensing rationale
 
-**Status: PROPOSAL, 2026-09-06 — not yet adopted.** The core is
-currently dual-licensed Apache-2.0 OR MIT (see `LICENSE-APACHE`
-and `LICENSE-MIT`). This document lays out the case for tightening
-that to a Fair Source / delayed-open-source license before there
-is enough distribution to make the migration painful. **Do not
-change `LICENSE` / `LICENSE-APACHE` / `LICENSE-MIT` without
-explicit sign-off from the copyright holder.**
+**Status: ADOPTED, 2026-09-06.** The core is now licensed under
+[FSL-1.1-Apache-2.0](../LICENSE). Prior versions (v0.0.3 and
+earlier) remain under their original Apache-2.0 OR MIT dual license
+— the historical `LICENSE-APACHE` and `LICENSE-MIT` files stay in
+the tree as evidence of those terms. Contributions now require
+signing off under the Developer Certificate of Origin per
+[`CLA.md`](../CLA.md).
 
-## Current state (2026-09-06)
+This document records the reasoning that led to the choice so
+future contributors can understand it without re-litigating.
 
-- Core: Apache-2.0 OR MIT, at the user's option.
-- Copyright: Sebastien Rousseau.
-- Contributor Licence Agreement: **none in place**.
-- Enterprise Edition surfaces (SSO, audit egress, RBAC + OPA) are
-  runtime-gated by an offline Ed25519-signed license key. The
-  Enterprise Edition binary IS the same binary as Community —
-  features are toggled by the license, not compiled in / out.
+## Current state (from 2026-09-06)
+
+- **Core:** FSL-1.1-Apache-2.0 (auto-transitions to Apache-2.0 on
+  the second anniversary of each release — the fair-source pattern
+  used by Sentry).
+- **Historical:** v0.0.3 and earlier are under Apache-2.0 OR MIT.
+  `LICENSE-APACHE` and `LICENSE-MIT` are preserved in the tree.
+- **Copyright:** Sebastien Rousseau.
+- **Contributor License:** Developer Certificate of Origin (DCO)
+  via `Signed-off-by:` trailer on every commit. CI enforces via
+  `.github/workflows/dco.yml`. See [`CLA.md`](../CLA.md).
+- **Enterprise Edition surfaces** (SSO, audit egress, RBAC + OPA)
+  remain runtime-gated by an offline Ed25519-signed license key.
+  The Enterprise Edition binary IS the same binary as Community —
+  features are toggled by the license, not compiled in / out. The
+  license change does not affect the enterprise-tier design.
 
 ## The risk
 
@@ -155,19 +165,22 @@ all contributions.** Rationale:
 6. **Optionally engage counsel** for a $500–$1,500 review. Fossa
    offers a fixed-price review path.
 
-## Open questions for the maintainer
+## Open questions — resolved 2026-09-06
 
-1. Are you willing to accept the two-year commercial-use
-   restriction in exchange for the anti-fork protection?
-2. Have any contributors already committed under Apache-2.0 / MIT
-   who would need to sign a CLA retroactively? (git log audit
-   required; today the answer appears to be "no external
-   contributors yet" per §7 of the rating.)
-3. Do you have counsel access, or does the maintainer prefer a
-   Fossa-style flat-fee review?
-4. Do you want to defer this to Phase 1 (after positioning reset)
-   or do it in Phase 0 so the relicensing announcement can be
-   part of the "we're serious about enterprise" narrative?
+1. **Accept the two-year commercial-use restriction?** Yes.
+   Adopted. Rationale: at present distribution (~1 star, solo
+   contributor), the migration cost is negligible; the anti-fork
+   protection compounds as distribution grows.
+2. **Retro-sign existing contributors?** Not needed. Git log
+   audit shows the sole non-`sebastienrousseau` author entries
+   are dependabot merges of `go.mod` bumps, which carry no
+   copyrightable expression.
+3. **Legal review?** Pending — Fossa-style flat-fee review remains
+   on the plan. Adoption ships now; the review confirms rather
+   than gates.
+4. **Phase 0 or Phase 1?** Executed in Phase 0 so the enterprise-
+   grade posture is coherent from the moment the repositioning
+   docs land.
 
 ## Precedents
 
