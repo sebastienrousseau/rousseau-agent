@@ -154,9 +154,55 @@ Both satisfy `agent.SkillsProvider` (`SystemAppendix(*Session) string`)
 so the wiring layer can swap implementations behind a config toggle
 without changes to `agent.Agent`.
 
-Construct via `skills.NewSpecProviderFromDir(dir)`, or
-`skills.NewSpecProvider(discovered)` if the caller has already
-gathered skills from multiple scopes.
+## Operator config — switching modes
+
+The daemon assembly picks the provider at boot from a single
+config key, `agent.skills_mode`:
+
+```yaml
+agent:
+  skills_dir: ~/.rousseau/skills   # or wherever your skills live
+  skills_mode: spec                # "" | "legacy" | "spec"
+                                   # default: legacy (unchanged
+                                   # from pre-Phase-2.1)
+```
+
+Values:
+
+- **`""` or `"legacy"`** — the default. Scans `skills_dir`
+  non-recursively for `*.md` files; each file's `triggers: [...]`
+  frontmatter drives keyword activation. This is the pre-Phase-2.1
+  behaviour; existing installations keep working without any
+  config change.
+- **`"spec"`** — the three-tier progressive-disclosure loader.
+  Scans `skills_dir` for per-skill subdirectories with `SKILL.md`;
+  emits only the tier-1 catalog into the system prompt; leaves
+  bodies for the model to read on demand.
+
+The legacy signed-bundle path (`agent.skill_bundles.dir`) is a
+legacy-mode concept only. When `skills_mode: spec` is set with a
+non-empty `skill_bundles.dir`, the daemon logs a single WARN
+(`skills.spec_ignores_bundles`) and continues without loading
+the bundles. Spec-mode signed-skill support ships via
+`metadata.x-rousseau-signature` in a subsequent wave.
+
+**Migration path.** Set `skills_mode: spec` in a non-production
+environment first. Convert each flat `<name>.md` into a directory
+containing `SKILL.md` (see below). Once all skills are converted,
+flip production. The two modes cannot mix within a single daemon.
+
+## Constructors (Go API)
+
+- **`skills.NewSpecProviderFromDir(dir)`** — the one-scope common
+  case. Used by the daemon assembly when `skills_mode: spec`.
+- **`skills.NewSpecProvider(discovered)`** — for callers that
+  gather skills from multiple scopes (`.rousseau/skills/`,
+  `.agents/skills/`, `~/.agents/skills/`) and pass the combined
+  slice.
+- **`skills.DiscoverSpec(root, DiscoverOptions{})`** — the
+  underlying walker; use directly when you want the
+  `OnInvalid` callback (surfaces per-skill parse / validation
+  errors that the default silent-skip suppresses).
 
 ## Migration from the legacy flat-file model
 

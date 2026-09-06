@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
@@ -18,26 +19,76 @@ import (
 // returned provider becomes a no-op) and adapts them to the agent's
 // SkillsProvider seam.
 //
-// Two sources compose:
+// The loader branches on cfg.Agent.SkillsMode:
 //
-//   - Plain markdown skills (agent.skills_dir) — the OSS default;
-//     loaded unconditionally, no licence gate. Optional SSH-based
-//     signature verification via [skills.LoadVerified] follows a
-//     separate config path (unchanged by this PR).
-//   - Signed bundles (agent.skill_bundles.dir) — enterprise-only;
-//     loaded when checker unlocks [license.FeatureGovernanceAdvanced]
-//     AND the operator supplied trusted publisher keys. Verified
-//     bundles append to the plain-markdown set; unverified bundles
-//     are silently dropped (WARN or ERROR log per Strict flag).
+//   - "" or "legacy" (default) — the pre-Phase-2.1 flat-file model.
+//     SkillsDir is scanned non-recursively for *.md; each file's
+//     triggers: keyword list drives activation; every activated
+//     body is spliced into the system prompt. Signed bundles
+//     (agent.skill_bundles) append to this set when licensed.
+//   - "spec" — the agentskills.io three-tier progressive-disclosure
+//     model (see internal/skills/spec.go). SkillsDir is walked for
+//     per-skill subdirectories containing SKILL.md; only the tier-1
+//     catalog (name + description) is injected into the system
+//     prompt; bodies are read by the model on demand.
 //
-// A missing licence → bundles ignored with a single INFO log so
-// operators see "you configured signed bundles but they're inert".
+// Bundle-mode skills are legacy-only for now: a spec-mode config
+// with skill_bundles.dir set logs a single WARN pointing to the
+// planned x-rousseau-signature verification path and continues
+// without loading the bundles.
+//
+// Returns (nil, nil) when NEITHER source is configured, matching
+// the pre-Phase-2.1 caller contract that a nil provider means
+// "no skills at all" — the daemon wiring uses this to decide
+// whether to plumb a SkillsProvider through agent.Options.
 func buildSkillsProvider(opts *Options, checker license.Checker) (agent.SkillsProvider, error) {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	dir := resolveSkillsDir(opts)
+	mode := skillsMode(opts.Config.Agent.SkillsMode)
+	bundleCfg := opts.Config.Agent.SkillBundles
+
+	// No source configured at all — return (nil, nil) so the daemon
+	// wiring skips the SkillsProvider option entirely.
+	if dir == "" && bundleCfg.Dir == "" {
+		return nil, nil
+	}
+
+	if mode == skillsModeSpec {
+		return buildSpecSkillsProvider(dir, bundleCfg, logger)
+	}
+	return buildLegacySkillsProvider(dir, bundleCfg, checker, logger)
+}
+
+// skillsMode enum keeps the string-comparison in one place so any
+// future value ("spec-v2", "hybrid") stays typo-proof at the
+// callsite.
+type skillsModeValue int
+
+const (
+	skillsModeLegacy skillsModeValue = iota
+	skillsModeSpec
+)
+
+// skillsMode normalises the operator's config string. Empty and
+// "legacy" both map to the legacy loader — the same three-state
+// contract every other rousseau enum uses ("" ≡ default).
+func skillsMode(s string) skillsModeValue {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "spec":
+		return skillsModeSpec
+	default:
+		return skillsModeLegacy
+	}
+}
+
+// buildLegacySkillsProvider preserves the pre-Phase-2.1 flat-file
+// behaviour: skills.Load reads *.md non-recursively, signed
+// bundles append when licensed. Extracted so the branching in
+// buildSkillsProvider stays legible.
+func buildLegacySkillsProvider(dir string, bundleCfg config.SkillBundlesConfig, checker license.Checker, logger *slog.Logger) (agent.SkillsProvider, error) {
 	var plain []skills.Skill
 	if dir != "" {
 		loaded, err := skills.Load(dir)
@@ -47,25 +98,46 @@ func buildSkillsProvider(opts *Options, checker license.Checker) (agent.SkillsPr
 		plain = loaded
 	}
 
-	bundleCfg := opts.Config.Agent.SkillBundles
 	bundles, err := loadSignedBundlesIfLicensed(bundleCfg, checker, logger)
 	if err != nil {
 		return nil, err
 	}
 
-	// Return a nil provider ONLY when no source was
-	// configured — matches the pre-bundles behaviour where a
-	// configured-but-empty skills_dir still produced a
-	// (no-op) Provider. Callers rely on this distinction
-	// when deciding whether to plumb the SkillsProvider
-	// through agent.Options.
-	if dir == "" && bundleCfg.Dir == "" {
-		return nil, nil
-	}
 	combined := make([]skills.Skill, 0, len(plain)+len(bundles))
 	combined = append(combined, plain...)
 	combined = append(combined, bundles...)
 	return skills.NewProvider(combined), nil
+}
+
+// buildSpecSkillsProvider drives the agentskills.io three-tier
+// loader against SkillsDir. Signed-bundle configuration is
+// currently a legacy-only concept; when the operator sets it in
+// spec mode, log a single WARN pointing to the planned
+// metadata.x-rousseau-signature verification path and continue
+// without bundles rather than silently ignoring them.
+func buildSpecSkillsProvider(dir string, bundleCfg config.SkillBundlesConfig, logger *slog.Logger) (agent.SkillsProvider, error) {
+	if bundleCfg.Dir != "" {
+		logger.Warn("skills.spec_ignores_bundles",
+			slog.String("bundles_dir", bundleCfg.Dir),
+			slog.String("hint", "signed spec-mode skills use metadata.x-rousseau-signature (planned); the legacy skill_bundles path is not consulted in spec mode"),
+		)
+	}
+	if dir == "" {
+		// No SkillsDir but SkillBundles was set — spec mode has
+		// nothing to load. Return an empty spec provider so the
+		// system-prompt catalog stays valid (empty <available_skills>
+		// = no injection at all per Catalog's contract).
+		return skills.NewSpecProvider(nil), nil
+	}
+	provider, err := skills.NewSpecProviderFromDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("skills.spec_mode",
+		slog.String("dir", dir),
+		slog.Int("discovered", len(provider.Skills())),
+	)
+	return provider, nil
 }
 
 // loadSignedBundlesIfLicensed returns verified signed skills or

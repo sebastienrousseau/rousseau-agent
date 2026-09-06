@@ -722,11 +722,33 @@ type AgentConfig struct {
 	Approver      ApproverConfig    `mapstructure:"approver"`
 	Compression   CompressionConfig `mapstructure:"compression"`
 	SkillsDir     string            `mapstructure:"skills_dir"`
+	// SkillsMode selects the skills loader. Two values today:
+	//
+	//   "" or "legacy" (default) — the pre-Phase-2.1 flat-file
+	//     format. SkillsDir is scanned non-recursively for *.md
+	//     files; each file's `triggers: [...]` frontmatter drives
+	//     keyword activation. Kept as default for backwards
+	//     compatibility while callers migrate their skill files.
+	//
+	//   "spec" — the agentskills.io three-tier progressive-
+	//     disclosure model. SkillsDir is walked for subdirectories
+	//     containing SKILL.md; each skill's name + description are
+	//     injected as a <available_skills> catalog into the system
+	//     prompt, and the model loads bodies lazily via its Read
+	//     tool on demand. Roughly 90-95% token reduction on
+	//     skills-heavy installations. See docs/skills.md for the
+	//     migration guide.
+	//
+	// SkillBundles (enterprise) is currently legacy-only; a
+	// spec-mode bundle path lands with the metadata.x-rousseau-
+	// signature verification in a subsequent commit.
+	SkillsMode string `mapstructure:"skills_mode"`
 	// SkillBundles configures the enterprise-only
 	// cryptographically-signed skill bundle loader (see
 	// internal/skills/bundle). Zero value leaves the loader
 	// off — plain-markdown SkillsDir behaviour is unchanged.
-	// Requires FeatureGovernanceAdvanced.
+	// Requires FeatureGovernanceAdvanced. Legacy-mode only for
+	// now; spec-mode ignores this with a WARN log.
 	SkillBundles SkillBundlesConfig `mapstructure:"skill_bundles"`
 }
 
