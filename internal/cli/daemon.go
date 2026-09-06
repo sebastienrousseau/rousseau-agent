@@ -19,6 +19,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
@@ -269,10 +270,19 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, fmt.Errorf("cli: open reliability store: %w", err)
 	}
-	var reliabilityRecorder reliability.Recorder = reliabilityAgg
+	// Prometheus surface — feeds the running daemon's /metrics
+	// endpoint. Constructed against observability.Registry so
+	// existing scrapers see the reliability metrics without any
+	// scrape-config change on the operator's side.
+	reliabilityProm := reliability.NewPrometheusRecorder(observability.Registry)
+
+	// Fan-out: aggregator (process-lifetime CLI reads) + store
+	// (cross-process durability) + prometheus (/metrics scrape).
+	recorders := []reliability.Recorder{reliabilityAgg, reliabilityProm}
 	if reliabilityStore != nil {
-		reliabilityRecorder = reliability.NewMultiRecorder(reliabilityAgg, reliabilityStore)
+		recorders = append(recorders, reliabilityStore)
 	}
+	reliabilityRecorder := reliability.Recorder(reliability.NewMultiRecorder(recorders...))
 
 	registry := tools.NewRegistry()
 	registry.MustRegister(builtin.NewReadTool())
@@ -399,6 +409,20 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		approver, cfg.Agent.Approver.MultiParty, checker,
 		newApprovalAuditAdapter(auditSink), opts.Logger,
 	)
+
+	// Sit the reliability recorder OUTSIDE every other approver
+	// wrap. This way any denial (pattern / RBAC / OPA / multi-party)
+	// emits exactly one Safety violation sample — the outer-wrap
+	// position guarantees we count the FINAL verdict, not every
+	// intermediate layer's decision. If we sat inside a layer that
+	// itself wraps another approver, we'd double-count when the
+	// inner ally denies and the outer forwards.
+	approver = &agent.RecordingApprover{
+		Inner:      approver,
+		Recorder:   reliabilityRecorder,
+		Severity:   "medium",
+		Constraint: "approver-deny",
+	}
 
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
