@@ -4,9 +4,18 @@
 <h1 align="center">rousseau-agent</h1>
 
 <p align="center">
-  <em>A self-hosted personal AI agent daemon that bridges nine chat
-  transports to the LLM provider of your choice, in a single static Go
-  binary.</em>
+  <em>A self-hosted AI agent daemon for teams that cannot use SaaS.
+  Single static Go binary, rootless container, offline-verified
+  license — deployable inside your perimeter with enforced SSO,
+  OPA policy, and signed audit egress to your SIEM. Reachable from
+  the chat transports your organisation already runs.</em>
+</p>
+
+<p align="center">
+  <sub>Built for regulated verticals under DORA / EU AI Act / HIPAA
+  and for sovereignty-first prosumers who want a real daemon on
+  their own hardware. See <a href="./docs/BUYER.md">docs/BUYER.md</a>
+  for who this is for and who it is not.</sub>
 </p>
 
 <p align="center">
