@@ -28,6 +28,7 @@ func newSkillsCmd(opts *Options) *cobra.Command {
 	cmd.AddCommand(newSkillsListCmd(opts))
 	cmd.AddCommand(newSkillsShowCmd(opts))
 	cmd.AddCommand(newSkillsSignCmd())
+	cmd.AddCommand(newSkillsValidateCmd(opts))
 	return cmd
 }
 
