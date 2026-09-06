@@ -284,6 +284,17 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 	reliabilityRecorder := reliability.Recorder(reliability.NewMultiRecorder(recorders...))
 
+	// Retention loop for the persistent store — prune samples
+	// older than 30 days every 6 hours. Runs as long as the
+	// daemon's ctx is alive; a nil store (postgres deployment
+	// today) disables the loop cleanly via the Pruner interface
+	// check inside RunPruner.
+	if pr, ok := reliabilityStore.(reliability.Pruner); ok {
+		go reliability.RunPruner(ctx, pr, reliability.PruneConfig{
+			Logger: opts.Logger,
+		})
+	}
+
 	registry := tools.NewRegistry()
 	registry.MustRegister(builtin.NewReadTool())
 	registry.MustRegister(builtin.NewWriteTool())
@@ -438,8 +449,9 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		CostRecorder: sqlitestore.NewCostRecorder(costStore, nil),
 		Hooks:        buildHooks(cfg.Hooks, opts.Logger),
 		Progress:     progressBus,
-		AuditSink:    auditSink,
-		Reliability:  reliabilityRecorder,
+		AuditSink:                   auditSink,
+		Reliability:                 reliabilityRecorder,
+		EnableConfidenceElicitation: cfg.Agent.EnableConfidenceElicitation,
 	})
 
 	// Build the optional SCIM Service Provider — pull-based

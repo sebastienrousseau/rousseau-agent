@@ -750,6 +750,18 @@ type AgentConfig struct {
 	// Requires FeatureGovernanceAdvanced. Legacy-mode only for
 	// now; spec-mode ignores this with a WARN log.
 	SkillBundles SkillBundlesConfig `mapstructure:"skill_bundles"`
+	// EnableConfidenceElicitation appends a one-line instruction
+	// to every system prompt asking the model to close each turn
+	// with <confidence>0.NN</confidence>. Agent.Turn parses the
+	// tag, pairs it with the outcome, and emits a Predictability
+	// "pair" sample the reliability aggregator's Brier / ECE /
+	// AUROC calculations consume.
+	//
+	// Costs ~40 tokens per turn (the addendum) plus ~10 tokens
+	// per reply (the closing tag). Turn on when you want real
+	// live Predictability numbers in `rousseau reliability`;
+	// leave off for token-sensitive deployments.
+	EnableConfidenceElicitation bool `mapstructure:"enable_confidence_elicitation"`
 }
 
 // SkillBundlesConfig is the operator-facing view of the
