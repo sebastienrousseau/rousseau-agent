@@ -23,6 +23,13 @@ type (
 	StreamEventKind = agent.StreamEventKind
 )
 
+// ErrEmptyStream is returned by parseStream when the CLI's stdout
+// finishes without any type:"result" line and without a per-line
+// result-parse error to surface. Exported so callers (the Stream
+// goroutine) can promote a more useful error — typically the CLI's
+// exit status + stderr — when they see this sentinel.
+var ErrEmptyStream = errors.New("claudecli: stream ended without a result line")
+
 // Re-exports of the event-kind constants.
 const (
 	StreamStart     = agent.StreamStart
@@ -114,9 +121,16 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 		defer close(report)
 		resp, perr := parseStream(stdout, events)
 		waitErr := cmd.Wait()
-		if perr == nil && waitErr != nil {
-			// The CLI exited non-zero with no parseable result — surface
-			// the stderr for the caller.
+		// Promote the CLI's exit status + stderr over the empty-stream
+		// sentinel: a subprocess that died without emitting a result
+		// line almost always explains itself on stderr (auth failure,
+		// missing config, killed by signal, etc), and "stream ended
+		// without a result line" alone gives operators nothing to
+		// diagnose. A per-line resultErr from classifyLine
+		// (is_error:true result envelope) is left intact because it is
+		// strictly more specific than exit + stderr.
+		switch {
+		case waitErr != nil && (perr == nil || errors.Is(perr, ErrEmptyStream)):
 			perr = fmt.Errorf("claudecli: stream exit: %w: %s", waitErr, truncate(stderr.String(), 400))
 		}
 		if perr == nil && req.SessionID != "" {
@@ -176,7 +190,7 @@ func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, 
 		if lastResultErr != nil {
 			return agent.Response{}, lastResultErr
 		}
-		return agent.Response{}, errors.New("claudecli: stream ended without a result line")
+		return agent.Response{}, ErrEmptyStream
 	}
 	return final, nil
 }
