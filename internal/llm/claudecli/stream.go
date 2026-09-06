@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 )
@@ -67,11 +69,30 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 	// error return below, and otherwise by the reader goroutine once
 	// cmd.Wait has returned.
 
+	args := p.buildStreamArgs(req, imagePaths, prompt)
+
+	cmd, stdout, stderr, err := p.startStream(ctx, args)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+
+	events := make(chan agent.StreamEvent, 16)
+	report := make(chan agent.StreamReport, 1)
+
+	go p.drainStream(ctx, req, cmd, stdout, stderr, imagePaths, prompt, cleanup, events, report)
+
+	return events, report, nil
+}
+
+// buildStreamArgs constructs the argv rousseau hands to `claude`.
+// Extracted so the recover path can rebuild it after rotating a
+// poisoned session file without duplicating the assembly.
+func (p *Provider) buildStreamArgs(req agent.Request, imagePaths []string, prompt string) []string {
 	sessionFlag := "--session-id"
 	if req.SessionID != "" && p.knowsSession(req.SessionID) {
 		sessionFlag = "--resume"
 	}
-
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
@@ -94,53 +115,109 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 		args = append(args, "--image", path)
 	}
 	args = append(args, prompt)
+	return args
+}
 
+// startStream launches claude and wires stdout/stderr. Extracted to
+// let the recover path re-spawn identically after a rotate.
+func (p *Provider) startStream(ctx context.Context, args []string) (*exec.Cmd, io.Reader, *bytes.Buffer, error) {
 	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("claudecli: stdout pipe: %w", err)
+		return nil, nil, nil, fmt.Errorf("claudecli: stdout pipe: %w", err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("claudecli: start: %w", err)
+		return nil, nil, nil, fmt.Errorf("claudecli: start: %w", err)
+	}
+	return cmd, stdout, &stderr, nil
+}
+
+// drainStream runs the parse + wait cycle for a live subprocess and
+// finalises the report. Split out from Stream so the session-in-use
+// recovery can retry once transparently: same events channel,
+// same report channel, same visible API — the caller sees a single
+// stream that happens to be sourced from either the first or second
+// subprocess attempt depending on whether the rotate succeeded.
+func (p *Provider) drainStream(
+	ctx context.Context,
+	req agent.Request,
+	cmd *exec.Cmd,
+	stdout io.Reader,
+	stderr *bytes.Buffer,
+	imagePaths []string,
+	prompt string,
+	cleanup func(),
+	events chan agent.StreamEvent,
+	report chan agent.StreamReport,
+) {
+	// Defer covers panics but the happy path runs cleanup
+	// explicitly (before we send the report) so a caller that
+	// blocks on <-report has a happens-before edge on the temp
+	// files being gone.
+	defer cleanup()
+	defer close(events)
+	defer close(report)
+	resp, perr := parseStream(stdout, events)
+	waitErr := cmd.Wait()
+	// Promote the CLI's exit status + stderr over the empty-stream
+	// sentinel: a subprocess that died without emitting a result
+	// line almost always explains itself on stderr (auth failure,
+	// missing config, killed by signal, etc), and "stream ended
+	// without a result line" alone gives operators nothing to
+	// diagnose. A per-line resultErr from classifyLine
+	// (is_error:true result envelope) is left intact because it is
+	// strictly more specific than exit + stderr.
+	if waitErr != nil && (perr == nil || errors.Is(perr, ErrEmptyStream)) {
+		perr = fmt.Errorf("claudecli: stream exit: %w: %s", waitErr, truncate(stderr.String(), 400))
 	}
 
-	events := make(chan agent.StreamEvent, 16)
-	report := make(chan agent.StreamReport, 1)
-
-	go func() {
-		// Defer covers panics but the happy path runs cleanup
-		// explicitly (before we send the report) so a caller that
-		// blocks on <-report has a happens-before edge on the temp
-		// files being gone.
-		defer cleanup()
-		defer close(events)
-		defer close(report)
-		resp, perr := parseStream(stdout, events)
-		waitErr := cmd.Wait()
-		// Promote the CLI's exit status + stderr over the empty-stream
-		// sentinel: a subprocess that died without emitting a result
-		// line almost always explains itself on stderr (auth failure,
-		// missing config, killed by signal, etc), and "stream ended
-		// without a result line" alone gives operators nothing to
-		// diagnose. A per-line resultErr from classifyLine
-		// (is_error:true result envelope) is left intact because it is
-		// strictly more specific than exit + stderr.
-		switch {
-		case waitErr != nil && (perr == nil || errors.Is(perr, ErrEmptyStream)):
-			perr = fmt.Errorf("claudecli: stream exit: %w: %s", waitErr, truncate(stderr.String(), 400))
+	// Session-in-use recovery. Rotate the poisoned transcript aside
+	// and retry ONCE with the same session id — the caller's JID→
+	// session mapping stays valid so subsequent turns keep the same
+	// conversation continuity. One-shot: if the retry also fails
+	// (session-in-use or otherwise) we surface the retry's error and
+	// stop, no chained rotates.
+	if isSessionInUseError(perr) && req.SessionID != "" {
+		path := sessionFilePathResolver(req.SessionID)
+		rotated, rerr := rotateSessionFile(path, time.Now)
+		if rerr != nil {
+			slog.Default().Warn("claudecli.session_recover_rotate_failed",
+				slog.String("session_id", req.SessionID),
+				slog.String("path", path),
+				slog.String("err", rerr.Error()))
+		} else {
+			slog.Default().Warn("claudecli.session_in_use_recovered",
+				slog.String("session_id", req.SessionID),
+				slog.Bool("rotated", rotated),
+				slog.String("path", path))
+			// Force --session-id for the retry regardless of the
+			// cache: post-rotate the transcript file does not exist,
+			// so --resume would fail; --session-id creates a fresh
+			// file with the same id. Rebuild args after clearing the
+			// cache entry so buildStreamArgs picks --session-id.
+			p.cache.Forget(req.SessionID)
+			args := p.buildStreamArgs(req, imagePaths, prompt)
+			cmd2, stdout2, stderr2, serr := p.startStream(ctx, args)
+			if serr != nil {
+				perr = fmt.Errorf("claudecli: session recover: restart: %w", serr)
+			} else {
+				resp2, perr2 := parseStream(stdout2, events)
+				waitErr2 := cmd2.Wait()
+				if waitErr2 != nil && (perr2 == nil || errors.Is(perr2, ErrEmptyStream)) {
+					perr2 = fmt.Errorf("claudecli: stream exit: %w: %s", waitErr2, truncate(stderr2.String(), 400))
+				}
+				resp, perr = resp2, perr2
+			}
 		}
-		if perr == nil && req.SessionID != "" {
-			p.rememberSession(req.SessionID)
-		}
-		cleanup() // now safe: child has exited (cmd.Wait returned)
-		report <- agent.StreamReport{Response: resp, Err: perr}
-	}()
+	}
 
-	return events, report, nil
+	if perr == nil && req.SessionID != "" {
+		p.rememberSession(req.SessionID)
+	}
+	cleanup() // now safe: child has exited (cmd.Wait returned)
+	report <- agent.StreamReport{Response: resp, Err: perr}
 }
 
 // StreamResultReport is retained as an alias for agent.StreamResult

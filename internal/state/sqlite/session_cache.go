@@ -75,3 +75,21 @@ ON CONFLICT(session_id) DO NOTHING
 		slog.Warn("sqlite: remember claude session", "id", id, "err", err)
 	}
 }
+
+// Forget drops id from both the hot cache and the persistent table
+// so the next Stream call for id spawns claude with --session-id
+// (create a fresh transcript) rather than --resume (which would fail
+// because the session-in-use recovery just rotated the transcript
+// aside). DB errors are logged and swallowed — a stale row in
+// claude_sessions is a latent latency bug at worst, never a
+// correctness one.
+func (c *ClaudeSessionCache) Forget(id string) {
+	c.mu.Lock()
+	delete(c.hot, id)
+	c.mu.Unlock()
+
+	const q = `DELETE FROM claude_sessions WHERE session_id = ?`
+	if _, err := c.db.ExecContext(context.Background(), q, id); err != nil {
+		slog.Warn("sqlite: forget claude session", "id", id, "err", err)
+	}
+}

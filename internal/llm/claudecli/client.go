@@ -48,9 +48,16 @@ type runFunc func(cmd *exec.Cmd) ([]byte, error)
 // Persistent implementations survive daemon restarts and avoid the
 // "already in use" cold-start roundtrip on the first turn after
 // startup. The zero-cost in-memory implementation is used by default.
+//
+// Forget removes id from the cache. Called by the session-in-use
+// recovery path so the next attempt after a rotate uses --session-id
+// (creating a fresh transcript) rather than --resume (which would
+// fail because the rotated transcript no longer exists at the
+// canonical name).
 type SessionCache interface {
 	IsKnown(id string) bool
 	Remember(id string)
+	Forget(id string)
 }
 
 // InMemorySessionCache is the default (non-persistent) SessionCache.
@@ -76,6 +83,13 @@ func (c *InMemorySessionCache) Remember(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seen[id] = true
+}
+
+// Forget satisfies SessionCache.
+func (c *InMemorySessionCache) Forget(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.seen, id)
 }
 
 // Provider is an agent.Provider backed by the `claude` CLI.

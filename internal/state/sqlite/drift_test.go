@@ -283,6 +283,13 @@ func TestClaudeSessionCache_DegradesOnClosedDB(t *testing.T) {
 	// cache, so the id reads back as known without touching the DB.
 	c.Remember("hot-only")
 	assert.True(t, c.IsKnown("hot-only"))
+
+	// Forget swallows the DB delete failure but still clears the hot
+	// cache — mirrors Remember's degrade behaviour. Locks in the
+	// recovery-path contract that Forget can never wedge the caller
+	// on a transient DB issue.
+	assert.NotPanics(t, func() { c.Forget("hot-only") })
+	assert.False(t, c.IsKnown("hot-only"), "Forget must clear the hot cache even when DB write fails")
 }
 
 // -- CronStore ----------------------------------------------------------

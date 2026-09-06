@@ -126,11 +126,13 @@ type JIDMapI interface {
 
 // ClaudeSessionCacheI is the narrow surface the claudecli
 // provider consumes to remember Claude Code session IDs across
-// daemon restarts. Both drivers ship matching IsKnown / Remember
-// signatures.
+// daemon restarts. Both drivers ship matching IsKnown / Remember /
+// Forget signatures. Forget is invoked by the claudecli session-in-
+// use recovery path.
 type ClaudeSessionCacheI interface {
 	IsKnown(id string) bool
 	Remember(id string)
+	Forget(id string)
 }
 
 // SCIMGroupNamesStore is the SSO-adapter surface (looks up group
