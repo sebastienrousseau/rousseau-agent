@@ -65,7 +65,7 @@ func TestTurn_RecordsReliabilitySamplesOnSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	samples := rec.get()
-	require.Len(t, samples, 2, "successful Turn must emit exactly two samples: latency + safety turn")
+	require.Len(t, samples, 3, "successful Turn must emit three samples: latency + safety turn + fault stratification")
 
 	// Latency sample: consistency dimension, resource_cv_latency,
 	// value ≥ 0ms, bucketed + tagged by session id.
@@ -100,7 +100,7 @@ func TestTurn_RecordsSafetyZeroOnError(t *testing.T) {
 	require.ErrorIs(t, err, ErrEmptySession)
 
 	samples := rec.get()
-	require.Len(t, samples, 2, "failed Turn must still emit both samples so the reliability window sees the failure")
+	require.Len(t, samples, 3, "failed Turn must still emit all three samples so the reliability window sees the failure")
 
 	for _, s := range samples {
 		if s.SubMetric == "turn" {
@@ -145,8 +145,37 @@ func TestTurn_HandlesNilSession(t *testing.T) {
 	})
 	// Samples still emitted with empty SessionID + Bucket.
 	samples := rec.get()
-	require.Len(t, samples, 2)
+	require.Len(t, samples, 3)
 	for _, s := range samples {
 		assert.Empty(t, s.SessionID, "nil session yields empty SessionID")
+	}
+}
+
+// -- fault classifier ------------------------------------------------
+
+// TestFaultObservedFromError_TableDriven locks in the heuristic that
+// separates "provider network glitch" from "agent logic error" so the
+// Robustness fault-ratio has a meaningful "faulted" stratum.
+func TestFaultObservedFromError_TableDriven(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, "false"},
+		{"generic non-fault", errors.New("model refused"), "false"},
+		{"provider timeout", errors.New("provider: timeout"), "true"},
+		{"deadline exceeded", errors.New("context deadline exceeded"), "true"},
+		{"connection refused", errors.New("dial tcp: connection refused"), "true"},
+		{"no such host DNS failure", errors.New("no such host: api.example"), "true"},
+		{"tool exec exit status", errors.New("tool: exit status 127"), "true"},
+		{"subprocess crash", errors.New("subprocess killed"), "true"},
+		{"MCP EOF", errors.New("MCP: read frame: EOF"), "true"},
+		{"case-insensitive", errors.New("Provider: TIMEOUT dialing api"), "true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, faultObservedFromError(tc.err))
+		})
 	}
 }

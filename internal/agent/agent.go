@@ -214,6 +214,61 @@ func (a *Agent) recordReliabilitySamples(s *Session, start time.Time, turnErr er
 		Value:     turnValue,
 		SessionID: sessID,
 	})
+	// Robustness fault stratification: every turn contributes a
+	// (success, fault_observed) pair the aggregator's
+	// faultRobustness code turns into Acc_faulted / Acc_clean.
+	// "Fault observed" is a heuristic — we can't distinguish a
+	// provider-network-error from an agent-logic-error at this
+	// layer, but string-classify the returned error so the two
+	// strata at least exist when the daemon experiences real
+	// upstream faults.
+	rec.Record(reliability.Sample{
+		At:        now,
+		Dimension: reliability.DimRobustness,
+		SubMetric: "fault",
+		Value:     turnValue,
+		SessionID: sessID,
+		Metadata: map[string]string{
+			"fault": faultObservedFromError(turnErr),
+		},
+	})
+}
+
+// faultObservedFromError classifies whether the turn's terminal
+// error (if any) looks like an upstream fault — provider network
+// glitch, tool subprocess crash, MCP server dial failure — as
+// opposed to an internal-logic failure. Returns "true" or
+// "false" (string form so it round-trips through the reliability
+// Sample.Metadata map cleanly).
+//
+// Heuristic — matches on error text. When rousseau's provider /
+// tool layers get first-class error types the switch will move
+// to errors.Is. For today, substring matching is sufficient and
+// covers the majority of real upstream faults in practice.
+func faultObservedFromError(err error) string {
+	if err == nil {
+		return "false"
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"timeout",
+		"deadline exceeded",
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"network",
+		"eof",
+		"i/o timeout",
+		"context canceled",
+		"provider:",     // wrapped provider errors from turn.go
+		"subprocess",    // tool-shell-out failures
+		"exit status",   // subprocess exit codes
+	} {
+		if strings.Contains(msg, marker) {
+			return "true"
+		}
+	}
+	return "false"
 }
 
 // turn is Turn's body, split out so Turn can bracket it with the
