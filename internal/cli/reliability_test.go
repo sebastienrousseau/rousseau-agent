@@ -52,13 +52,13 @@ func TestParseReliabilityWindow_TableDriven(t *testing.T) {
 // -- loadReliabilityAggregator ---------------------------------------
 
 func TestLoadReliabilityAggregator_EmptyByDefault(t *testing.T) {
-	agg := loadReliabilityAggregator(&Options{}, false)
+	agg := loadReliabilityAggregator(&Options{}, false, 7*24*time.Hour)
 	assert.NotNil(t, agg)
 	assert.Zero(t, agg.SampleCount(), "no synthetic + no wired store → empty aggregator")
 }
 
 func TestLoadReliabilityAggregator_SyntheticPopulates(t *testing.T) {
-	agg := loadReliabilityAggregator(&Options{}, true)
+	agg := loadReliabilityAggregator(&Options{}, true, 7*24*time.Hour)
 	assert.NotNil(t, agg)
 	// Synthetic dataset spans all four dimensions with 300+ samples.
 	assert.Greater(t, agg.SampleCount(), 200)
@@ -89,7 +89,7 @@ func TestRenderReliabilityHuman_NoSamplesMessage(t *testing.T) {
 }
 
 func TestRenderReliabilityHuman_WithSyntheticData(t *testing.T) {
-	agg := loadReliabilityAggregator(&Options{}, true)
+	agg := loadReliabilityAggregator(&Options{}, true, 7*24*time.Hour)
 	summary := agg.Summary(7 * 24 * time.Hour)
 
 	var buf bytes.Buffer
@@ -178,7 +178,7 @@ func TestRenderReliabilityHuman_SubScoresRenderedInOrder(t *testing.T) {
 // -- renderReliability: JSON mode ------------------------------------
 
 func TestRenderReliabilityJSON_ShapeStable(t *testing.T) {
-	agg := loadReliabilityAggregator(&Options{}, true)
+	agg := loadReliabilityAggregator(&Options{}, true, 7*24*time.Hour)
 	summary := agg.Summary(7 * 24 * time.Hour)
 
 	var buf bytes.Buffer

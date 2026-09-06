@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
+	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
 // newReliabilityCmd wires `rousseau reliability` — the operator-
@@ -62,7 +64,7 @@ data yet" message with a pointer to docs/reliability.md.`,
 			if err != nil {
 				return err
 			}
-			agg := loadReliabilityAggregator(opts, synthetic)
+			agg := loadReliabilityAggregator(opts, synthetic, window)
 			summary := agg.Summary(window)
 			return renderReliability(cmd.OutOrStdout(), summary, jsonOut)
 		},
@@ -96,16 +98,67 @@ func parseReliabilityWindow(s string) (time.Duration, error) {
 }
 
 // loadReliabilityAggregator returns the aggregator this invocation
-// should read from. Today only two paths: --synthetic loads a
-// canned sample set for dashboard-integration testing, otherwise
-// an empty aggregator. The wiring commit will replace the empty-
-// aggregator branch with a SQLite-backed load.
-func loadReliabilityAggregator(_ *Options, synthetic bool) *reliability.Aggregator {
+// should read from. Three paths:
+//
+//   1. --synthetic: canned sample set, useful for dashboard-
+//      integration testing.
+//   2. Real SQLite store available: load the last `window` of
+//      samples from the reliability_samples table (populated by
+//      the daemon's agent.Turn instrumentation). This is the
+//      normal path — CLI runs as a separate process from the
+//      daemon and reads what's on disk.
+//   3. Neither: empty aggregator. Prints the "no samples yet"
+//      message.
+//
+// window is used as the LoadSince cutoff so we don't pay for
+// scanning samples the summary will filter out anyway.
+func loadReliabilityAggregator(opts *Options, synthetic bool, window time.Duration) *reliability.Aggregator {
 	agg := reliability.NewAggregator(0)
 	if synthetic {
 		loadSyntheticReliabilitySamples(agg)
+		return agg
 	}
+	// Best-effort load from the persistent store. Any failure
+	// (missing store, unreadable DB, corrupt row) prints a debug
+	// log and falls through to the empty-aggregator "no data"
+	// path — the CLI must never fail-open on a diagnostic feature.
+	loadPersistedReliabilitySamples(opts, agg, window)
 	return agg
+}
+
+// loadPersistedReliabilitySamples opens the daemon's SQLite state
+// DB (same path resolveStateDSN uses), reads the reliability
+// samples newer than `now - window`, and records them into agg.
+// A missing DB / missing table is not an error — first-run
+// operators see the "no data yet" branch instead.
+func loadPersistedReliabilitySamples(opts *Options, agg *reliability.Aggregator, window time.Duration) {
+	if opts == nil || opts.Config == nil {
+		return
+	}
+	dsn := opts.Config.State.DSN
+	if dsn == "" || opts.Config.State.Driver != "" && opts.Config.State.Driver != "sqlite" {
+		// Postgres port pending; only sqlite has the store today.
+		return
+	}
+	ctx := context.Background()
+	store, err := sqlitestore.Open(ctx, dsn)
+	if err != nil {
+		return
+	}
+	defer func() { _ = store.Close() }() //nolint:errcheck // read-only tool
+
+	recorder, err := sqlitestore.NewReliabilitySampleStore(ctx, store, opts.Logger)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-window)
+	samples, err := recorder.LoadSince(ctx, cutoff)
+	if err != nil {
+		return
+	}
+	for _, s := range samples {
+		agg.Record(s)
+	}
 }
 
 // loadSyntheticReliabilitySamples populates an aggregator with a

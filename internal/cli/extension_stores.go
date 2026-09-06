@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/scim"
@@ -11,6 +12,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
+	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	pgstore "github.com/sebastienrousseau/rousseau-agent/internal/state/postgres"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
@@ -182,6 +184,46 @@ func openClaudeSessionCache(ctx context.Context, store SearchableStore) (ClaudeS
 		return pgstore.NewClaudeSessionCache(ctx, s)
 	default:
 		return nil, errors.New("cli: unknown store type for claude session cache")
+	}
+}
+
+// ReliabilityRecorderI is the narrow surface the daemon assembly
+// consumes for the four-dimension reliability decomposition
+// (arXiv:2602.16666). Two methods: Record (from the agent hot
+// path, fire-and-forget) and LoadSince (for CLI process
+// invocations reading historical samples from disk).
+//
+// Both drivers (sqlite / postgres) can implement — today only
+// sqlite ships. When the postgres implementation lands it fits
+// under the same interface.
+type ReliabilityRecorderI interface {
+	Record(reliability.Sample)
+	LoadSince(ctx context.Context, cutoff time.Time) ([]reliability.Sample, error)
+}
+
+// openReliabilitySampleStore constructs the driver-appropriate
+// backing store for the reliability sample stream. Postgres
+// implementation deferred (same pattern as ClaudeSessionCache —
+// SQLite mirror ships first, postgres port follows in a
+// dedicated wave). Returns nil when the store type isn't
+// recognised so the daemon falls back to in-memory only.
+func openReliabilitySampleStore(ctx context.Context, store SearchableStore, logger *slog.Logger) (ReliabilityRecorderI, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		return sqlitestore.NewReliabilitySampleStore(ctx, s, logger)
+	case *pgstore.Store:
+		// Postgres port pending — return nil rather than an error
+		// so a Postgres deployment still boots with in-memory-only
+		// reliability data.
+		_ = s
+		if logger != nil {
+			logger.Info("reliability.postgres_pending",
+				slog.String("hint", "postgres reliability_samples port ships in a follow-on wave; using in-memory recorder only"),
+			)
+		}
+		return nil, nil
+	default:
+		return nil, errors.New("cli: unknown store type for reliability samples")
 	}
 }
 
