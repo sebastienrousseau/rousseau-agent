@@ -78,6 +78,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.AddCommand(newEmailCmd(opts))
 	root.AddCommand(newStatusCmd(opts))
 	root.AddCommand(newInitCmd(opts))
+	root.AddCommand(newReliabilityCmd(opts))
 	root.AddCommand(newVersionCmd())
 	return root
 }
