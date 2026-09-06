@@ -191,6 +191,39 @@ environment first. Convert each flat `<name>.md` into a directory
 containing `SKILL.md` (see below). Once all skills are converted,
 flip production. The two modes cannot mix within a single daemon.
 
+## CLI — validating skills before you ship them
+
+`rousseau skills validate [dir]` walks the target directory with
+the spec-compliant loader and reports every skill's
+parse / validation status. Exits non-zero if any skill fails, so
+it drops into a git pre-commit hook or CI gate directly:
+
+```
+$ rousseau skills validate
+Validating skills under /home/seb/.rousseau/skills ...
+
+  ✔ greet                          Greet the user warmly.
+  ✘ mismatch                       skills: name "wrong-name" does not match containing directory "mismatch"
+  ✘ typoed                         skills: SKILL.md frontmatter has unknown field "descripton"
+
+Summary: 1 valid, 2 invalid (3 total)
+error: 2 skill(s) failed validation
+$ echo $?
+1
+```
+
+For CI / editor integration, `--json` emits a stable array of
+per-skill records so scripts don't have to parse text:
+
+```
+$ rousseau skills validate --json /path/to/skills | jq '.[] | select(.ok == false)'
+```
+
+The command runs the spec-compliant walker even when the daemon
+is configured for `skills_mode: legacy` — the point of `validate`
+is to help operators migrate to spec mode by surfacing exactly
+which of their existing files would fail the stricter checks.
+
 ## Constructors (Go API)
 
 - **`skills.NewSpecProviderFromDir(dir)`** — the one-scope common
