@@ -79,6 +79,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.AddCommand(newStatusCmd(opts))
 	root.AddCommand(newInitCmd(opts))
 	root.AddCommand(newReliabilityCmd(opts))
+	root.AddCommand(newEvalCmd(opts))
 	root.AddCommand(newVersionCmd())
 	return root
 }
