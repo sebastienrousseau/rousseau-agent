@@ -22,6 +22,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
+	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
@@ -255,6 +256,24 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		cc.WithCache(claudeCache)
 	}
 
+	// Reliability sample stream — the four-dimension decomposition
+	// per arXiv:2602.16666. Two recorders: an in-memory Aggregator
+	// serving the current process's `rousseau reliability` reads,
+	// and a SQLite store so a separate CLI process from a shell
+	// can see the same data. Fanned out via MultiRecorder so
+	// callsites (agent.Turn today; approver + transport in the
+	// follow-on wave) don't have to know about both.
+	reliabilityAgg := reliability.NewAggregator(0)
+	reliabilityStore, err := openReliabilitySampleStore(ctx, concrete, opts.Logger)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, fmt.Errorf("cli: open reliability store: %w", err)
+	}
+	var reliabilityRecorder reliability.Recorder = reliabilityAgg
+	if reliabilityStore != nil {
+		reliabilityRecorder = reliability.NewMultiRecorder(reliabilityAgg, reliabilityStore)
+	}
+
 	registry := tools.NewRegistry()
 	registry.MustRegister(builtin.NewReadTool())
 	registry.MustRegister(builtin.NewWriteTool())
@@ -396,6 +415,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Hooks:        buildHooks(cfg.Hooks, opts.Logger),
 		Progress:     progressBus,
 		AuditSink:    auditSink,
+		Reliability:  reliabilityRecorder,
 	})
 
 	// Build the optional SCIM Service Provider — pull-based

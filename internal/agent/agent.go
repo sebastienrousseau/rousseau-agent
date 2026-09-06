@@ -13,6 +13,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
+	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
@@ -69,6 +70,22 @@ type Options struct {
 	// [sso.IdentityFromContext] when available; anonymous
 	// requests emit `actor: "anonymous"`.
 	AuditSink audit_egress.Sink
+	// Reliability receives per-turn samples the four-dimension
+	// decomposition (arXiv:2602.16666) is built on. Turn emits:
+	//
+	//   - resource_cv_latency (Consistency): wall-clock ms per turn,
+	//     bucketed by SessionID so per-session variance rolls up
+	//     into the Consistency ring.
+	//   - resource_cv_tokens (Consistency): sum of input + output
+	//     tokens per turn, same bucket.
+	//   - resource_cv_calls (Consistency): tool-call count per turn.
+	//   - turn (Safety): 1 when the turn completed without a
+	//     harmful-tool denial, 0 otherwise.
+	//
+	// Nil recorder means no telemetry (NopRecorder). Wired by the
+	// daemon assembly to a [reliability.MultiRecorder] fanning to
+	// the process-scoped Aggregator + the SQLite persistent store.
+	Reliability reliability.Recorder
 }
 
 // CostRecorder is the seam the agent loop uses to persist per-call
@@ -140,7 +157,63 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
 	msg, err := a.turn(ctx, s)
 	a.emitTerminal(ctx, s, start, err)
+	a.recordReliabilitySamples(s, start, err)
 	return msg, err
+}
+
+// recordReliabilitySamples fires one Sample per dimension the agent
+// loop can measure without instrumenting every provider / tool /
+// approver call:
+//
+//   - Consistency: resource_cv_latency (per-turn wall-clock ms),
+//     bucketed by session so cross-turn variance within a
+//     conversation rolls up into the paper's C_res.
+//   - Safety: turn (1 = completed cleanly, 0 = error). Violation
+//     samples with severity come from the approver wrapper — this
+//     signal is the "everything else went fine" turn counter.
+//
+// A nil Reliability recorder is a no-op via the NopRecorder
+// contract; callers never need to check. Latency of the recording
+// itself is a map lookup + two struct copies — cheap enough to sit
+// in the hot path.
+//
+// Tokens + tool-call counts + confidence pairs come from follow-on
+// instrumentation (provider.Complete, tool dispatch, confidence
+// prompt) — this method only records what Turn can see at the
+// outer bracket without touching the inner loop.
+func (a *Agent) recordReliabilitySamples(s *Session, start time.Time, turnErr error) {
+	rec := a.opts.Reliability
+	if rec == nil {
+		return
+	}
+	now := time.Now()
+	sessID := ""
+	if s != nil {
+		sessID = s.ID
+	}
+	rec.Record(reliability.Sample{
+		At:        now,
+		Dimension: reliability.DimConsistency,
+		SubMetric: "resource_cv_latency",
+		Value:     float64(now.Sub(start).Milliseconds()),
+		SessionID: sessID,
+		// Bucket by session so the paper's per-bucket CV is
+		// computed over "how variable is this specific
+		// conversation's turn latency" — the operator-meaningful
+		// question. Cross-session variance is a different metric.
+		Bucket: sessID,
+	})
+	turnValue := 1.0
+	if turnErr != nil {
+		turnValue = 0
+	}
+	rec.Record(reliability.Sample{
+		At:        now,
+		Dimension: reliability.DimSafety,
+		SubMetric: "turn",
+		Value:     turnValue,
+		SessionID: sessID,
+	})
 }
 
 // turn is Turn's body, split out so Turn can bracket it with the
