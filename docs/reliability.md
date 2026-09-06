@@ -158,10 +158,12 @@ samples" so nobody misreads "n/a" as "we tried and failed."
 
 ### Pending in follow-on commits
 
-1. **Synthetic runs (`rousseau eval`)** — protocol-perturbation
-   harness for prompt robustness + outcome consistency (K=5 repeats
-   of canned tasks). Turns the "partial" dimensions into "fully
-   measured" via a nightly cron.
+1. **Real-provider `rousseau eval` runner** — today the eval CLI
+   ships in `--dry-run` mode (stub runner: canned "ok" reply).
+   The framework + fixture format + sample flow + CLI are all
+   live. Wiring the configured LLM provider is a small follow-on
+   commit; the interface (`reliability.EvalRunner`) is already
+   the seam.
 
 ### Shipped since first release of this doc
 
@@ -194,6 +196,17 @@ samples" so nobody misreads "n/a" as "we tried and failed."
    daemon at every 6 hours (defaults), prunes samples older
    than 30 days, silent-on-zero-rows so healthy daemons don't
    spam logs.
+6. **Synthetic-eval framework + CLI** ✅ — `rousseau eval
+   --fixture ./fixtures.yaml` runs the K=5 base + N paraphrase
+   pattern per fixture, emits `outcome` + `prompt` samples into
+   the same reliability store as live traffic. `--dry-run`
+   validates the fixture file without spending provider tokens
+   (stub runner returns "ok"). YAML fixture format supports
+   both top-level list and `fixtures:` wrapper. Example at
+   `docs/eval-fixtures.example.yaml`. Judges: `expect_regex`
+   (priority) → `expect_substring` → non-empty (smoke-test
+   fallback). Full test coverage on load / judge / render /
+   error-surfacing / composition.
 
 ## Prometheus metric naming (reference)
 
