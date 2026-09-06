@@ -72,11 +72,22 @@ toolchain at build time and no libc coupling at runtime.
 
 | Channel | Install |
 |---|---|
+| **One-line install (recommended)** | `curl -sSL https://raw.githubusercontent.com/sebastienrousseau/rousseau-agent/main/scripts/install.sh \| bash` |
 | Go toolchain | `go install github.com/sebastienrousseau/rousseau-agent/cmd/rousseau@latest` |
 | Source | `git clone https://github.com/sebastienrousseau/rousseau-agent && cd rousseau-agent && make build` |
 | Container (full) | `podman pull ghcr.io/sebastienrousseau/rousseau-agent:latest` |
 | Container (distroless) | `podman pull ghcr.io/sebastienrousseau/rousseau-agent:distroless-latest` |
 | Signed release archive | GitHub Releases — archive, `checksums.txt`, CycloneDX SBOM, cosign signature, SLSA provenance |
+
+The one-line installer detects your OS + architecture, downloads
+the matching binary from the latest GitHub Release, verifies its
+SHA-256 checksum, verifies the cosign signature when `cosign` is
+on PATH, and installs to `~/.local/bin/rousseau`. Then run
+`rousseau setup` for the interactive first-run wizard (writes
+`~/.config/rousseau/config.yaml`; five-minute total time-to-first-
+message target on a fresh Linux / macOS box). For the full
+container-native production layout (Podman + systemd Quadlet),
+use `scripts/install-from-source.sh` after cloning instead.
 
 Go **1.26** is the floor; `go.mod` declares `go 1.26` and pins
 `toolchain go1.26.6`. CI compiles the binary for twelve GOOS/GOARCH/tag
