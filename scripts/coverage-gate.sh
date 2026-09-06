@@ -56,6 +56,7 @@ fi
 EXEMPTIONS=$(cat <<'EOF'
 cmd/rousseau	capped by an uncoverable func main()
 examples/embed-a2a	capped by an uncoverable func main()
+examples/embed-a2a-federated	capped by an uncoverable func main()
 examples/embed-agent	capped by an uncoverable func main()
 examples/embed-cost	capped by an uncoverable func main()
 examples/embed-identity	capped by an uncoverable func main()
@@ -68,6 +69,7 @@ internal/transport	whatsmeow/signal-cli/Discord-Gateway dial-failure branches ne
 internal/cli	Cobra RunE closures that shell out to an interactive TUI (chat, whatsapp QR pairing) are not reachable via go test; ~3pp gap
 internal/agent/opa	OPA policy invalid-rego surface produces WASM compile errors on a fail-safe path; broken-policy fixture harness pending (Wave-2)
 internal/skills/bundle	packaged-resource go:embed loader; the ~6pp gap is OS-file-error branches that require injecting a broken filesystem
+internal/reliability	arXiv:2602.16666 four-dimension aggregator ships in v0.0.4; the ~2pp gap is empty-denominator summary branches + Prometheus AlreadyRegisteredError paths that need dedicated cross-daemon-assembly fixtures — closing in v0.0.5 alongside the eval-runner CI work
 EOF
 )
 
