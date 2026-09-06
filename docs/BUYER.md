@@ -85,13 +85,37 @@ the six-figures as the team broadens.
 
 **Where rousseau-agent still has work to do:**
 
-- **SOC 2 Type II** — readiness assessment planned Phase 3.
-- **DORA / EU AI Act / HIPAA compliance docs** — planned Phase 3
-  (`docs/compliance/` directory).
+- **SOC 2 Type II report** — controls-mapped-to-code
+  walkthrough already published at
+  [`compliance/soc2-readiness.md`](./compliance/soc2-readiness.md);
+  readiness assessment planned Q1 2027.
 - **Sales-ready case study** with a named regulated buyer —
   Phase 5.
 - **Official-path WhatsApp** (Meta BSP-brokered, official
   templates) — Phase 6.
+
+**Already published for their compliance team:**
+
+- [`compliance/README.md`](./compliance/README.md) — index +
+  common facts (data flow, storage, right-to-erasure)
+- [`compliance/gdpr.md`](./compliance/gdpr.md) — controller /
+  processor roles, article-by-article mapping,
+  per-transport data-flow diagrams
+- [`compliance/dora.md`](./compliance/dora.md) — ICT
+  third-party register entry, incident-notification
+  support, operational-resilience testing surface
+- [`compliance/eu-ai-act.md`](./compliance/eu-ai-act.md) —
+  GPAI provider classification, deployer obligations,
+  Art. 5 prohibited-practices boundaries
+- [`compliance/hipaa.md`](./compliance/hipaa.md) — BAA
+  guidance, Security-Rule mapping, minimum-necessary
+  implementation
+- [`compliance/soc2-readiness.md`](./compliance/soc2-readiness.md) —
+  Trust Services Criteria mapped to specific `file:line`
+  citations
+- [`incidents/TEMPLATE.md`](./incidents/TEMPLATE.md) —
+  incident postmortem template with compliance-notification
+  decision matrix at the top
 
 ## Secondary persona — the sovereignty-first prosumer
 
