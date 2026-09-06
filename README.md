@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/sebastienrousseau/rousseau-agent/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sebastienrousseau/rousseau-agent/ci.yml?branch=main&style=for-the-badge&logo=github&label=CI" alt="CI" /></a>
   <a href="https://github.com/sebastienrousseau/rousseau-agent/actions/workflows/slsa.yml"><img src="https://img.shields.io/badge/SLSA-Level%203-blueviolet?style=for-the-badge" alt="SLSA Level 3" /></a>
-  <a href="#development"><img src="https://img.shields.io/badge/coverage-98.1%25-66c2a5?style=for-the-badge&labelColor=555555" alt="Coverage 98.1%" /></a>
+  <a href="#development"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sebastienrousseau/rousseau-agent/main/.github/badges/coverage.json&style=for-the-badge&labelColor=555555" alt="Coverage" /></a>
   <a href="https://pkg.go.dev/github.com/sebastienrousseau/rousseau-agent"><img src="https://img.shields.io/badge/pkg.go.dev-reference-informational?style=for-the-badge&logo=go" alt="Go reference" /></a>
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26" />
   <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue?style=for-the-badge" alt="Apache-2.0 OR MIT" /></a>

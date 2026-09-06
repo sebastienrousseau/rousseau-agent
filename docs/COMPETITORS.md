@@ -1,6 +1,8 @@
 # rousseau-agent — 2026 landscape
 
-_Last touched: 2026-07-11._
+_Last touched: 2026-09-06 (previous refresh 2026-07-11)._
+
+See also the paired positioning notes: [WHY_NOT_HERMES.md](./WHY_NOT_HERMES.md), [WHY_NOT_OPENCLAW.md](./WHY_NOT_OPENCLAW.md), [WHY_NOT_TRUSTCLAW.md](./WHY_NOT_TRUSTCLAW.md), [WHY_NOT_ZEROCLAW.md](./WHY_NOT_ZEROCLAW.md).
 
 Where rousseau fits in the mid-2026 coding-assistant landscape, what the incumbents and challengers are shipping, where the trends are pointing, and — honestly — where rousseau does not compete.
 
@@ -73,13 +75,13 @@ Comparable products in July 2026. Ranked by direct overlap with rousseau's shape
 
 ### 2.1 Hermes Agent (NousResearch)
 
-**What.** The reference product rousseau is a personal alternative to. Python. 15K commits, six terminal backends (local/Docker/SSH/Modal/Daytona/Singularity), gateway with 10+ platforms, cron subsystem, MCP server, skills catalogue, honcho user modelling, FTS5 session search, batch trajectory generation for RL fine-tuning, desktop app, web dashboard, docs site.
+**What.** The reference product rousseau is a personal alternative to. Python 3.11 + Node.js sidecar (for the Baileys WhatsApp bridge). Now at ~242k stars, 395 contributors, ~5,800 commits/month, roughly-weekly releases (v0.21.0 = v2026.8.31). Seven terminal backends (local/Docker/SSH/Singularity/Modal/Daytona/Vercel Sandbox). ~25 platform adapters across `plugins/platforms/` + `gateway/platforms/` — landing page "5 chat platforms" figure is badly out of date. First-class Skills (agentskills.io compatible, ~40+ bundled, agent self-authors during runs), MCP client + servers, A2A with append-only JSONL audit. Nous Portal is a bundled paid LLM SaaS ($20–$200/mo).
 
-**Strengths.** Feature parity with every serious commercial product. Actively developed. Deep in the research pipeline. Multilingual docs.
+**Strengths.** Feature parity with every serious commercial product. Well-resourced open-model lab behind it. Widest messaging surface in the space (WeChat/WeCom/Feishu/DingTalk/Line for Chinese markets, IRC, Home Assistant, MS Graph webhooks, Teams — Hermes ships all of these). Skills community hub and self-authoring loop are more mature than rousseau's Skills story. Serverless sandboxing options (Modal/Daytona/Vercel) mean idle-cost approaches zero.
 
-**Weaknesses.** 4+ GB container image. 16K-LOC `cli.py`. Python cold-start cost. Configuration surface bigger than most users need. Because it does everything, no single thing is minimalist.
+**Weaknesses (as they relate to rousseau's target buyer).** Python + Node runtime — not a single binary. Zero enterprise-governance surface: no SAML anywhere in the tree, only a generic OIDC dashboard login; no RBAC engine; **zero hits for `rego` or `opa`**; audit is plain JSONL append files (not tamper-evident, not signed). No compliance certifications claimed. Uses Baileys for WhatsApp (same ban risk as rousseau's whatsmeow) but has a shipped Meta Cloud API adapter as an official-path fallback that rousseau does not yet have.
 
-**Overlap with rousseau.** Very high. rousseau is a Go rewrite of the ~5% of Hermes that a solo maintainer uses daily.
+**Overlap with rousseau.** High on consumer/prosumer surface; low on the enterprise-governance surface. Hermes is not currently optimising for the regulated-enterprise buyer that rousseau targets — no SSO enforcement, no RBAC, no OPA, no signed audit egress, no compliance docs. See [WHY_NOT_HERMES.md](./WHY_NOT_HERMES.md) for the full comparison and the one-sentence answer for a European-bank buyer.
 
 ### 2.2 Claude Code (Anthropic)
 
