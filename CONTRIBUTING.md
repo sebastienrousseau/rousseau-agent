@@ -19,6 +19,7 @@ Every check that runs in CI is available locally through the Makefile. If a chan
 - Subject line ≤ 72 characters. Body explains **why**, not what. Reference the driving decision, issue, or incident.
 - Do not amend published commits. Create a new commit; the reviewer prefers a series they can bisect.
 - Sign your commits if you have signing configured. The project does not currently require signatures, but they are recommended for release-tag commits.
+- **Sign off every commit** with `git commit -s` so a `Signed-off-by:` trailer is added. This is the [Developer Certificate of Origin](https://developercertificate.org/) attestation and CI rejects unsigned PRs. Full rationale in [`CLA.md`](./CLA.md).
 
 ## Code standards
 

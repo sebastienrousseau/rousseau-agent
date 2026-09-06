@@ -1,5 +1,5 @@
 <!-- markdownlint-disable MD033 MD041 -->
-<!-- SPDX-License-Identifier: Apache-2.0 OR MIT -->
+<!-- SPDX-License-Identifier: FSL-1.1-Apache-2.0 -->
 
 <h1 align="center">rousseau-agent</h1>
 
@@ -15,7 +15,7 @@
   <a href="#development"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sebastienrousseau/rousseau-agent/main/.github/badges/coverage.json&style=for-the-badge&labelColor=555555" alt="Coverage" /></a>
   <a href="https://pkg.go.dev/github.com/sebastienrousseau/rousseau-agent"><img src="https://img.shields.io/badge/pkg.go.dev-reference-informational?style=for-the-badge&logo=go" alt="Go reference" /></a>
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26" />
-  <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue?style=for-the-badge" alt="Apache-2.0 OR MIT" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue?style=for-the-badge" alt="FSL-1.1-Apache-2.0 (transitions to Apache-2.0 after 2 years)" /></a>
 </p>
 
 ---
@@ -1055,10 +1055,24 @@ here against their public definitions.
 
 ## License
 
-Dual-licensed under [Apache License 2.0](./LICENSE-APACHE) or
-[MIT](./LICENSE-MIT), at your option.
+Current versions are licensed under the [Functional Source License,
+Version 1.1, Apache 2.0 Future License (FSL-1.1-Apache-2.0)](./LICENSE).
+Each version automatically transitions to Apache 2.0 on the second
+anniversary of its release — the fair-source pattern also used by
+Sentry and others.
 
-`SPDX-License-Identifier: Apache-2.0 OR MIT`
+`SPDX-License-Identifier: FSL-1.1-Apache-2.0`
+
+**Versions v0.0.3 and earlier** were dual-licensed under [Apache
+License 2.0](./LICENSE-APACHE) or [MIT](./LICENSE-MIT), at your
+option. Those releases retain their original license terms — the
+relicense applies only from the next version forward.
+
+The rationale for the license choice is documented in
+[`docs/LICENSE-RATIONALE.md`](./docs/LICENSE-RATIONALE.md).
+Contributions require signing off under the
+[Developer Certificate of Origin](./CLA.md) — every commit needs a
+`Signed-off-by:` trailer (`git commit -s`).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
 
