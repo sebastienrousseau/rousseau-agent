@@ -217,7 +217,11 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		for evt := range qrChan {
 			switch evt.Event {
 			case "code":
-				c.logger.Info("whatsapp.qr_ready")
+				// Log the raw pair code alongside the ASCII render.
+				// Lets operators pipe it into an alternative renderer
+				// (e.g. `qrencode -o pair.png <code>`) when the
+				// terminal display is too small or wrapped to scan.
+				c.logger.Info("whatsapp.qr_ready", slog.String("code", evt.Code))
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, qrOut)
 			case "success":
 				c.logger.Info("whatsapp.paired")
