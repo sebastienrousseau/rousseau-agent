@@ -16,16 +16,16 @@ import (
 //
 // A fixture yields two axes:
 //
-//   Outcome consistency (C_out): repeat Prompt K times. Each run
-//     produces a success/failure sample bucketed by ID. The
-//     aggregator's outcomeConsistency() then computes the
-//     normalised-variance form from the paper.
+//	Outcome consistency (C_out): repeat Prompt K times. Each run
+//	  produces a success/failure sample bucketed by ID. The
+//	  aggregator's outcomeConsistency() then computes the
+//	  normalised-variance form from the paper.
 //
-//   Prompt robustness (R_prompt): every entry in Paraphrases is
-//     a semantically-equivalent restatement of Prompt. The
-//     harness runs each once, computes Δaccuracy vs the base
-//     bucket, and emits a `prompt` sample per cluster. When
-//     Paraphrases is empty the axis is skipped for this fixture.
+//	Prompt robustness (R_prompt): every entry in Paraphrases is
+//	  a semantically-equivalent restatement of Prompt. The
+//	  harness runs each once, computes Δaccuracy vs the base
+//	  bucket, and emits a `prompt` sample per cluster. When
+//	  Paraphrases is empty the axis is skipped for this fixture.
 type EvalFixture struct {
 	// ID uniquely identifies the fixture. Used as the sample
 	// Bucket so per-fixture variance rolls up correctly.
@@ -93,11 +93,11 @@ type EvalConfig struct {
 // operator display. Individual samples still land in the Recorder;
 // this is the "what happened" summary the CLI renders.
 type EvalResult struct {
-	FixtureID       string
-	BasePasses      int     // successful base-prompt runs of K
-	BaseAttempts    int     // K
-	ParaphraseTotal int     // len(Paraphrases)
-	ParaphrasePasses int    // paraphrase runs that judged success
+	FixtureID        string
+	BasePasses       int     // successful base-prompt runs of K
+	BaseAttempts     int     // K
+	ParaphraseTotal  int     // len(Paraphrases)
+	ParaphrasePasses int     // paraphrase runs that judged success
 	OutcomeAccuracy  float64 // BasePasses / BaseAttempts
 	PromptDelta      float64 // |Acc_paraphrases - OutcomeAccuracy|; 0 when no paraphrases
 	Errors           []string

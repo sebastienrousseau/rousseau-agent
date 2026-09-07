@@ -259,3 +259,68 @@ func TestPrometheusRecorder_MetricsExposedViaHTTPFormat(t *testing.T) {
 	assert.True(t, strings.HasPrefix(names[0], "rousseau_agent_"),
 		"metric families must use the rousseau_agent_ prefix (got %v)", names)
 }
+
+// TestRegister_AlreadyRegisteredReusesExistingCollector exercises the
+// generic register[] helper's re-registration tolerance — the core
+// reason the helper exists. Two NewPrometheusRecorder calls against
+// the same registry (as happens when multiple daemon-assembly runs
+// share the process-wide observability.Registry across integration
+// tests) must NOT panic and must return the SAME underlying
+// collectors so scrape values keep accumulating.
+func TestRegister_AlreadyRegisteredReusesExistingCollector(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	rec1 := NewPrometheusRecorder(reg)
+	require.NotNil(t, rec1)
+
+	// Second construction against the same registry: this exercises
+	// the AlreadyRegisteredError branch of register[T]. It must not
+	// panic.
+	require.NotPanics(t, func() { _ = NewPrometheusRecorder(reg) })
+
+	// And the two recorders should observe the same underlying
+	// collector — Record()ing on rec1 then constructing rec2 must
+	// preserve the counter value.
+	rec1.Record(Sample{Dimension: DimSafety, SubMetric: "turn", Value: 1})
+	rec2 := NewPrometheusRecorder(reg)
+	rec2.Record(Sample{Dimension: DimSafety, SubMetric: "turn", Value: 1})
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	// Sum across all turn-outcome counter families.
+	var total float64
+	for _, f := range families {
+		if f.GetName() != "rousseau_agent_requests_total" {
+			continue
+		}
+		for _, m := range f.GetMetric() {
+			total += m.GetCounter().GetValue()
+		}
+	}
+	assert.Equal(t, float64(2), total,
+		"re-registering must reuse the same counter so both records aggregate")
+}
+
+// TestRegister_UnrelatedCollisionPanics documents the ELSE branch of
+// the type-assertion inside register[]: if the registry already
+// contains a collector of a DIFFERENT type at the same name, register
+// cannot safely return it as T and panics — this is a genuine
+// programmer bug at boot, not a benign duplicate.
+func TestRegister_UnrelatedCollisionPanics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	// Pre-register a Gauge under a name a CounterVec will collide with.
+	// The panic surfaces the mismatch — production would never do
+	// this, but the test asserts the fail-fast contract.
+	existing := prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "rousseau_test_collide"},
+		[]string{"label"},
+	)
+	require.NoError(t, reg.Register(existing))
+
+	factory := promauto(reg)
+	assert.Panics(t, func() {
+		factory.NewCounterVec(
+			prometheus.CounterOpts{Name: "rousseau_test_collide"},
+			[]string{"label"},
+		)
+	})
+}

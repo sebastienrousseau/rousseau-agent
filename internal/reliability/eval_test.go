@@ -177,7 +177,7 @@ func TestRunEval_PromptRobustnessSampleEmitted(t *testing.T) {
 	// "yes"). Paraphrases half-fail.
 	runner := &recordingEvalRunner{
 		perPrompt: map[string]string{
-			"how do I X":          "yes",
+			"how do I X":           "yes",
 			"what is the way to X": "yes",
 			"tell me how to X":     "nope", // fails the substring judge
 		},

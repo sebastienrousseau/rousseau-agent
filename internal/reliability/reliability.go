@@ -9,21 +9,21 @@
 // input, whether it knows when it's uncertain, and whether it
 // refuses actions it should refuse. Rousseau's implementation:
 //
-//   Dimension            Live-measurable        SubMetric family
-//   -------------------  --------------------   -----------------
-//   Consistency (R_Con)  Partially (resource    outcome, trajectory,
-//                        CV is live; outcome    resource
-//                        and trajectory need
-//                        semantic bucketing)
-//   Robustness (R_Rob)   Partially (fault      fault, env, prompt
-//                        stratification is
-//                        live; the rest is
-//                        synthetic)
-//   Predictability       Fully live (confidence  calibration, AUROC,
-//   (R_Pred)             × outcome pairs)        Brier
-//   Safety (R_Saf)       Fully live (violation   compliance, severity
-//                        counters against
-//                        a constraint set)
+//	Dimension            Live-measurable        SubMetric family
+//	-------------------  --------------------   -----------------
+//	Consistency (R_Con)  Partially (resource    outcome, trajectory,
+//	                     CV is live; outcome    resource
+//	                     and trajectory need
+//	                     semantic bucketing)
+//	Robustness (R_Rob)   Partially (fault      fault, env, prompt
+//	                     stratification is
+//	                     live; the rest is
+//	                     synthetic)
+//	Predictability       Fully live (confidence  calibration, AUROC,
+//	(R_Pred)             × outcome pairs)        Brier
+//	Safety (R_Saf)       Fully live (violation   compliance, severity
+//	                     counters against
+//	                     a constraint set)
 //
 // The overall Reliability score `R = mean(R_Con, R_Rob, R_Pred)`
 // deliberately EXCLUDES Safety per the paper — safety is a tail
