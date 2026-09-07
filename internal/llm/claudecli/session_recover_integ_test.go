@@ -214,7 +214,7 @@ func TestStream_SessionInUseRecovery_ChainedInUseDoesNotLoop(t *testing.T) {
 	// Wait briefly to allow the goroutine's cleanup to finish
 	// writing the counter (Stream's report goroutine is async).
 	require.Eventually(t, func() bool {
-		body, _ := os.ReadFile(counterFile)
+		body, _ := os.ReadFile(counterFile) //nolint:errcheck // retried inside Eventually, missing file is a retry signal
 		return strings.TrimSpace(string(body)) == "2"
 	}, time.Second, 20*time.Millisecond, "fake CLI must be invoked exactly twice — no infinite retry loop")
 }
@@ -266,7 +266,7 @@ func TestStream_SessionInUseRecovery_RotateFailureSurfacesOriginalError(t *testi
 
 	// Verify the CLI was NOT invoked a second time.
 	require.Eventually(t, func() bool {
-		body, _ := os.ReadFile(counterFile)
+		body, _ := os.ReadFile(counterFile) //nolint:errcheck // retried inside Eventually, missing file is a retry signal
 		return strings.TrimSpace(string(body)) == "1"
 	}, time.Second, 20*time.Millisecond, "rotate failure must NOT trigger a retry — the CLI must run exactly once")
 }

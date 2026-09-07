@@ -13,7 +13,7 @@ import (
 )
 
 func TestClassifyLine_SystemStart(t *testing.T) {
-	kind, delta, _, isResult, _ := classifyLine(json.RawMessage(`{"type":"system","subtype":"init"}`))
+	kind, delta, _, isResult, _ := classifyLine(json.RawMessage(`{"type":"system","subtype":"init"}`)) //nolint:errcheck // system envelope has no result error to check
 	assert.Equal(t, StreamStart, kind)
 	assert.Empty(t, delta)
 	assert.False(t, isResult)
@@ -21,27 +21,27 @@ func TestClassifyLine_SystemStart(t *testing.T) {
 
 func TestClassifyLine_AssistantMessageDelta(t *testing.T) {
 	line := json.RawMessage(`{"type":"assistant","message":{"content":[{"type":"text","text":"hi "}]}}`)
-	kind, delta, _, _, _ := classifyLine(line)
+	kind, delta, _, _, _ := classifyLine(line) //nolint:errcheck // non-result envelopes have no resultErr to observe
 	assert.Equal(t, StreamTextDelta, kind)
 	assert.Equal(t, "hi ", delta)
 }
 
 func TestClassifyLine_AssistantMultiText(t *testing.T) {
 	line := json.RawMessage(`{"type":"assistant","message":{"content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}}`)
-	kind, delta, _, _, _ := classifyLine(line)
+	kind, delta, _, _, _ := classifyLine(line) //nolint:errcheck // non-result envelopes have no resultErr to observe
 	assert.Equal(t, StreamTextDelta, kind)
 	assert.Equal(t, "ab", delta)
 }
 
 func TestClassifyLine_AssistantToolUse(t *testing.T) {
 	line := json.RawMessage(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"bash"}]}}`)
-	kind, _, _, _, _ := classifyLine(line)
+	kind, _, _, _, _ := classifyLine(line) //nolint:errcheck // tool-use envelope has no resultErr
 	assert.Equal(t, StreamToolUse, kind)
 }
 
 func TestClassifyLine_ResultLine(t *testing.T) {
 	line := json.RawMessage(`{"type":"result","result":"done","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`)
-	kind, _, final, isResult, _ := classifyLine(line)
+	kind, _, final, isResult, _ := classifyLine(line) //nolint:errcheck // success-result path, resultErr is nil
 	assert.Equal(t, StreamResult, kind)
 	assert.True(t, isResult)
 	require.Len(t, final.Message.Content, 1)
@@ -50,13 +50,18 @@ func TestClassifyLine_ResultLine(t *testing.T) {
 }
 
 func TestClassifyLine_UnknownType(t *testing.T) {
-	kind, _, _, _, _ := classifyLine(json.RawMessage(`{"type":"whatever"}`))
+	kind, _, _, _, _ := classifyLine(json.RawMessage(`{"type":"whatever"}`)) //nolint:errcheck // unknown-type envelope routed to StreamOther
 	assert.Equal(t, StreamOther, kind)
 }
 
 func TestClassifyLine_MalformedJSON(t *testing.T) {
-	kind, _, _, _, _ := classifyLine(json.RawMessage(`not json`))
+	// Malformed line contract: classify as StreamOther, do NOT
+	// promote to a resultErr — that surface is reserved for
+	// well-formed {"type":"result", is_error:true} envelopes. See
+	// the nolint:nilerr rationale in stream.go.
+	kind, _, _, _, resultErr := classifyLine(json.RawMessage(`not json`))
 	assert.Equal(t, StreamOther, kind)
+	require.NoError(t, resultErr, "malformed lines must not leak an error onto the result-error channel")
 }
 
 // TestClassifyLine_ResultLineWithError verifies that a `type:"result"`

@@ -194,7 +194,8 @@ func TestRun_ExistingFileRefusedInNonInteractive(t *testing.T) {
 	}
 	require.Error(t, w.run(), "existing config in --yes mode must refuse")
 	// Original content still there.
-	body, _ := os.ReadFile(path)
+	body, err := os.ReadFile(path)
+	require.NoError(t, err)
 	assert.Equal(t, "prior", string(body))
 }
 

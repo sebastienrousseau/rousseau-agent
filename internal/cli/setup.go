@@ -114,11 +114,11 @@ type setupAnswers struct {
 }
 
 func (w *setupWizard) run() error {
-	fmt.Fprintln(w.out, "rousseau-agent setup — one-time config wizard.")                 //nolint:errcheck
-	fmt.Fprintln(w.out, "")                                                                //nolint:errcheck
-	fmt.Fprintf(w.out, "Writing to: %s\n", w.configPath)                                   //nolint:errcheck
-	fmt.Fprintln(w.out, "Run with --config to write elsewhere; --yes to skip prompts.")   //nolint:errcheck
-	fmt.Fprintln(w.out, "")                                                                //nolint:errcheck
+	fmt.Fprintln(w.out, "rousseau-agent setup — one-time config wizard.")               //nolint:errcheck
+	fmt.Fprintln(w.out, "")                                                             //nolint:errcheck
+	fmt.Fprintf(w.out, "Writing to: %s\n", w.configPath)                                //nolint:errcheck
+	fmt.Fprintln(w.out, "Run with --config to write elsewhere; --yes to skip prompts.") //nolint:errcheck
+	fmt.Fprintln(w.out, "")                                                             //nolint:errcheck
 
 	if err := w.checkOverwrite(); err != nil {
 		return err
@@ -149,9 +149,9 @@ func (w *setupWizard) checkOverwrite() error {
 	if w.nonInteractive {
 		return fmt.Errorf("setup: %s already exists (refusing to overwrite in --yes mode; remove the file or pass --config to write elsewhere)", w.configPath)
 	}
-	fmt.Fprintf(w.out, "!  %s already exists.\n", w.configPath)         //nolint:errcheck
+	fmt.Fprintf(w.out, "!  %s already exists.\n", w.configPath)                        //nolint:errcheck
 	fmt.Fprintln(w.out, "   Overwrite? Type 'yes' to proceed, anything else cancels:") //nolint:errcheck
-	fmt.Fprint(w.out, "   > ")                                          //nolint:errcheck
+	fmt.Fprint(w.out, "   > ")                                                         //nolint:errcheck
 	line, err := readLine(w.in)
 	if err != nil {
 		return err
@@ -310,9 +310,9 @@ func renderSetupYAML(a setupAnswers) string {
 }
 
 func (w *setupWizard) printNextSteps(a setupAnswers) {
-	fmt.Fprintln(w.out, "")                       //nolint:errcheck
-	fmt.Fprintln(w.out, "Next steps:")            //nolint:errcheck
-	fmt.Fprintln(w.out, "")                       //nolint:errcheck
+	fmt.Fprintln(w.out, "")                                        //nolint:errcheck
+	fmt.Fprintln(w.out, "Next steps:")                             //nolint:errcheck
+	fmt.Fprintln(w.out, "")                                        //nolint:errcheck
 	fmt.Fprintln(w.out, "  1. Verify the config + prerequisites:") //nolint:errcheck
 	fmt.Fprintln(w.out, "         rousseau doctor")                //nolint:errcheck
 	fmt.Fprintln(w.out, "")                                        //nolint:errcheck

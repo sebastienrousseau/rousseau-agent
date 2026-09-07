@@ -293,7 +293,13 @@ func classifyLine(raw json.RawMessage) (kind agent.StreamEventKind, delta string
 		} `json:"delta"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil {
-		return StreamOther, "", agent.Response{}, false, nil
+		// Malformed line from the CLI stdout (partial write, stray
+		// non-JSON text, a future envelope shape we don't recognise) —
+		// classify as StreamOther so the caller skips it rather than
+		// tearing the whole stream down. A real terminal failure
+		// arrives as a well-formed {"type":"result", is_error:true},
+		// which is what resultErr is reserved for.
+		return StreamOther, "", agent.Response{}, false, nil //nolint:nilerr // deliberate: malformed lines are noise, not a stream-terminating error
 	}
 	switch head.Type {
 	case "system":

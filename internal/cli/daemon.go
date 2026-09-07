@@ -446,9 +446,9 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		// sqlite.SessionCostStore and postgres.SessionCostStore
 		// satisfy the widened interface. Kept in the sqlite
 		// package for locality with pricing; the type is neutral.
-		CostRecorder: sqlitestore.NewCostRecorder(costStore, nil),
-		Hooks:        buildHooks(cfg.Hooks, opts.Logger),
-		Progress:     progressBus,
+		CostRecorder:                sqlitestore.NewCostRecorder(costStore, nil),
+		Hooks:                       buildHooks(cfg.Hooks, opts.Logger),
+		Progress:                    progressBus,
 		AuditSink:                   auditSink,
 		Reliability:                 reliabilityRecorder,
 		EnableConfidenceElicitation: cfg.Agent.EnableConfidenceElicitation,
