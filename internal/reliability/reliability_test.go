@@ -537,3 +537,154 @@ func TestJoinNotes(t *testing.T) {
 	assert.Equal(t, "one", joinNotes([]string{"one"}))
 	assert.Equal(t, "one; two; three", joinNotes([]string{"one", "two", "three"}))
 }
+
+// --- consistencySummary direct tests -------------------------------
+//
+// These exercise every notes-branch of the summary wrapper. The
+// sub-functions (outcomeConsistency, resourceConsistency, etc.) are
+// individually covered above; these tests freeze the wrapper's
+// composition — score = meanIgnoreNaN over the three sub-scores, and
+// missing sub-scores each append a note.
+
+func TestConsistencySummary_NoSamplesEmitsThreeNotes(t *testing.T) {
+	got := consistencySummary(nil)
+	assert.Equal(t, DimConsistency, got.Dimension)
+	assert.True(t, math.IsNaN(got.Score))
+	assert.Equal(t, 0, got.SampleCount)
+	// All three sub-scores missing → all three notes present.
+	assert.Contains(t, got.Note, "outcome consistency")
+	assert.Contains(t, got.Note, "resource consistency")
+	assert.Contains(t, got.Note, "trajectory consistency")
+	// No sub-score keys were populated.
+	assert.Empty(t, got.SubScores)
+}
+
+func TestConsistencySummary_OnlyOutcomeAvailable(t *testing.T) {
+	samples := []Sample{
+		{Dimension: DimConsistency, SubMetric: "outcome", Bucket: "b", Value: 1},
+		{Dimension: DimConsistency, SubMetric: "outcome", Bucket: "b", Value: 1},
+	}
+	got := consistencySummary(samples)
+	// outcome sub-score populated, resource + trajectory notes present.
+	assert.Contains(t, got.SubScores, "outcome")
+	assert.NotContains(t, got.SubScores, "resource")
+	assert.NotContains(t, got.SubScores, "trajectory")
+	assert.NotContains(t, got.Note, "outcome consistency")
+	assert.Contains(t, got.Note, "resource consistency")
+	assert.Contains(t, got.Note, "trajectory consistency")
+	// Score = mean(outcome) = outcome (only one non-NaN input).
+	assert.InDelta(t, got.SubScores["outcome"], got.Score, 1e-9)
+}
+
+func TestConsistencySummary_AllThreePresent(t *testing.T) {
+	samples := []Sample{
+		{Dimension: DimConsistency, SubMetric: "outcome", Bucket: "b", Value: 1},
+		{Dimension: DimConsistency, SubMetric: "outcome", Bucket: "b", Value: 1},
+		{Dimension: DimConsistency, SubMetric: "resource_cv_tokens", Bucket: "b", Value: 100},
+		{Dimension: DimConsistency, SubMetric: "resource_cv_tokens", Bucket: "b", Value: 110},
+		{Dimension: DimConsistency, SubMetric: "trajectory_dist", Value: 0.9},
+	}
+	got := consistencySummary(samples)
+	assert.Contains(t, got.SubScores, "outcome")
+	assert.Contains(t, got.SubScores, "resource")
+	assert.Contains(t, got.SubScores, "trajectory")
+	assert.Empty(t, got.Note)
+	assert.False(t, math.IsNaN(got.Score))
+}
+
+// --- robustnessSummary direct tests --------------------------------
+
+func TestRobustnessSummary_NoSamplesEmitsThreeNotes(t *testing.T) {
+	got := robustnessSummary(nil)
+	assert.Equal(t, DimRobustness, got.Dimension)
+	assert.True(t, math.IsNaN(got.Score))
+	assert.Contains(t, got.Note, "fault robustness")
+	assert.Contains(t, got.Note, "env robustness")
+	assert.Contains(t, got.Note, "prompt robustness")
+	assert.Empty(t, got.SubScores)
+}
+
+func TestRobustnessSummary_OnlyFaultAvailable(t *testing.T) {
+	samples := []Sample{
+		{Dimension: DimRobustness, SubMetric: "fault", Value: 1, Metadata: map[string]string{"fault": "false"}},
+		{Dimension: DimRobustness, SubMetric: "fault", Value: 1, Metadata: map[string]string{"fault": "true"}},
+	}
+	got := robustnessSummary(samples)
+	assert.Contains(t, got.SubScores, "fault")
+	assert.NotContains(t, got.SubScores, "env")
+	assert.NotContains(t, got.SubScores, "prompt")
+	assert.NotContains(t, got.Note, "fault robustness")
+	assert.Contains(t, got.Note, "env robustness")
+	assert.Contains(t, got.Note, "prompt robustness")
+}
+
+// --- predictabilitySummary direct tests ----------------------------
+
+func TestPredictabilitySummary_NoSamplesEmitsNote(t *testing.T) {
+	got := predictabilitySummary(nil)
+	assert.Equal(t, DimPredictability, got.Dimension)
+	assert.True(t, math.IsNaN(got.Score))
+	assert.Contains(t, got.Note, "predictability")
+	assert.Empty(t, got.SubScores)
+}
+
+func TestPredictabilitySummary_PairsPopulateBrierAndCalibration(t *testing.T) {
+	samples := []Sample{
+		{Dimension: DimPredictability, SubMetric: "pair", Value: 0.9, Metadata: map[string]string{"outcome": "1"}},
+		{Dimension: DimPredictability, SubMetric: "pair", Value: 0.2, Metadata: map[string]string{"outcome": "0"}},
+	}
+	got := predictabilitySummary(samples)
+	assert.Contains(t, got.SubScores, "brier")
+	assert.Contains(t, got.SubScores, "calibration")
+	// Paper's R_Pred = Brier
+	assert.InDelta(t, got.SubScores["brier"], got.Score, 1e-9)
+	assert.Empty(t, got.Note)
+}
+
+// --- extractPairs: both outcome values -----------------------------
+
+func TestExtractPairs_HonoursBothOutcomeValues(t *testing.T) {
+	samples := []Sample{
+		{SubMetric: "pair", Value: 0.7, Metadata: map[string]string{"outcome": "1"}},
+		{SubMetric: "pair", Value: 0.3, Metadata: map[string]string{"outcome": "0"}},
+		{SubMetric: "pair", Value: 0.5, Metadata: map[string]string{}}, // missing outcome → 0
+		{SubMetric: "not-pair", Value: 0.9, Metadata: map[string]string{"outcome": "1"}},
+	}
+	pairs := extractPairs(samples)
+	require.Len(t, pairs, 3, "non-pair sub-metrics filtered")
+	assert.Equal(t, 1.0, pairs[0].y)
+	assert.Equal(t, 0.0, pairs[1].y)
+	assert.Equal(t, 0.0, pairs[2].y, "missing outcome metadata treated as 0")
+}
+
+// --- resourceConsistency: no non-NaN CVs ---------------------------
+
+func TestResourceConsistency_AllBucketsSingleSampleReturnsFalse(t *testing.T) {
+	// Every bucket has 1 sample → CV undefined for every group.
+	samples := []Sample{
+		{SubMetric: "resource_cv_tokens", Bucket: "a", Value: 100},
+		{SubMetric: "resource_cv_tokens", Bucket: "b", Value: 200},
+	}
+	_, ok := resourceConsistency(samples)
+	assert.False(t, ok, "single-sample buckets cannot compute CV")
+}
+
+// --- faultRobustness: only faulted or only clean stratum -----------
+
+func TestFaultRobustness_OnlyFaultedStratumReturnsFalse(t *testing.T) {
+	samples := []Sample{
+		{SubMetric: "fault", Value: 1, Metadata: map[string]string{"fault": "true"}},
+		{SubMetric: "fault", Value: 1, Metadata: map[string]string{"fault": "true"}},
+	}
+	_, ok := faultRobustness(samples)
+	assert.False(t, ok, "need both strata to compute ratio")
+}
+
+func TestFaultRobustness_OnlyCleanStratumReturnsFalse(t *testing.T) {
+	samples := []Sample{
+		{SubMetric: "fault", Value: 1, Metadata: map[string]string{"fault": "false"}},
+		{SubMetric: "fault", Value: 1, Metadata: map[string]string{"fault": "false"}},
+	}
+	_, ok := faultRobustness(samples)
+	assert.False(t, ok)
+}

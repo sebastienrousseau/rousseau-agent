@@ -1,6 +1,8 @@
 package reliability
 
 import (
+	"errors"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -13,9 +15,9 @@ import (
 //
 // This is the second half of the Prometheus surface:
 //
-//   Aggregator      → in-memory rolling summary → `rousseau reliability`
-//   SQLite store    → durable sample table       → cross-process reads
-//   PrometheusRecorder → observability registry  → /metrics scrape
+//	Aggregator      → in-memory rolling summary → `rousseau reliability`
+//	SQLite store    → durable sample table       → cross-process reads
+//	PrometheusRecorder → observability registry  → /metrics scrape
 //
 // All three share the same Sample stream. The MultiRecorder in
 // the daemon assembly fans one sample out to all three at zero
@@ -184,14 +186,21 @@ type promautoFactory struct {
 // still panic (a genuine programmer bug at boot).
 func register[T prometheus.Collector](reg prometheus.Registerer, c T) T {
 	if err := reg.Register(c); err != nil {
-		if are, ok := err.(prometheus.AlreadyRegisteredError); ok {
+		var are prometheus.AlreadyRegisteredError
+		if errors.As(err, &are) {
 			// Reuse the existing series so scraped values keep
 			// accumulating rather than resetting on re-init.
 			if existing, ok := are.ExistingCollector.(T); ok {
 				return existing
 			}
 		}
-		panic(err)
+		// Boot-time programmer error: the registry contains a
+		// collector of a DIFFERENT type at the same metric name.
+		// This is unrecoverable at the recorder layer — a nil
+		// return would ship a nil-collector into every callsite.
+		// Panic surfaces the mismatch loudly at process init, which
+		// is the only reasonable failure mode.
+		panic(err) //nolint:forbidigo // fail-fast at boot on unrecoverable registry mismatch; see doc comment
 	}
 	return c
 }
