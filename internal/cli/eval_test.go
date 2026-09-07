@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 )
 
@@ -87,7 +90,8 @@ func TestLoadEvalFixtures_MalformedYAMLErrors(t *testing.T) {
 // -- selectEvalRunner -----------------------------------------------
 
 func TestSelectEvalRunner_DryRunReturnsStub(t *testing.T) {
-	r, err := selectEvalRunner(true)
+	var stderr bytes.Buffer
+	r, err := selectEvalRunner(nil, true, false, &stderr)
 	require.NoError(t, err)
 	require.NotNil(t, r)
 
@@ -97,11 +101,93 @@ func TestSelectEvalRunner_DryRunReturnsStub(t *testing.T) {
 	assert.Equal(t, "ok", reply)
 }
 
-func TestSelectEvalRunner_NonDryRunErrorsPointingToRoadmap(t *testing.T) {
-	_, err := selectEvalRunner(false)
+func TestSelectEvalRunner_NoFlagsErrorsWithGuidance(t *testing.T) {
+	var stderr bytes.Buffer
+	_, err := selectEvalRunner(nil, false, false, &stderr)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "follow-on wave")
 	assert.Contains(t, err.Error(), "--dry-run")
+	assert.Contains(t, err.Error(), "--confirm-cost")
+}
+
+func TestSelectEvalRunner_BothFlagsIsMutuallyExclusive(t *testing.T) {
+	var stderr bytes.Buffer
+	_, err := selectEvalRunner(nil, true, true, &stderr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+func TestSelectEvalRunner_ConfirmCostWithoutConfigErrors(t *testing.T) {
+	var stderr bytes.Buffer
+	_, err := selectEvalRunner(nil, false, true, &stderr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loaded config")
+}
+
+func TestSelectEvalRunner_ConfirmCostWithBrokenConfigErrors(t *testing.T) {
+	// Provider that will fail buildProvider (e.g. bedrock with no
+	// region set) — the runner surfaces the underlying construction
+	// error rather than swallowing it.
+	var stderr bytes.Buffer
+	opts := &Options{Config: &config.Config{Provider: "bedrock"}}
+	_, err := selectEvalRunner(opts, false, true, &stderr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "construct provider")
+}
+
+// TestProviderEvalRunner_ExtractsTextParts freezes the assumption
+// that the runner concatenates every `text` content block on the
+// provider reply and skips tool-use / thinking. A future provider
+// change that adds a new Content kind must decide explicitly whether
+// to include it in the eval-judged output.
+func TestProviderEvalRunner_ExtractsTextParts(t *testing.T) {
+	fake := fakeProvider{
+		name: "fake",
+		reply: agent.Message{
+			Content: []agent.Content{
+				{Kind: agent.ContentText, Text: "one"},
+				{Kind: agent.ContentToolUse, Text: "should be skipped"},
+				{Kind: agent.ContentText, Text: "two"},
+			},
+		},
+	}
+	r := newProviderEvalRunner(&fake)
+	got, err := r.Run(context.Background(), "hello")
+	require.NoError(t, err)
+	assert.Equal(t, "one\ntwo", got)
+	assert.Equal(t, "hello", fake.lastPrompt)
+	assert.Empty(t, fake.lastReq.SessionID, "eval runs must NOT reuse session state — measures naked model behaviour")
+	assert.Empty(t, fake.lastReq.Tools, "eval runs must NOT expose tools — measures naked model behaviour")
+}
+
+func TestProviderEvalRunner_PropagatesProviderError(t *testing.T) {
+	boom := errors.New("provider went boom")
+	fake := &fakeProvider{name: "fake", err: boom}
+	r := newProviderEvalRunner(fake)
+	_, err := r.Run(context.Background(), "hi")
+	require.ErrorIs(t, err, boom)
+}
+
+// fakeProvider satisfies the local agentProvider interface. Records
+// the last request so tests can freeze the "single-turn, no
+// context" contract.
+type fakeProvider struct {
+	name       string
+	reply      agent.Message
+	err        error
+	lastPrompt string
+	lastReq    agent.Request
+}
+
+func (f fakeProvider) Name() string { return f.name }
+func (f *fakeProvider) Complete(_ context.Context, req agent.Request) (agent.Response, error) {
+	f.lastReq = req
+	if len(req.Messages) > 0 && len(req.Messages[0].Content) > 0 {
+		f.lastPrompt = req.Messages[0].Content[0].Text
+	}
+	if f.err != nil {
+		return agent.Response{}, f.err
+	}
+	return agent.Response{Message: f.reply}, nil
 }
 
 // -- openEvalRecorder -----------------------------------------------
@@ -242,7 +328,7 @@ func TestEval_EndToEndDryRun(t *testing.T) {
 
 	fixtures, err := loadEvalFixtures(path)
 	require.NoError(t, err)
-	runner, err := selectEvalRunner(true)
+	runner, err := selectEvalRunner(nil, true, false, &bytes.Buffer{})
 	require.NoError(t, err)
 
 	results, err := reliability.RunEval(context.Background(), fixtures, reliability.EvalConfig{

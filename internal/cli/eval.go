@@ -12,9 +12,44 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
+
+// agentProvider is a narrower view of [agent.Provider] used by the
+// eval runner. Kept as a local interface so the runner tests can
+// substitute a fake without depending on the full Provider surface.
+type agentProvider interface {
+	Name() string
+	Complete(ctx context.Context, req agent.Request) (agent.Response, error)
+}
+
+// agentRequest builds the single-turn Request handed to a provider
+// on each eval prompt. No SessionID, no tools, no cached history —
+// see [newProviderEvalRunner] for the rationale.
+func agentRequest(prompt string) agent.Request {
+	return agent.Request{
+		Messages: []agent.Message{agent.NewUserText(prompt)},
+	}
+}
+
+// extractText concatenates every `text` block of the reply. Non-text
+// content (tool_use, tool_result, thinking) is skipped — the eval
+// harness only judges the assistant's textual output.
+func extractText(resp agent.Response) string {
+	var out string
+	for _, c := range resp.Message.Content {
+		if c.Kind != agent.ContentText {
+			continue
+		}
+		if out != "" {
+			out += "\n"
+		}
+		out += c.Text
+	}
+	return out
+}
 
 // newEvalCmd wires `rousseau eval` — the synthetic-eval harness
 // that closes the "partial live measurability" gap in Phase 2.3
@@ -25,26 +60,27 @@ import (
 //
 // Ordinary use:
 //
-//   rousseau eval --fixture ./eval-fixtures.yaml
-//   rousseau eval --fixture ./eval-fixtures.yaml --repeats 10
-//   rousseau eval --fixture ./eval-fixtures.yaml --dry-run
-//   rousseau eval --fixture ./eval-fixtures.yaml --json
+//	rousseau eval --fixture ./eval-fixtures.yaml --dry-run
+//	rousseau eval --fixture ./eval-fixtures.yaml --confirm-cost
+//	rousseau eval --fixture ./eval-fixtures.yaml --confirm-cost --repeats 10
+//	rousseau eval --fixture ./eval-fixtures.yaml --dry-run --json
 //
-// Dry-run uses a deterministic stub runner (canned "ok" reply) —
+// --dry-run uses a deterministic stub runner (canned "ok" reply) —
 // useful for verifying the fixture file parses + judges compile
 // before spending real provider tokens.
 //
-// Non-dry-run is a placeholder in this commit — real provider
-// invocation ships with the follow-on "eval-provider" wave.
-// Attempting a real run without --dry-run today errors with a
-// pointer to the roadmap entry, rather than pretending to work
-// against no runner.
+// Real-provider invocation is gated behind --confirm-cost so the
+// operator has to opt into the token spend. Without either flag the
+// command errors rather than defaulting to real invocation. The
+// configured provider from config.yaml (Claude CLI / Anthropic /
+// OpenAI / Bedrock / Vertex / Ollama) does the completion.
 func newEvalCmd(opts *Options) *cobra.Command {
 	var (
 		fixtureFile string
 		repeats     int
 		jsonOut     bool
 		dryRun      bool
+		confirmCost bool
 	)
 	cmd := &cobra.Command{
 		Use:   "eval",
@@ -72,8 +108,17 @@ reliability' sees the combined dataset.
 
 --dry-run substitutes a deterministic stub runner ("ok" for
 every prompt) so fixture files can be validated without
-spending provider tokens. Provider-driven eval is a follow-on
-wave; today the command errors without --dry-run.`,
+spending provider tokens.
+
+--confirm-cost enables real-provider invocation against the
+provider configured in config.yaml (Claude CLI / Anthropic /
+OpenAI / Bedrock / Vertex / Ollama / router). Every fixture
+runs --repeats + N-paraphrases times, so token spend is
+(fixtures × (repeats + paraphrases)) per run — the operator
+signs off on this by passing --confirm-cost.
+
+Without either flag the command errors rather than silently
+picking one.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if fixtureFile == "" {
@@ -83,7 +128,7 @@ wave; today the command errors without --dry-run.`,
 			if err != nil {
 				return err
 			}
-			runner, err := selectEvalRunner(dryRun)
+			runner, err := selectEvalRunner(opts, dryRun, confirmCost, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -106,6 +151,7 @@ wave; today the command errors without --dry-run.`,
 	cmd.Flags().IntVar(&repeats, "repeats", 5, "K in the paper — base-prompt repeats per fixture")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit machine-readable JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "use a deterministic stub runner instead of a real provider (validates fixtures without spending tokens)")
+	cmd.Flags().BoolVar(&confirmCost, "confirm-cost", false, "acknowledge real-provider token spend and run against the configured provider")
 	return cmd
 }
 
@@ -136,16 +182,29 @@ func loadEvalFixtures(path string) ([]reliability.EvalFixture, error) {
 	return wrapped.Fixtures, nil
 }
 
-// selectEvalRunner picks between the deterministic stub (dry-run)
-// and the real provider-backed runner (not implemented yet — the
-// follow-on wave wires this against the configured Provider from
-// config.yaml). Today, non-dry-run returns an error rather than
-// silently mis-running.
-func selectEvalRunner(dryRun bool) (reliability.EvalRunner, error) {
-	if dryRun {
+// selectEvalRunner picks between the deterministic stub (--dry-run)
+// and the real provider-backed runner (--confirm-cost). Refuses to
+// pick a default when neither flag is set so the operator never
+// runs a real-token eval by accident.
+func selectEvalRunner(opts *Options, dryRun, confirmCost bool, errOut io.Writer) (reliability.EvalRunner, error) {
+	switch {
+	case dryRun && confirmCost:
+		return nil, errors.New("eval: --dry-run and --confirm-cost are mutually exclusive")
+	case dryRun:
 		return reliability.EvalRunnerFunc(stubEvalRun), nil
+	case confirmCost:
+		if opts == nil || opts.Config == nil {
+			return nil, errors.New("eval: --confirm-cost requires a loaded config (--config path)")
+		}
+		provider, err := buildProvider(opts.Config)
+		if err != nil {
+			return nil, fmt.Errorf("eval: construct provider: %w", err)
+		}
+		_, _ = fmt.Fprintf(errOut, "eval: running against provider %q; every fixture repeats + paraphrase spends tokens\n", provider.Name()) //nolint:errcheck // best-effort user notice
+		return newProviderEvalRunner(provider), nil
+	default:
+		return nil, errors.New("eval: pass --dry-run to validate the fixture, or --confirm-cost to run against the configured provider")
 	}
-	return nil, errors.New("eval: real-provider eval is a follow-on wave — use --dry-run today to validate fixtures; see docs/reliability.md")
 }
 
 // stubEvalRun is the dry-run runner: canned "ok" reply for every
@@ -154,6 +213,27 @@ func selectEvalRunner(dryRun bool) (reliability.EvalRunner, error) {
 // samples?) without spending provider tokens.
 func stubEvalRun(_ context.Context, _ string) (string, error) {
 	return "ok", nil
+}
+
+// newProviderEvalRunner adapts an [agent.Provider] to the
+// [reliability.EvalRunner] contract. Each Run is a fresh single-turn
+// Request — no SessionID, no cached history, no tool defs — so the
+// eval measures the naked model behaviour, not the daemon's
+// conversation-management overlay. This is exactly the paper's
+// protocol: same prompt K times, no context bleed.
+//
+// The response text is the concatenation of every `text` Content
+// block on the returned Message. Non-text content (tool calls, etc.)
+// is skipped — a fixture that expects tool use isn't a good match
+// for the harness surface today.
+func newProviderEvalRunner(p agentProvider) reliability.EvalRunner {
+	return reliability.EvalRunnerFunc(func(ctx context.Context, prompt string) (string, error) {
+		resp, err := p.Complete(ctx, agentRequest(prompt))
+		if err != nil {
+			return "", err
+		}
+		return extractText(resp), nil
+	})
 }
 
 // openEvalRecorder opens the SQLite reliability store so eval
