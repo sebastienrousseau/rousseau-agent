@@ -93,5 +93,5 @@ func xmlEscape(buf *bytes.Buffer, s string) {
 	// EscapeText writes to any io.Writer; bytes.Buffer implements
 	// it. Errors from bytes.Buffer.Write are impossible per the
 	// stdlib contract, so ignoring the return value is safe.
-	_ = xml.EscapeText(buf, []byte(s))
+	_ = xml.EscapeText(buf, []byte(s)) //nolint:errcheck // bytes.Buffer.Write cannot fail per stdlib contract
 }

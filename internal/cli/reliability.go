@@ -31,8 +31,8 @@ import (
 // buyers will consume.
 func newReliabilityCmd(opts *Options) *cobra.Command {
 	var (
-		jsonOut  bool
-		windowS  string
+		jsonOut   bool
+		windowS   string
 		synthetic bool
 	)
 	cmd := &cobra.Command{
@@ -100,15 +100,15 @@ func parseReliabilityWindow(s string) (time.Duration, error) {
 // loadReliabilityAggregator returns the aggregator this invocation
 // should read from. Three paths:
 //
-//   1. --synthetic: canned sample set, useful for dashboard-
-//      integration testing.
-//   2. Real SQLite store available: load the last `window` of
-//      samples from the reliability_samples table (populated by
-//      the daemon's agent.Turn instrumentation). This is the
-//      normal path — CLI runs as a separate process from the
-//      daemon and reads what's on disk.
-//   3. Neither: empty aggregator. Prints the "no samples yet"
-//      message.
+//  1. --synthetic: canned sample set, useful for dashboard-
+//     integration testing.
+//  2. Real SQLite store available: load the last `window` of
+//     samples from the reliability_samples table (populated by
+//     the daemon's agent.Turn instrumentation). This is the
+//     normal path — CLI runs as a separate process from the
+//     daemon and reads what's on disk.
+//  3. Neither: empty aggregator. Prints the "no samples yet"
+//     message.
 //
 // window is used as the LoadSince cutoff so we don't pay for
 // scanning samples the summary will filter out anyway.
@@ -171,7 +171,7 @@ func loadSyntheticReliabilitySamples(agg *reliability.Aggregator) {
 	// Consistency: stable resource CV.
 	for _, tokens := range []float64{1200, 1180, 1220, 1195, 1205} {
 		agg.Record(reliability.Sample{
-			At: now.Add(-time.Duration(int64(tokens)) * time.Second),
+			At:        now.Add(-time.Duration(int64(tokens)) * time.Second),
 			Dimension: reliability.DimConsistency,
 			SubMetric: "resource_cv_tokens", Bucket: "route:/agent/turn",
 			Value: tokens,
@@ -184,7 +184,7 @@ func loadSyntheticReliabilitySamples(agg *reliability.Aggregator) {
 			v = 0
 		}
 		agg.Record(reliability.Sample{
-			At: now.Add(-time.Duration(i) * time.Minute),
+			At:        now.Add(-time.Duration(i) * time.Minute),
 			Dimension: reliability.DimRobustness, SubMetric: "fault", Value: v,
 			Metadata: map[string]string{"fault": "false"},
 		})
@@ -195,7 +195,7 @@ func loadSyntheticReliabilitySamples(agg *reliability.Aggregator) {
 			v = 0
 		}
 		agg.Record(reliability.Sample{
-			At: now.Add(-time.Duration(i) * time.Minute),
+			At:        now.Add(-time.Duration(i) * time.Minute),
 			Dimension: reliability.DimRobustness, SubMetric: "fault", Value: v,
 			Metadata: map[string]string{"fault": "true"},
 		})
@@ -310,14 +310,14 @@ func renderReliabilityHuman(w io.Writer, s reliability.Summary) error {
 		humanWindow(s.Window), s.SampleCount)
 
 	if s.SampleCount == 0 {
-		fmt.Fprintln(w, "(no samples recorded yet — see docs/reliability.md")   //nolint:errcheck
+		fmt.Fprintln(w, "(no samples recorded yet — see docs/reliability.md")    //nolint:errcheck
 		fmt.Fprintln(w, " for methodology + wiring status. Try --synthetic for") //nolint:errcheck
-		fmt.Fprintln(w, " a canned example so you can verify the format.)")     //nolint:errcheck
+		fmt.Fprintln(w, " a canned example so you can verify the format.)")      //nolint:errcheck
 		return nil
 	}
 
 	fmt.Fprintf(w, "  Overall   %s   (mean of consistency, robustness, predictability)\n", humanScore(s.Overall)) //nolint:errcheck
-	fmt.Fprintln(w)                                                                                                //nolint:errcheck
+	fmt.Fprintln(w)                                                                                               //nolint:errcheck
 	renderDim(w, s.Consistency)
 	renderDim(w, s.Robustness)
 	renderDim(w, s.Predictability)

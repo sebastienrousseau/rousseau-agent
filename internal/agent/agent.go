@@ -356,22 +356,15 @@ func faultObservedFromError(err error) string {
 		"eof",
 		"i/o timeout",
 		"context canceled",
-		"provider:",     // wrapped provider errors from turn.go
-		"subprocess",    // tool-shell-out failures
-		"exit status",   // subprocess exit codes
+		"provider:",   // wrapped provider errors from turn.go
+		"subprocess",  // tool-shell-out failures
+		"exit status", // subprocess exit codes
 	} {
 		if strings.Contains(msg, marker) {
 			return "true"
 		}
 	}
 	return "false"
-}
-
-// turn is the legacy body signature (nil stats). Retained for
-// call sites that don't need per-turn accumulation — internal
-// callers should prefer turnWithStats.
-func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
-	return a.turnWithStats(ctx, s, nil)
 }
 
 // turnWithStats is Turn's body, split out so Turn can bracket it

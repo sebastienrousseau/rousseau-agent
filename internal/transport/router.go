@@ -411,9 +411,9 @@ var syncCommands = map[string]struct{}{
 	"/save":   {},
 	"/s":      {}, // shortcut for /save (Ctrl+S muscle memory).
 	// /ls above lists sessions instead.
-	"/find": {},
-	"/f":    {}, // shortcut for /find (search across your sessions)
-	"/rm":   {}, // shell-alias for /delete
+	"/find":    {},
+	"/f":       {}, // shortcut for /find (search across your sessions)
+	"/rm":      {}, // shell-alias for /delete
 	"/login":   {},
 	"/li":      {}, // shortcut for /login
 	"/logout":  {},

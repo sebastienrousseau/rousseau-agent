@@ -297,7 +297,7 @@ func TestRotateSessionFile_StatFailureBubbles(t *testing.T) {
 	dir := t.TempDir()
 	blocked := filepath.Join(dir, "blocked")
 	require.NoError(t, os.Mkdir(blocked, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) }) // restore for cleanup
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) }) //nolint:errcheck // best-effort restore for TempDir cleanup
 
 	rotated, err := rotateSessionFile(filepath.Join(blocked, "sess.jsonl"), fixedTime)
 	assert.False(t, rotated)

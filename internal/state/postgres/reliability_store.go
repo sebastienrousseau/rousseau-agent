@@ -121,9 +121,9 @@ ORDER BY id ASC
 	var out []reliability.Sample
 	for rs.Next() {
 		var (
-			at                                     time.Time
+			at                              time.Time
 			dim, sub, sess, bucket, metaStr string
-			value                                  float64
+			value                           float64
 		)
 		if err := rs.Scan(&at, &dim, &sub, &value, &sess, &bucket, &metaStr); err != nil {
 			return out, fmt.Errorf("postgres: reliability scan: %w", err)

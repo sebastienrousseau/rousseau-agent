@@ -29,7 +29,7 @@ func TestSkillsMode_ValuesMap(t *testing.T) {
 		"LEGACY": skillsModeLegacy, // case-insensitive
 		"spec":   skillsModeSpec,
 		"SPEC":   skillsModeSpec,
-		" spec ": skillsModeSpec, // whitespace tolerated
+		" spec ": skillsModeSpec,   //nolint:gocritic // deliberate: freezes whitespace-tolerance contract
 		"junk":   skillsModeLegacy, // unknown → default → legacy
 	}
 	for input, want := range cases {

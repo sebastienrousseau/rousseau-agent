@@ -100,7 +100,7 @@ func TestResolveResource_HandlesRelativeBaseDir(t *testing.T) {
 	// before the safety check.
 	orig, err := os.Getwd()
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.Chdir(orig) })
+	t.Cleanup(func() { _ = os.Chdir(orig) }) //nolint:errcheck // test cleanup, best-effort
 
 	dir := t.TempDir()
 	require.NoError(t, os.Chdir(dir))
