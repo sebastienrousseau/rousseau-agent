@@ -53,6 +53,7 @@ func runChecks(ctx context.Context, cfg *config.Config, chk license.Checker) []d
 	out = append(out, checkSSO(ctx, cfg, chk)...)
 	out = append(out, checkGovernance(cfg, chk)...)
 	out = append(out, checkAuditEgress(cfg, chk)...)
+	out = append(out, checkA2A(cfg)...)
 	out = append(out, checkProvider(ctx, cfg)...)
 	out = append(out, checkState(cfg)...)
 	out = append(out, checkWhatsApp(cfg)...)
@@ -218,6 +219,76 @@ func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 				Detail: "rules configured but licence does not unlock governance_advanced — pending queue is inert (see docs/COMMERCIAL.md)",
 			})
 		}
+	}
+	return out
+}
+
+// checkA2A renders identity.a2a.* rows. Only emitted when the
+// operator has set a2a.server.enabled=true OR configured client peers.
+// Bare OSS installs produce zero rows — no noise for people who never
+// touched A2A.
+//
+// Rows (server side):
+//
+//   - identity.a2a.server.listen             — bind address
+//   - identity.a2a.server.auth_tokens_file   — configured / missing / empty
+//   - identity.a2a.server.signing_key_file   — configured / missing (info-only, signing is optional)
+//   - identity.a2a.server.exposed_skills     — count of allowed skill invocations
+//
+// Rows (client side):
+//   - identity.a2a.clients                   — count of configured peers
+func checkA2A(cfg *config.Config) []diagResult {
+	if !cfg.A2A.Server.Enabled && len(cfg.A2A.Clients) == 0 {
+		return nil
+	}
+	var out []diagResult
+
+	if cfg.A2A.Server.Enabled {
+		listen := cfg.A2A.Server.Listen
+		if listen == "" {
+			listen = defaultA2AListen
+		}
+		out = append(out, diagResult{
+			Name: "identity.a2a.server.listen", Status: "info", Detail: listen,
+		})
+
+		if cfg.A2A.Server.AuthTokensFile == "" {
+			out = append(out, diagResult{
+				Name:   "identity.a2a.server.auth_tokens_file",
+				Status: "fail",
+				Detail: "auth_tokens_file is empty — server would run anonymous; buildA2AServer refuses to boot",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name: "identity.a2a.server.auth_tokens_file", Status: "info", Detail: cfg.A2A.Server.AuthTokensFile,
+			})
+		}
+
+		if cfg.A2A.Server.SigningKeyFile != "" {
+			out = append(out, diagResult{
+				Name: "identity.a2a.server.signing_key_file", Status: "ok", Detail: "configured",
+			})
+		} else {
+			out = append(out, diagResult{
+				Name:   "identity.a2a.server.signing_key_file",
+				Status: "info",
+				Detail: "unset — AgentCard will serve unsigned",
+			})
+		}
+
+		out = append(out, diagResult{
+			Name:   "identity.a2a.server.exposed_skills",
+			Status: "info",
+			Detail: fmt.Sprintf("%d skill(s)", len(cfg.A2A.Server.ExposedSkills)),
+		})
+	}
+
+	if len(cfg.A2A.Clients) > 0 {
+		out = append(out, diagResult{
+			Name:   "identity.a2a.clients",
+			Status: "info",
+			Detail: fmt.Sprintf("%d peer(s)", len(cfg.A2A.Clients)),
+		})
 	}
 	return out
 }
