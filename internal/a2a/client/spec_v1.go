@@ -29,6 +29,15 @@ import (
 // `/.well-known/agent-capabilities` when the peer returns 404, and
 // upgrades the legacy shape to a v1 [a2a.AgentCard] via
 // [a2a.UpgradeCard].
+//
+// Signature verification: when [Config.TrustedPublisherKeys] is
+// non-empty, the returned card's signatures[] is verified before
+// return. If none of the entries verify against a trusted key, the
+// call returns an error wrapping [a2a.ErrCardBadSignature]. Unsigned
+// cards are accepted UNLESS [Config.RequireSignedCard] is set (in
+// which case the call fails with [a2a.ErrCardUnsigned]). Legacy-shape
+// cards fetched via the fallback are never verified — the legacy
+// path predates signing and cannot carry signatures.
 func (c *Client) GetAgentCard(ctx context.Context) (a2a.AgentCard, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
@@ -43,7 +52,9 @@ func (c *Client) GetAgentCard(ctx context.Context) (a2a.AgentCard, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
-		// Legacy fallback so we can talk to pre-v1 peers.
+		if c.cfg.RequireSignedCard {
+			return a2a.AgentCard{}, fmt.Errorf("a2a/client: peer only speaks legacy and RequireSignedCard is set; legacy cards cannot be signed")
+		}
 		legacy, err := c.FetchCard(ctx)
 		if err != nil {
 			return a2a.AgentCard{}, fmt.Errorf("a2a/client: peer has no v1 card and legacy fallback failed: %w", err)
@@ -57,7 +68,34 @@ func (c *Client) GetAgentCard(ctx context.Context) (a2a.AgentCard, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&card); err != nil {
 		return a2a.AgentCard{}, fmt.Errorf("a2a/client: decode agent card: %w", err)
 	}
+	if err := c.verifyCardSignature(card); err != nil {
+		return a2a.AgentCard{}, err
+	}
 	return card, nil
+}
+
+// verifyCardSignature applies the operator's trust policy to a fresh
+// [a2a.AgentCard]. Zero-value config policy is "accept everything"
+// (backward compatible with peers that don't sign). Configured
+// TrustedPublisherKeys enforces signature verification when present;
+// RequireSignedCard enforces "signed by a trusted key" strictly.
+func (c *Client) verifyCardSignature(card a2a.AgentCard) error {
+	// No policy configured → accept.
+	if len(c.cfg.TrustedPublisherKeys) == 0 && !c.cfg.RequireSignedCard {
+		return nil
+	}
+	// RequireSignedCard without any trusted keys is a config error
+	// but we handle it defensively: reject unsigned, accept nothing
+	// signed. Documents the operator misconfig via the sentinel.
+	err := a2a.VerifyAgentCard(card, c.cfg.TrustedPublisherKeys)
+	if err == nil {
+		return nil
+	}
+	// Unsigned → accept only when RequireSignedCard is false AND
+	// TrustedPublisherKeys is empty (already returned above). If we
+	// have trusted keys but the card is unsigned, that's a mismatched
+	// posture — reject.
+	return fmt.Errorf("a2a/client: agent card signature check: %w", err)
 }
 
 // SendMessage posts a spec-shaped [a2a.Message] to the peer's

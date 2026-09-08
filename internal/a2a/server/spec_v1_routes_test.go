@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"io"
 	"net"
@@ -581,6 +583,49 @@ func TestSpec_CancelUnknownTask_404(t *testing.T) {
 	if res.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", res.StatusCode)
 	}
+}
+
+func TestSpec_AgentCardSignedWhenKeyConfigured(t *testing.T) {
+	t.Parallel()
+	// Configure the server with an Ed25519 signing key so the
+	// well-known card gets JWS-signed on serve.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	s, err := New(a2a.CapabilityCard{
+		Name: "signed-peer", Version: "v0.0.5", SupportsStreaming: true,
+	}, echoHandler{}, nil)
+	require.NoError(t, err)
+	s.SigningKey = priv
+	ts := httptest.NewServer(s.Router())
+	t.Cleanup(ts.Close)
+
+	res := mustGet(t, ts.URL+"/.well-known/agent-card.json")
+	defer func() { _ = res.Body.Close() }()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	var card a2a.AgentCard
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&card))
+	require.NotEmpty(t, card.Signatures, "signing key configured but card served unsigned")
+
+	// The client-facing invariant: a peer with the matching public
+	// key must be able to verify the served card.
+	if err := a2a.VerifyAgentCard(card, []ed25519.PublicKey{pub}); err != nil {
+		t.Errorf("card must verify against its own signing key: %v", err)
+	}
+}
+
+func TestSpec_AgentCardUnsignedWhenNoKeyConfigured(t *testing.T) {
+	t.Parallel()
+	// Without a signing key the card must still serve — signing is
+	// opt-in, not required. This freezes the backward-compat contract.
+	ts, _ := newSpecTestServer(t)
+	res := mustGet(t, ts.URL+"/.well-known/agent-card.json")
+	defer func() { _ = res.Body.Close() }()
+
+	var card a2a.AgentCard
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&card))
+	assert.Empty(t, card.Signatures, "no key configured → card must be unsigned")
 }
 
 func TestSpec_LegacyPathsStillWork(t *testing.T) {

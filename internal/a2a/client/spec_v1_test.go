@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a"
 )
@@ -586,6 +591,128 @@ func TestSpec_CancelTask_LegacyFallback_500Bubbles(t *testing.T) {
 	if err := c.CancelTask(context.Background(), "t"); err == nil {
 		t.Error("expected error from legacy fallback")
 	}
+}
+
+// -- Card-signature verification policy ---------------------------
+
+func TestSpec_GetAgentCard_UntrustedSignatureRejected(t *testing.T) {
+	t.Parallel()
+	// Peer signs with key A, client trusts only key B — verify must
+	// reject the card even though the signature itself is valid.
+	_, signer, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	other, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		card := a2a.UpgradeCard(a2a.CapabilityCard{Name: "peer", Version: "v"})
+		signed, sErr := a2a.SignAgentCard(card, signer)
+		require.NoError(t, sErr)
+		w.Header().Set("Content-Type", a2a.ContentTypeSpec)
+		_ = json.NewEncoder(w).Encode(signed) //nolint:errcheck // test
+	}))
+	t.Cleanup(ts.Close)
+
+	c, err := New(Config{
+		Name: "peer", Endpoint: ts.URL, Timeout: 5 * time.Second,
+		TrustedPublisherKeys: []ed25519.PublicKey{other},
+	})
+	require.NoError(t, err)
+	_, err = c.GetAgentCard(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, a2a.ErrCardBadSignature)
+}
+
+func TestSpec_GetAgentCard_TrustedSignatureAccepted(t *testing.T) {
+	t.Parallel()
+	pub, signer, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		card := a2a.UpgradeCard(a2a.CapabilityCard{Name: "peer", Version: "v"})
+		signed, sErr := a2a.SignAgentCard(card, signer)
+		require.NoError(t, sErr)
+		w.Header().Set("Content-Type", a2a.ContentTypeSpec)
+		_ = json.NewEncoder(w).Encode(signed) //nolint:errcheck // test
+	}))
+	t.Cleanup(ts.Close)
+
+	c, err := New(Config{
+		Name: "peer", Endpoint: ts.URL, Timeout: 5 * time.Second,
+		TrustedPublisherKeys: []ed25519.PublicKey{pub},
+	})
+	require.NoError(t, err)
+	card, err := c.GetAgentCard(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "peer", card.Name)
+}
+
+func TestSpec_GetAgentCard_RequireSignedRejectsUnsigned(t *testing.T) {
+	t.Parallel()
+	// Peer serves an unsigned card. Client requires signed → reject.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		card := a2a.UpgradeCard(a2a.CapabilityCard{Name: "peer", Version: "v"})
+		w.Header().Set("Content-Type", a2a.ContentTypeSpec)
+		_ = json.NewEncoder(w).Encode(card) //nolint:errcheck // test
+	}))
+	t.Cleanup(ts.Close)
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	c, err := New(Config{
+		Name: "peer", Endpoint: ts.URL, Timeout: 5 * time.Second,
+		TrustedPublisherKeys: []ed25519.PublicKey{pub},
+		RequireSignedCard:    true,
+	})
+	require.NoError(t, err)
+	_, err = c.GetAgentCard(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, a2a.ErrCardUnsigned)
+}
+
+func TestSpec_GetAgentCard_UnsignedAcceptedWhenNoPolicy(t *testing.T) {
+	t.Parallel()
+	// Backward-compat: zero-value config accepts unsigned cards so
+	// existing deployments aren't broken by this feature landing.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		card := a2a.UpgradeCard(a2a.CapabilityCard{Name: "peer", Version: "v"})
+		w.Header().Set("Content-Type", a2a.ContentTypeSpec)
+		_ = json.NewEncoder(w).Encode(card) //nolint:errcheck // test
+	}))
+	t.Cleanup(ts.Close)
+
+	c, err := New(Config{Name: "peer", Endpoint: ts.URL, Timeout: 5 * time.Second})
+	require.NoError(t, err)
+	card, err := c.GetAgentCard(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "peer", card.Name)
+}
+
+func TestSpec_GetAgentCard_LegacyFallbackRejectedWhenSignatureRequired(t *testing.T) {
+	t.Parallel()
+	// Peer only speaks legacy (404 on spec route). Client with
+	// RequireSignedCard must refuse — legacy cards cannot be signed.
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/agent-card.json" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(a2a.CapabilityCard{Name: "legacy", Version: "v0.0.2"}) //nolint:errcheck // test
+	}))
+	t.Cleanup(ts.Close)
+
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	c, err := New(Config{
+		Name: "peer", Endpoint: ts.URL, Timeout: 5 * time.Second,
+		TrustedPublisherKeys: []ed25519.PublicKey{pub},
+		RequireSignedCard:    true,
+	})
+	require.NoError(t, err)
+	_, err = c.GetAgentCard(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacy cards cannot be signed")
 }
 
 // TestSpec_EndToEnd_ThroughRousseauServer wires the v1 client to a
