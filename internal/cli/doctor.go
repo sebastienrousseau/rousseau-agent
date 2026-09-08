@@ -289,6 +289,74 @@ func checkA2A(cfg *config.Config) []diagResult {
 			Status: "info",
 			Detail: fmt.Sprintf("%d peer(s)", len(cfg.A2A.Clients)),
 		})
+		for _, peer := range cfg.A2A.Clients {
+			out = append(out, a2aPeerRows(peer)...)
+		}
+	}
+	return out
+}
+
+// a2aPeerRows renders the identity.a2a.clients.<name>.* rows for one
+// configured peer. Split out from checkA2A so the sub-row assembly
+// is testable independently.
+func a2aPeerRows(peer config.A2AClientConfig) []diagResult {
+	var out []diagResult
+	name := peer.Name
+	if name == "" {
+		out = append(out, diagResult{
+			Name:   "identity.a2a.clients.<unnamed>",
+			Status: "fail",
+			Detail: "peer has no name — buildA2AClients will skip it",
+		})
+		return out
+	}
+	prefix := "identity.a2a.clients." + name
+	if peer.Endpoint == "" {
+		out = append(out, diagResult{
+			Name: prefix + ".endpoint", Status: "fail",
+			Detail: "peer has no endpoint — buildA2AClients will skip it",
+		})
+	} else {
+		out = append(out, diagResult{
+			Name: prefix + ".endpoint", Status: "info", Detail: peer.Endpoint,
+		})
+	}
+	// Auth surface: env var name goes in the row (not the token
+	// value) so `rousseau doctor` output is safe to copy into a
+	// support ticket.
+	if peer.AuthHeaderEnv == "" {
+		out = append(out, diagResult{
+			Name: prefix + ".auth", Status: "info",
+			Detail: "no auth header configured — peer will be called anonymously",
+		})
+	} else {
+		out = append(out, diagResult{
+			Name: prefix + ".auth", Status: "info",
+			Detail: "from $" + peer.AuthHeaderEnv,
+		})
+	}
+	// Trust list posture.
+	switch {
+	case peer.RequireSignedCard && len(peer.TrustedPublisherKeys) == 0:
+		out = append(out, diagResult{
+			Name: prefix + ".verify", Status: "fail",
+			Detail: "require_signed_card=true but no trusted_publisher_keys — every fetch will reject",
+		})
+	case len(peer.TrustedPublisherKeys) > 0:
+		mode := "verify-when-signed"
+		if peer.RequireSignedCard {
+			mode = "strict (unsigned rejected)"
+		}
+		out = append(out, diagResult{
+			Name:   prefix + ".verify",
+			Status: "ok",
+			Detail: fmt.Sprintf("%d trusted publisher key(s), %s", len(peer.TrustedPublisherKeys), mode),
+		})
+	default:
+		out = append(out, diagResult{
+			Name: prefix + ".verify", Status: "info",
+			Detail: "no trust list configured — cards accepted without signature check",
+		})
 	}
 	return out
 }

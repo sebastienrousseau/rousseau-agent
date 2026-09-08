@@ -23,9 +23,19 @@ version can talk to rousseau.
 **Daemon wiring (v0.0.5):** The A2A server is now assembled at
 daemon startup when `a2a.server.enabled: true` in the config. It
 runs alongside SCIM in `StartBackgroundServers` and bridges inbound
-tasks to `agent.Turn` on a fresh per-task session. See the config
-schema below and `identity.a2a.*` rows in `rousseau doctor` for the
-operator-visible surface.
+tasks to `agent.Turn` on a fresh per-task session.
+
+**A2A client peers** are also constructed at daemon assembly from
+`a2a.clients[]`. Each peer entry becomes an
+`a2aclient.Client` on the wiring's `A2AClients` map keyed by
+peer Name. Trust lists (base64-encoded Ed25519 public key files) and
+per-peer `RequireSignedCard` posture are honoured at construction
+time. Broken peers WARN + drop out of the map so the daemon still
+runs the healthy ones — the agent-side tool that dispatches to
+peers is the next follow-up.
+
+See the config schema below and `identity.a2a.*` rows in
+`rousseau doctor` for the operator-visible surface.
 
 ## Why A2A
 
