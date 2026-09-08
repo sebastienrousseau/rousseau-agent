@@ -13,8 +13,13 @@ package builtin
 //     not a silent network call.
 //   - Blocking-until-terminal is the simplest correct semantic for
 //     a tool-call surface (the model expects one output per call).
-//     Long-running tasks that need streaming should go through a
-//     separate future streaming-tool surface, not this one.
+//   - Live progress emission: each non-terminal peer update fires a
+//     progress.Event onto the caller's progress.Bus (looked up from
+//     ctx). Chat transports render these as "peer is still working
+//     on it…" bubbles so users see life during long dispatches.
+//     When no publisher is on the context (headless usage, tests,
+//     embedded), emission drops silently — no behaviour change vs
+//     the non-streaming implementation.
 //   - No approver bypass. This tool is a regular tool from the
 //     registry's perspective — the daemon's Approver still gates
 //     every call.
@@ -30,6 +35,7 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a"
 	a2aclient "github.com/sebastienrousseau/rousseau-agent/internal/a2a/client"
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
 
 // A2ADispatchTool dispatches a task to a configured A2A peer and
@@ -67,7 +73,9 @@ func (t *A2ADispatchTool) Description() string {
 	return fmt.Sprintf(
 		"Dispatch a task to a peer A2A agent. Available peers: %s. "+
 			"The peer's response text is returned as the tool output. "+
-			"Blocks until the peer's task reaches a terminal status.",
+			"Blocks until the peer's task reaches a terminal status. "+
+			"Intermediate progress from the peer streams into the user's "+
+			"chat transport as live status updates.",
 		strings.Join(names, ", "),
 	)
 }
@@ -145,6 +153,31 @@ func (t *A2ADispatchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 		return "", fmt.Errorf("a2a_dispatch: submit to %q: %w", in.Peer, err)
 	}
 
+	// Progress publisher for live "peer is working…" updates. When
+	// no publisher is on ctx (headless, tests) this is Nop and every
+	// call is a no-op — matching the pre-streaming behaviour.
+	pub := progress.PublisherFrom(ctx)
+	if pub == nil {
+		pub = progress.Nop{}
+	}
+	emitProgress := func(upd a2a.TaskUpdate) {
+		text := upd.Message
+		if text == "" {
+			text = upd.OutputText
+		}
+		// Skip empty-text updates — the transport would render an
+		// empty bubble, which is worse than no update at all.
+		if text == "" {
+			return
+		}
+		progress.Emit(ctx, pub, progress.Event{
+			Kind:   progress.KindToolStarted,
+			Tool:   t.Name() + "/" + in.Peer,
+			Text:   text,
+			Detail: string(upd.Status),
+		})
+	}
+
 	var (
 		outputs     []string
 		lastStatus  a2a.TaskStatus
@@ -159,6 +192,14 @@ func (t *A2ADispatchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 		if upd.Status == a2a.TaskStatusFailed {
 			failureMsg = upd.Message
 			failureCode = upd.FailureCode
+		}
+		// Only emit progress for NON-terminal frames. The terminal
+		// frame's contents ride the tool's return value, which the
+		// transport reporter already surfaces via KindToolFinished
+		// from the outer tool loop — a duplicate here would show up
+		// as two bubbles for the same terminal event.
+		if !isA2ATerminal(upd.Status) {
+			emitProgress(upd)
 		}
 	}
 	switch lastStatus {
@@ -177,6 +218,19 @@ func (t *A2ADispatchTool) Execute(ctx context.Context, raw json.RawMessage) (str
 		// hung up. Surface concretely so the model doesn't retry
 		// into the same hole.
 		return "", fmt.Errorf("a2a_dispatch: peer %q stream ended without a terminal status (last=%s)", in.Peer, lastStatus)
+	}
+}
+
+// isA2ATerminal reports whether s is a terminal task status. Kept
+// local because the a2a package's own terminal set is scoped to
+// spec-shaped states (TaskState); this tool works with the legacy
+// TaskStatus enum that SubmitTask still returns.
+func isA2ATerminal(s a2a.TaskStatus) bool {
+	switch s {
+	case a2a.TaskStatusCompleted, a2a.TaskStatusFailed, a2a.TaskStatusCancelled:
+		return true
+	default:
+		return false
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a"
 	a2aclient "github.com/sebastienrousseau/rousseau-agent/internal/a2a/client"
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a/server"
+	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
 
 // echoHandler is a trivial a2a.server.Handler that turns the task
@@ -364,6 +366,211 @@ func TestA2ADispatchTool_Execute_ConcatenatesMultipleOutputs(t *testing.T) {
 }
 
 // --- peerNames sorting -----------------------------------------
+
+// --- progress emission ------------------------------------------
+//
+// capturingPublisher is a thread-safe test double that records every
+// Event the tool publishes. Freezes the "intermediate progress
+// streams live to the user" contract without needing a real chat
+// transport wired up.
+type capturingPublisher struct {
+	mu     sync.Mutex
+	events []progress.Event
+}
+
+func (c *capturingPublisher) Publish(ev progress.Event) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, ev)
+}
+
+func (c *capturingPublisher) snapshot() []progress.Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]progress.Event, len(c.events))
+	copy(out, c.events)
+	return out
+}
+
+// progressStreamHandler emits several non-terminal frames with
+// non-empty Message before the terminal frame — proves the
+// non-terminal frames all show up on the publisher.
+type progressStreamHandler struct{}
+
+func (progressStreamHandler) OnTask(_ context.Context, _ a2a.Task, emit func(a2a.TaskUpdate)) error {
+	emit(a2a.TaskUpdate{Status: a2a.TaskStatusRunning, Message: "step 1: analysing"})
+	emit(a2a.TaskUpdate{Status: a2a.TaskStatusRunning, Message: "step 2: drafting"})
+	emit(a2a.TaskUpdate{Status: a2a.TaskStatusRunning, Message: "step 3: verifying"})
+	emit(a2a.TaskUpdate{Status: a2a.TaskStatusCompleted, OutputText: "done"})
+	return nil
+}
+
+func startStreamPeer(t *testing.T) *a2aclient.Client {
+	t.Helper()
+	srv, err := server.New(a2a.CapabilityCard{Name: "p", Version: "v"},
+		progressStreamHandler{}, nil)
+	require.NoError(t, err)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	httpSrv := &http.Server{Handler: srv.Router(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpSrv.Serve(ln) }()     //nolint:errcheck // test
+	t.Cleanup(func() { _ = httpSrv.Close() }) //nolint:errcheck // test
+
+	c, err := a2aclient.New(a2aclient.Config{
+		Name: "streamer", Endpoint: "http://" + ln.Addr().String(), Timeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	return c
+}
+
+func TestA2ADispatchTool_Execute_EmitsProgressForIntermediateFrames(t *testing.T) {
+	t.Parallel()
+	client := startStreamPeer(t)
+	tool := NewA2ADispatchTool(map[string]*a2aclient.Client{"streamer": client})
+
+	cap := &capturingPublisher{}
+	ctx := progress.WithPublisher(progress.WithKey(context.Background(), "test-key"), cap)
+
+	got, err := tool.Execute(ctx, json.RawMessage(`{"peer":"streamer","prompt":"go"}`))
+	require.NoError(t, err)
+	assert.Equal(t, "done", got, "tool return value must still be the peer's final OutputText")
+
+	events := cap.snapshot()
+	// Three intermediate Message frames → three published events.
+	// The terminal frame carries no Message, and even if it did we
+	// deliberately don't publish it (the transport reporter already
+	// surfaces KindToolFinished from the outer tool loop).
+	require.Len(t, events, 3, "one progress event per non-terminal Message frame")
+
+	for i, ev := range events {
+		assert.Equal(t, progress.KindToolStarted, ev.Kind,
+			"progress-event kind should be KindToolStarted for the streaming case")
+		assert.Equal(t, "a2a_dispatch/streamer", ev.Tool,
+			"Tool field must namespace by peer so the transport reporter can group / label")
+		assert.Equal(t, "test-key", ev.Key,
+			"routing key must be the ctx key so the transport reporter fans to the right conversation")
+		assert.Contains(t, ev.Text, "step ", "event Text must carry the peer's Message payload")
+		_ = i
+	}
+}
+
+func TestA2ADispatchTool_Execute_NoPublisherIsNoOp(t *testing.T) {
+	t.Parallel()
+	// Freezes the "publisher-optional" contract: the tool works
+	// identically when no publisher is installed. This is the
+	// headless / test / embedded usage path.
+	client := startStreamPeer(t)
+	tool := NewA2ADispatchTool(map[string]*a2aclient.Client{"streamer": client})
+
+	// ctx has no publisher — just make the call and prove it works.
+	got, err := tool.Execute(context.Background(),
+		json.RawMessage(`{"peer":"streamer","prompt":"go"}`))
+	require.NoError(t, err)
+	assert.Equal(t, "done", got)
+}
+
+func TestA2ADispatchTool_Execute_EmptyMessageAndOutputSkipEmit(t *testing.T) {
+	t.Parallel()
+	// Non-terminal frame with NO Message and NO OutputText → the
+	// transport would render an empty bubble; skip the emit.
+	// This freezes the empty-text drop contract.
+	srv, err := server.New(a2a.CapabilityCard{Name: "p", Version: "v"},
+		testHandler{updates: []a2a.TaskUpdate{
+			{Status: a2a.TaskStatusRunning},                // empty — must skip
+			{Status: a2a.TaskStatusRunning, Message: "hi"}, // must emit
+			{Status: a2a.TaskStatusCompleted, OutputText: "ok"},
+		}}, nil)
+	require.NoError(t, err)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	httpSrv := &http.Server{Handler: srv.Router(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpSrv.Serve(ln) }()     //nolint:errcheck // test
+	t.Cleanup(func() { _ = httpSrv.Close() }) //nolint:errcheck // test
+
+	client, err := a2aclient.New(a2aclient.Config{
+		Name: "p", Endpoint: "http://" + ln.Addr().String(), Timeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	tool := NewA2ADispatchTool(map[string]*a2aclient.Client{"p": client})
+
+	cap := &capturingPublisher{}
+	ctx := progress.WithPublisher(progress.WithKey(context.Background(), "k"), cap)
+	_, err = tool.Execute(ctx, json.RawMessage(`{"peer":"p","prompt":"x"}`))
+	require.NoError(t, err)
+	events := cap.snapshot()
+	require.Len(t, events, 1, "empty-text frame must be skipped")
+	assert.Equal(t, "hi", events[0].Text)
+}
+
+func TestA2ADispatchTool_Execute_TerminalFrameNotPublished(t *testing.T) {
+	t.Parallel()
+	// Even when a terminal frame carries a Message, the tool must
+	// NOT publish it. The outer tool loop already surfaces the
+	// terminal state via KindToolFinished; a duplicate here would
+	// show up as two bubbles for the same event.
+	srv, err := server.New(a2a.CapabilityCard{Name: "p", Version: "v"},
+		testHandler{updates: []a2a.TaskUpdate{
+			{Status: a2a.TaskStatusRunning, Message: "step 1"},
+			{Status: a2a.TaskStatusCompleted, Message: "should NOT show as progress", OutputText: "final"},
+		}}, nil)
+	require.NoError(t, err)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	httpSrv := &http.Server{Handler: srv.Router(), ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = httpSrv.Serve(ln) }()     //nolint:errcheck // test
+	t.Cleanup(func() { _ = httpSrv.Close() }) //nolint:errcheck // test
+
+	client, err := a2aclient.New(a2aclient.Config{
+		Name: "p", Endpoint: "http://" + ln.Addr().String(), Timeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	tool := NewA2ADispatchTool(map[string]*a2aclient.Client{"p": client})
+
+	cap := &capturingPublisher{}
+	ctx := progress.WithPublisher(progress.WithKey(context.Background(), "k"), cap)
+	_, err = tool.Execute(ctx, json.RawMessage(`{"peer":"p","prompt":"x"}`))
+	require.NoError(t, err)
+	events := cap.snapshot()
+	require.Len(t, events, 1, "terminal frame must be skipped even when it carries a Message")
+	assert.Equal(t, "step 1", events[0].Text)
+}
+
+// testHandler emits a caller-supplied slice of updates.
+type testHandler struct{ updates []a2a.TaskUpdate }
+
+func (h testHandler) OnTask(_ context.Context, _ a2a.Task, emit func(a2a.TaskUpdate)) error {
+	for _, upd := range h.updates {
+		emit(upd)
+	}
+	return nil
+}
+
+// --- isA2ATerminal helper ---------------------------------------
+
+func TestIsA2ATerminal(t *testing.T) {
+	t.Parallel()
+	terminal := []a2a.TaskStatus{a2a.TaskStatusCompleted, a2a.TaskStatusFailed, a2a.TaskStatusCancelled}
+	nonTerminal := []a2a.TaskStatus{a2a.TaskStatusRunning, a2a.TaskStatus(""), a2a.TaskStatus("bogus")}
+	for _, s := range terminal {
+		assert.True(t, isA2ATerminal(s), "%s must be terminal", s)
+	}
+	for _, s := range nonTerminal {
+		assert.False(t, isA2ATerminal(s), "%s must be non-terminal", s)
+	}
+}
+
+// --- description update -----------------------------------------
+
+func TestA2ADispatchTool_Description_MentionsProgressStreaming(t *testing.T) {
+	t.Parallel()
+	// Freezes the "model knows to expect live updates" contract.
+	// The description tells the model what happens when it calls
+	// this tool — a change here needs to be a deliberate lift.
+	tool := NewA2ADispatchTool(map[string]*a2aclient.Client{"peer": nil})
+	desc := tool.Description()
+	assert.Contains(t, desc, "streams into the user's chat transport",
+		"description must announce live-progress semantics")
+}
 
 func TestPeerNames_SortedDeterministically(t *testing.T) {
 	t.Parallel()
