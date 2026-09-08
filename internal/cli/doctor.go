@@ -289,6 +289,14 @@ func checkA2A(cfg *config.Config) []diagResult {
 			Status: "info",
 			Detail: fmt.Sprintf("%d peer(s)", len(cfg.A2A.Clients)),
 		})
+		// The a2a_dispatch tool is registered iff at least one peer
+		// resolves at boot. Surface that on the doctor so operators
+		// can see "yes the model can call peers now."
+		out = append(out, diagResult{
+			Name:   "identity.a2a.dispatch_tool",
+			Status: "info",
+			Detail: "a2a_dispatch tool registered — model can call configured peers",
+		})
 		for _, peer := range cfg.A2A.Clients {
 			out = append(out, a2aPeerRows(peer)...)
 		}

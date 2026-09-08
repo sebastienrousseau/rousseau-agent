@@ -321,4 +321,6 @@ func TestCheckA2A_EmitsPeerRows(t *testing.T) {
 	assert.Contains(t, names, "identity.a2a.clients")
 	assert.Contains(t, names, "identity.a2a.clients.alpha.endpoint")
 	assert.Contains(t, names, "identity.a2a.clients.beta.verify")
+	assert.Contains(t, names, "identity.a2a.dispatch_tool",
+		"tool-registered row must surface so operators see the model can call peers")
 }
