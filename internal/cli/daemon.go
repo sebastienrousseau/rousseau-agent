@@ -92,6 +92,11 @@ type daemonWiring struct {
 	// the ListenAndServe goroutine with the same lifetime as
 	// itself.
 	SCIMAddr string
+	// A2A is the (optional) Agent-to-Agent HTTP server runtime.
+	// Nil when a2a.server.enabled=false OR the operator's config
+	// is broken. When non-nil, callers start it via
+	// StartBackgroundServers alongside the SCIM server.
+	A2A *a2aRuntime
 	// AuditSink is the enterprise audit-egress sink; downstream
 	// callers (agent tool-call instrumentation, SSO
 	// login/logout, license state changes) Emit into it. Never
@@ -152,6 +157,9 @@ func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
 				)
 			}
 		}()
+	}
+	if w.A2A != nil {
+		go runA2AServer(ctx, w.A2A, w.Logger)
 	}
 }
 
@@ -500,6 +508,10 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		return nil, err
 	}
 
+	// A2A server assembly — fail-open, WARN on config errors so a
+	// broken a2a config doesn't take chat transports offline.
+	a2aRt := buildA2AServer(cfg.A2A, ag, opts.Logger)
+
 	return &daemonWiring{
 		Provider:     provider,
 		Agent:        ag,
@@ -522,6 +534,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		AuditSink:    auditSink,
 		SCIMServer:   scimServer,
 		SCIMAddr:     scimAddr,
+		A2A:          a2aRt,
 	}, nil
 }
 

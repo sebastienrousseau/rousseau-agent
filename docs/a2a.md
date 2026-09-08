@@ -20,6 +20,13 @@ Both v0-shorthand routes (from the pre-LF-donation era) and
 v1.0.1-conformant routes are served concurrently so peers on either
 version can talk to rousseau.
 
+**Daemon wiring (v0.0.5):** The A2A server is now assembled at
+daemon startup when `a2a.server.enabled: true` in the config. It
+runs alongside SCIM in `StartBackgroundServers` and bridges inbound
+tasks to `agent.Turn` on a fresh per-task session. See the config
+schema below and `identity.a2a.*` rows in `rousseau doctor` for the
+operator-visible surface.
+
 ## Why A2A
 
 Enterprises increasingly deploy several agents that collaborate:
