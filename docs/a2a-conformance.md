@@ -78,10 +78,16 @@ after v0.0.5.
 Documented gaps against v1.0.1. Filed as follow-ups; none block
 interop with peers that use the shipped subset.
 
-1. **JSON-RPC 2.0 binding.** The spec permits three transports;
+1. ~~**JSON-RPC 2.0 binding.** The spec permits three transports;
    we ship REST first because it's what the current codebase and
    deployment story matches. JSON-RPC binding is scheduled for
-   v0.0.5.
+   v0.0.5.~~ **DELIVERED (v0.0.5)**: `POST /jsonrpc` endpoint
+   with dispatch on method (SendMessage / GetTask / CancelTask).
+   Streaming methods (SendStreamingMessage, SubscribeToTask)
+   return `MethodNotFound` today with a message directing the
+   caller to the REST binding; adding them to JSON-RPC is a
+   small follow-on. The AgentCard's `interfaces[]` advertises
+   the JSON-RPC binding alongside REST so SDKs auto-discover.
 2. **gRPC binding.** Deliberately deferred — enterprises rarely
    require gRPC A2A today and it would break rousseau's "static
    binary, no cgo, no runtime deps" identity.
@@ -135,7 +141,7 @@ increments by 0.0.1 per release).
 | Version | Ship |
 |---|---|
 | v0.0.4 | **This document.** v1.0 well-known + colon-verb routes + `application/a2a+json` + TaskState v1.0 enum + `SendMessage`/`SubscribeToTask`/`GetAgentCard` client + `examples/embed-a2a-federated`. |
-| v0.0.5 | JSON-RPC 2.0 binding as a second transport. ~~AgentCard `signatures[]` (JWS, verify-only)~~ — **shipped**: sign + verify both directions, gated by operator config. Push-notification config CRUD (bare implementation, enterprise-edition webhook egress guarded by license). |
+| v0.0.5 | ~~JSON-RPC 2.0 binding as a second transport~~ — **shipped**: non-streaming methods (SendMessage/GetTask/CancelTask). Streaming methods over JSON-RPC deferred. ~~AgentCard `signatures[]` (JWS, verify-only)~~ — **shipped**: sign + verify both directions, gated by operator config. Push-notification config CRUD (bare implementation, enterprise-edition webhook egress guarded by license). |
 | v0.0.6 | Deprecate legacy routes: log a warning on every hit, plumb `Deprecation:` header. Add `ListTasks` filter surface. |
 | v0.0.7 | Remove legacy routes. `Part[]`-native handler pipeline (drop the flatten-to-legacy step). |
 | v0.0.8 | Enterprise-edition-only: OIDC + mTLS + OAuth2 device-code auth schemes. Extended AgentCard. Per-skill security. |

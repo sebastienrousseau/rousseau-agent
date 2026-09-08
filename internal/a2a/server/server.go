@@ -143,6 +143,9 @@ func (s *Server) mux() http.Handler {
 	// Combined dispatchers — see doc comment above.
 	m.HandleFunc("GET /tasks/{spec}", s.authed(s.handleGetTaskVerb))
 	m.HandleFunc("POST /tasks/{spec}", s.authed(s.handlePostTaskVerb))
+	// A2A JSON-RPC 2.0 binding — single endpoint, method dispatch
+	// inside handleJSONRPC.
+	m.HandleFunc("POST /jsonrpc", s.authed(s.handleJSONRPC))
 	return m
 }
 
