@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	a2aclient "github.com/sebastienrousseau/rousseau-agent/internal/a2a/client"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
@@ -97,6 +98,12 @@ type daemonWiring struct {
 	// is broken. When non-nil, callers start it via
 	// StartBackgroundServers alongside the SCIM server.
 	A2A *a2aRuntime
+	// A2AClients holds the peer clients constructed from
+	// cfg.A2A.Clients[]. Empty map when the operator hasn't
+	// configured any peers. Keyed by peer Name so the (future)
+	// agent-side A2A tool can look up a client by the operator's
+	// declared identifier.
+	A2AClients map[string]*a2aclient.Client
 	// AuditSink is the enterprise audit-egress sink; downstream
 	// callers (agent tool-call instrumentation, SSO
 	// login/logout, license state changes) Emit into it. Never
@@ -511,6 +518,9 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// A2A server assembly — fail-open, WARN on config errors so a
 	// broken a2a config doesn't take chat transports offline.
 	a2aRt := buildA2AServer(cfg.A2A, ag, opts.Logger)
+	// A2A client peers — same fail-open discipline; each broken
+	// peer drops out of the map without stopping the daemon.
+	a2aClients := buildA2AClients(cfg.A2A.Clients, opts.Logger)
 
 	return &daemonWiring{
 		Provider:     provider,
@@ -535,6 +545,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		SCIMServer:   scimServer,
 		SCIMAddr:     scimAddr,
 		A2A:          a2aRt,
+		A2AClients:   a2aClients,
 	}, nil
 }
 

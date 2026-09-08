@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a"
+	a2aclient "github.com/sebastienrousseau/rousseau-agent/internal/a2a/client"
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a/server"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
@@ -192,6 +193,101 @@ func loadA2AServerSigningKey(path string) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("key %s is %d bytes, want %d", path, len(decoded), ed25519.PrivateKeySize)
 	}
 	return ed25519.PrivateKey(decoded), nil
+}
+
+// buildA2AClients constructs one [a2aclient.Client] per configured
+// peer. Returns a name → *Client map keyed by cfg.Name — the same
+// name the agent-side (future) A2A tool will look up when routing
+// requests. Fail-open per peer: a broken peer WARNs and drops out
+// of the map so the daemon still runs with the healthy peers.
+//
+// Peer-level "broken" conditions:
+//   - Empty Name or Endpoint            → skipped, WARN
+//   - Trusted-key file unreadable       → skipped, WARN
+//   - Trusted-key file wrong size       → skipped, WARN
+//   - AuthHeaderEnv references an unset env var → still constructed
+//     with empty AuthHeader + WARN (letting the daemon start against
+//     dev peers that haven't been onboarded yet)
+func buildA2AClients(cfgs []config.A2AClientConfig, logger *slog.Logger) map[string]*a2aclient.Client {
+	if len(cfgs) == 0 {
+		return nil
+	}
+	out := make(map[string]*a2aclient.Client, len(cfgs))
+	for _, cfg := range cfgs {
+		if cfg.Name == "" || cfg.Endpoint == "" {
+			logger.Warn("a2a.client_skipped",
+				slog.String("name", cfg.Name),
+				slog.String("endpoint", cfg.Endpoint),
+				slog.String("reason", "name and endpoint are required"),
+			)
+			continue
+		}
+		if _, dup := out[cfg.Name]; dup {
+			logger.Warn("a2a.client_duplicate",
+				slog.String("name", cfg.Name),
+				slog.String("hint", "later peer with the same name shadows the earlier one; check your config"),
+			)
+		}
+		trust, err := loadA2AClientTrustList(cfg.TrustedPublisherKeys)
+		if err != nil {
+			logger.Warn("a2a.client_trust_unreadable",
+				slog.String("name", cfg.Name),
+				slog.String("err", err.Error()),
+			)
+			continue
+		}
+		authHeader := ""
+		if cfg.AuthHeaderEnv != "" {
+			authHeader = os.Getenv(cfg.AuthHeaderEnv)
+			if authHeader == "" {
+				logger.Warn("a2a.client_auth_env_empty",
+					slog.String("name", cfg.Name),
+					slog.String("env", cfg.AuthHeaderEnv),
+					slog.String("hint", "peer will be called with no Authorization header — expected only in dev/test"),
+				)
+			}
+		}
+		c, err := a2aclient.New(a2aclient.Config{
+			Name:                 cfg.Name,
+			Endpoint:             cfg.Endpoint,
+			AuthHeader:           authHeader,
+			TrustedPublisherKeys: trust,
+			RequireSignedCard:    cfg.RequireSignedCard,
+		})
+		if err != nil {
+			logger.Warn("a2a.client_new",
+				slog.String("name", cfg.Name),
+				slog.String("err", err.Error()),
+			)
+			continue
+		}
+		out[cfg.Name] = c
+	}
+	logger.Info("a2a.clients_configured", slog.Int("count", len(out)))
+	return out
+}
+
+// loadA2AClientTrustList reads every base64-encoded Ed25519 public
+// key file listed in cfg. Returns a non-nil empty slice when the
+// input is nil so callers can pass the result straight into
+// a2aclient.Config.TrustedPublisherKeys without a nil check.
+func loadA2AClientTrustList(paths []string) ([]ed25519.PublicKey, error) {
+	out := make([]ed25519.PublicKey, 0, len(paths))
+	for _, p := range paths {
+		raw, err := os.ReadFile(p) //nolint:gosec // operator-supplied path
+		if err != nil {
+			return nil, fmt.Errorf("read trusted-key %s: %w", p, err)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+		if err != nil {
+			return nil, fmt.Errorf("decode trusted-key %s: %w", p, err)
+		}
+		if len(decoded) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("trusted-key %s is %d bytes, want %d", p, len(decoded), ed25519.PublicKeySize)
+		}
+		out = append(out, ed25519.PublicKey(decoded))
+	}
+	return out, nil
 }
 
 // runA2AServer runs the assembled server against the configured
