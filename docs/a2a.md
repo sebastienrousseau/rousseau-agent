@@ -31,8 +31,30 @@ tasks to `agent.Turn` on a fresh per-task session.
 peer Name. Trust lists (base64-encoded Ed25519 public key files) and
 per-peer `RequireSignedCard` posture are honoured at construction
 time. Broken peers WARN + drop out of the map so the daemon still
-runs the healthy ones — the agent-side tool that dispatches to
-peers is the next follow-up.
+runs the healthy ones.
+
+**Agent-side dispatch tool.** When at least one A2A peer resolves at
+boot, the `a2a_dispatch` tool is registered on the model's tool
+surface. The tool's schema advertises the configured peer names as
+an `enum` so the model gets an allow-list at the input-validation
+layer, not just at execution time. Input shape:
+
+```json
+{
+  "peer": "spec-writer",
+  "prompt": "Draft an OpenAPI schema for a payment endpoint",
+  "skill_name": "openapi-drafter",
+  "timeout_seconds": 60
+}
+```
+
+The tool blocks until the peer's task reaches a terminal status and
+returns the concatenation of every `OutputText` frame the peer
+emitted. Peer failures surface as the tool error (with the peer's
+`FailureCode`), so the model can reason about downstream failures
+the same way it reasons about local tool failures. The daemon's
+regular Approver still gates every dispatch — no A2A-specific
+approval bypass.
 
 See the config schema below and `identity.a2a.*` rows in
 `rousseau doctor` for the operator-visible surface.

@@ -521,6 +521,14 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// A2A client peers — same fail-open discipline; each broken
 	// peer drops out of the map without stopping the daemon.
 	a2aClients := buildA2AClients(cfg.A2A.Clients, opts.Logger)
+	// Register the a2a_dispatch tool only when at least one peer
+	// wired up — a tool that promises "no peers configured" is
+	// noise the model has to filter. Skip when the map is empty
+	// so the model's tool list stays crisp.
+	if len(a2aClients) > 0 {
+		registry.MustRegister(builtin.NewA2ADispatchTool(a2aClients))
+		opts.Logger.Info("a2a.dispatch_tool_registered", slog.Int("peer_count", len(a2aClients)))
+	}
 
 	return &daemonWiring{
 		Provider:     provider,
