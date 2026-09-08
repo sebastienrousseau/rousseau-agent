@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a"
 )
 
@@ -385,6 +388,184 @@ func TestSpec_SubscribeUnknownTask_404(t *testing.T) {
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", res.StatusCode)
+	}
+}
+
+// slowHandler blocks on emit until the caller closes done, so the
+// subscribe test can subscribe BEFORE the task terminates. That
+// exercises the "live update → flush → terminal" branch that
+// handleSpecSubscribeFor's post-history select-loop covers.
+type slowHandler struct {
+	done  <-chan struct{}
+	fired chan<- struct{} // signalled when OnTask starts
+}
+
+func (h slowHandler) OnTask(_ context.Context, _ a2a.Task, emit func(a2a.TaskUpdate)) error {
+	// Signal the test that we're inside the handler goroutine —
+	// the state exists, but no updates yet.
+	close(h.fired)
+	// Emit "working" first so the subscribe path sees a live update.
+	emit(a2a.TaskUpdate{Status: a2a.TaskStatusRunning, Message: "thinking"})
+	<-h.done
+	emit(a2a.TaskUpdate{Status: a2a.TaskStatusCompleted, OutputText: "done"})
+	return nil
+}
+
+func TestSpec_ColonVerb_Subscribe_LiveUpdatesThenTerminal(t *testing.T) {
+	t.Parallel()
+	// This test drives the post-history select-loop branches of
+	// handleSpecSubscribeFor: live update arrives on the subscriber
+	// channel, gets flushed as a StreamResponse frame, then a
+	// terminal frame ends the stream via isTerminal(upd.Status).
+	done := make(chan struct{})
+	fired := make(chan struct{})
+	s, err := New(a2a.CapabilityCard{Name: "peer", Version: "v"},
+		slowHandler{done: done, fired: fired}, nil)
+	require.NoError(t, err)
+	ts := httptest.NewServer(s.Router())
+	t.Cleanup(ts.Close)
+
+	// Submit and wait for the handler to be running (so state exists,
+	// but before the terminal update lands).
+	body := mustMarshal(t, a2a.TextMessage("stream me live"))
+	res := mustPost(t, ts.URL+"/message:send", a2a.ContentTypeSpec, bytes.NewReader(body))
+	var task a2a.SpecTask
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&task))
+	require.NoError(t, res.Body.Close())
+	<-fired // handler goroutine has entered OnTask
+
+	sub := mustGet(t, ts.URL+"/tasks/"+task.ID+":subscribe")
+	defer func() { _ = sub.Body.Close() }()
+
+	// Release the handler so it emits the terminal update.
+	close(done)
+
+	scanner := bufio.NewScanner(sub.Body)
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	states := []a2a.TaskState{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var frame a2a.StreamResponse
+		if err := json.Unmarshal([]byte(line[len("data: "):]), &frame); err != nil {
+			continue
+		}
+		if frame.StatusUpdate == nil {
+			continue
+		}
+		states = append(states, frame.StatusUpdate.Status.State)
+		if frame.StatusUpdate.Status.State.IsTerminal() {
+			break
+		}
+	}
+	require.NotEmpty(t, states)
+	assert.Equal(t, a2a.TaskStateCompleted, states[len(states)-1],
+		"stream must end on a terminal frame delivered via the live path (not history replay)")
+}
+
+// nonFlushingRecorder is an http.ResponseWriter that deliberately
+// does NOT implement http.Flusher — the streaming handler must
+// detect this and return 500 rather than silently dropping frames.
+type nonFlushingRecorder struct {
+	header http.Header
+	body   *bytes.Buffer
+	status int
+}
+
+func (n *nonFlushingRecorder) Header() http.Header {
+	if n.header == nil {
+		n.header = http.Header{}
+	}
+	return n.header
+}
+func (n *nonFlushingRecorder) Write(b []byte) (int, error) { return n.body.Write(b) }
+func (n *nonFlushingRecorder) WriteHeader(code int)        { n.status = code }
+
+func TestSpec_ColonVerb_Subscribe_NonFlusherReturns500(t *testing.T) {
+	t.Parallel()
+	// The SSE handler must refuse when the underlying ResponseWriter
+	// cannot flush — otherwise frames would buffer and the client
+	// would never see them. Direct-dispatch via the handler avoids
+	// httptest's automatically-flushable writer.
+	s, err := New(a2a.CapabilityCard{Name: "peer", Version: "v"}, echoHandler{}, nil)
+	require.NoError(t, err)
+
+	// First submit a task so the id lookup succeeds.
+	body := mustMarshal(t, a2a.TextMessage("stream"))
+	req := mustReq(t, "POST", "/message:send", bytes.NewReader(body))
+	postRec := httptest.NewRecorder()
+	s.Router().ServeHTTP(postRec, req)
+	require.Equal(t, http.StatusAccepted, postRec.Code)
+	var task a2a.SpecTask
+	require.NoError(t, json.Unmarshal(postRec.Body.Bytes(), &task))
+	require.NotEmpty(t, task.ID)
+
+	// Now call the subscribe route with a non-flushing writer.
+	subReq := mustReq(t, "GET", "/tasks/"+task.ID+":subscribe", nil)
+	nfr := &nonFlushingRecorder{body: &bytes.Buffer{}}
+	s.Router().ServeHTTP(nfr, subReq)
+	assert.Equal(t, http.StatusInternalServerError, nfr.status)
+	assert.Contains(t, nfr.body.String(), "streaming_unsupported")
+}
+
+func TestSpec_ColonVerb_Subscribe_ClientDisconnectExitsLoop(t *testing.T) {
+	t.Parallel()
+	// If the client disconnects mid-stream, r.Context().Done() must
+	// fire and the handler must return promptly. Without this branch
+	// the handler would leak until the task terminated.
+	done := make(chan struct{})
+	fired := make(chan struct{})
+	s, err := New(a2a.CapabilityCard{Name: "peer", Version: "v"},
+		slowHandler{done: done, fired: fired}, nil)
+	require.NoError(t, err)
+	ts := httptest.NewServer(s.Router())
+	t.Cleanup(ts.Close)
+	t.Cleanup(func() { close(done) }) // release handler at end
+
+	body := mustMarshal(t, a2a.TextMessage("subscribe then cancel"))
+	res := mustPost(t, ts.URL+"/message:send", a2a.ContentTypeSpec, bytes.NewReader(body))
+	var task a2a.SpecTask
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&task))
+	require.NoError(t, res.Body.Close())
+	<-fired
+
+	// Open the subscribe stream with a cancellable context, then
+	// cancel it — the handler goroutine should exit via
+	// r.Context().Done() rather than blocking forever.
+	ctx, cancel := context.WithCancel(context.Background())
+	subReq, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/tasks/"+task.ID+":subscribe", nil)
+	require.NoError(t, err)
+	sub, err := http.DefaultClient.Do(subReq)
+	require.NoError(t, err)
+	defer func() { _ = sub.Body.Close() }()
+
+	// Drain the initial history frame(s) so we know we're inside
+	// the select loop.
+	buf := make([]byte, 512)
+	_, _ = sub.Body.Read(buf) //nolint:errcheck // read to prove handler is streaming
+
+	// Cancel — the server-side handler goroutine must exit via
+	// r.Context().Done(). We prove that by observing the response
+	// body reaches EOF within a reasonable window.
+	cancel()
+
+	// If the handler didn't honour r.Context().Done(), this Read
+	// would block indefinitely. httptest's server cleanup would
+	// eventually unblock us, but only via ts.Close() — so we bound
+	// the wait to something well under that.
+	deadline := time.Now().Add(2 * time.Second)
+	readerDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, sub.Body) //nolint:errcheck // waiting for EOF, discarding content
+		close(readerDone)
+	}()
+	select {
+	case <-readerDone:
+		// Success — handler released the connection.
+	case <-time.After(time.Until(deadline)):
+		t.Fatal("handler did not release the connection after client cancel")
 	}
 }
 
