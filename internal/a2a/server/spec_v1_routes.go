@@ -151,6 +151,7 @@ func (s *Server) handleSpecCard(w http.ResponseWriter, r *http.Request) {
 	}
 	card.Interfaces = []a2a.AgentInterface{
 		{URL: card.URL, ProtocolBinding: "REST", ProtocolVersion: a2a.SpecVersion},
+		{URL: card.URL + "/jsonrpc", ProtocolBinding: "JSONRPC", ProtocolVersion: a2a.SpecVersion},
 	}
 	card.PreferredTransport = "REST"
 
