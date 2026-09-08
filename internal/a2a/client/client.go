@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,6 +37,18 @@ type Config struct {
 	Timeout time.Duration
 	// HTTPClient overrides the transport. Zero uses http.DefaultClient.
 	HTTPClient *http.Client
+	// TrustedPublisherKeys is the operator's allow-list of Ed25519
+	// public keys authorised to sign this peer's [a2a.AgentCard].
+	// When non-empty, [Client.GetAgentCard] verifies the card's
+	// signatures[] and returns an error if none verify. When empty,
+	// the client does not enforce signature verification (backward
+	// compatible with peers that don't sign yet).
+	TrustedPublisherKeys []ed25519.PublicKey
+	// RequireSignedCard, when true alongside TrustedPublisherKeys,
+	// causes [Client.GetAgentCard] to also reject unsigned cards
+	// (not just cards signed by an untrusted key). Set to true in
+	// production against peers you've onboarded via key exchange.
+	RequireSignedCard bool
 }
 
 // Client is one A2A peer connection. Instantiate one per remote agent

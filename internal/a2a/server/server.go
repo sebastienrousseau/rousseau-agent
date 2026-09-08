@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +53,12 @@ type Server struct {
 	// Auth is the bearer-token allowlist. Empty disables auth — DO
 	// NOT deploy without setting this in production.
 	Auth []string
+	// SigningKey, when set, causes the v1.0 well-known AgentCard route
+	// to sign the response with Ed25519 + JWS per the A2A v1.0.1
+	// signatures[] surface. Peers that trust the corresponding
+	// public key can then verify card authenticity + integrity.
+	// Zero-value skips signing — cards are served unsigned.
+	SigningKey ed25519.PrivateKey
 
 	mu    sync.Mutex
 	tasks map[string]*taskState

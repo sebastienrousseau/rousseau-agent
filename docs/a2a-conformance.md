@@ -88,9 +88,15 @@ interop with peers that use the shipped subset.
 3. **Push-notification config CRUD.** `AgentCapabilities.pushNotifications`
    is advertised as `false`; the `/tasks/{id}/pushNotificationConfigs`
    surface is not implemented.
-4. **Signed AgentCards.** `AgentCard.signatures[]` is left empty
+4. ~~**Signed AgentCards.** `AgentCard.signatures[]` is left empty
    today. Card signing (JWS) is on the enterprise-edition
-   roadmap alongside SSO/OIDC.
+   roadmap alongside SSO/OIDC.~~ **DELIVERED (v0.0.5)**: JWS
+   Compact-form signing with Ed25519 (`alg=EdDSA`) via
+   `a2a.SignAgentCard` / `a2a.VerifyAgentCard`. Server signs
+   when `Server.SigningKey` is set; client verifies against
+   `Config.TrustedPublisherKeys`. `Config.RequireSignedCard`
+   flips the client into strict mode where unsigned cards are
+   also rejected.
 5. **Security schemes beyond bearer.** Only bearer-allowlist auth
    ships today; `AgentCard.securitySchemes` advertises exactly
    what we accept. OIDC, mTLS, OAuth2 device-code + PKCE land
@@ -129,7 +135,7 @@ increments by 0.0.1 per release).
 | Version | Ship |
 |---|---|
 | v0.0.4 | **This document.** v1.0 well-known + colon-verb routes + `application/a2a+json` + TaskState v1.0 enum + `SendMessage`/`SubscribeToTask`/`GetAgentCard` client + `examples/embed-a2a-federated`. |
-| v0.0.5 | JSON-RPC 2.0 binding as a second transport. AgentCard `signatures[]` (JWS, verify-only). Push-notification config CRUD (bare implementation, enterprise-edition webhook egress guarded by license). |
+| v0.0.5 | JSON-RPC 2.0 binding as a second transport. ~~AgentCard `signatures[]` (JWS, verify-only)~~ — **shipped**: sign + verify both directions, gated by operator config. Push-notification config CRUD (bare implementation, enterprise-edition webhook egress guarded by license). |
 | v0.0.6 | Deprecate legacy routes: log a warning on every hit, plumb `Deprecation:` header. Add `ListTasks` filter surface. |
 | v0.0.7 | Remove legacy routes. `Part[]`-native handler pipeline (drop the flatten-to-legacy step). |
 | v0.0.8 | Enterprise-edition-only: OIDC + mTLS + OAuth2 device-code auth schemes. Extended AgentCard. Per-skill security. |

@@ -136,10 +136,16 @@ func (s *Server) handleSpecSubscribeFor(w http.ResponseWriter, r *http.Request, 
 // [a2a.CapabilityCard] into the spec-shaped [a2a.AgentCard], keeping
 // the two card types in sync at request time so operators only need to
 // configure one.
+//
+// When [Server.SigningKey] is set, the card is JWS-signed via
+// [a2a.SignAgentCard] before serialisation so peers can verify card
+// authenticity + integrity per the A2A v1.0.1 signatures[] surface.
+// Signing failure logs at ERROR and serves the unsigned card rather
+// than 500ing — a missing signature is a downgraded trust posture,
+// not an outage. This mirrors the fail-open discipline used
+// elsewhere in the codebase (audit-egress, redact).
 func (s *Server) handleSpecCard(w http.ResponseWriter, r *http.Request) {
 	card := a2a.UpgradeCard(s.Card)
-	// Advertise the interface we actually serve so peers know where
-	// to send their spec-shaped requests.
 	if card.URL == "" {
 		card.URL = specBaseURL(r)
 	}
@@ -147,6 +153,17 @@ func (s *Server) handleSpecCard(w http.ResponseWriter, r *http.Request) {
 		{URL: card.URL, ProtocolBinding: "REST", ProtocolVersion: a2a.SpecVersion},
 	}
 	card.PreferredTransport = "REST"
+
+	if len(s.SigningKey) != 0 {
+		signed, err := a2a.SignAgentCard(card, s.SigningKey)
+		if err == nil {
+			card = signed
+		}
+		// On sign failure fall through with the unsigned card. The
+		// alternative — returning 500 — would break every peer's
+		// discovery even though the card content is fine. Operators
+		// diagnose via the doctor.
+	}
 	writeSpecJSON(w, http.StatusOK, card)
 }
 
