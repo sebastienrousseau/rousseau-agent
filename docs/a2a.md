@@ -56,6 +56,18 @@ the same way it reasons about local tool failures. The daemon's
 regular Approver still gates every dispatch — no A2A-specific
 approval bypass.
 
+**Live progress emission.** Each non-terminal peer update (frames
+with `Status=running` and a non-empty `Message` or `OutputText`)
+fires a `progress.Event` onto the caller's `progress.Bus`. Chat
+transports subscribe to that bus and render the events as live
+"peer is still working on it…" bubbles so users see life during
+long dispatches. When no publisher is on the context (headless
+usage, CLI, tests), emission drops silently — the tool behaves
+identically to a non-streaming implementation. The terminal frame
+is deliberately NOT emitted as progress because the outer tool
+loop already surfaces it via `KindToolFinished`; a duplicate would
+render as two bubbles for the same event.
+
 See the config schema below and `identity.a2a.*` rows in
 `rousseau doctor` for the operator-visible surface.
 
