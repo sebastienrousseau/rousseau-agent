@@ -52,7 +52,14 @@ func TestResolveResource_HappyPathReturnsAbsolute(t *testing.T) {
 	require.NoError(t, err)
 	// The resolved path is absolute and within the base dir.
 	assert.True(t, filepath.IsAbs(got))
-	assert.True(t, insideDir(dir, got), "resolved path must be inside base")
+	// Canonicalise dir before comparing — on macOS t.TempDir()
+	// returns /var/folders/... which is a symlink to
+	// /private/var/folders/..., but ResolveResource canonicalises
+	// via EvalSymlinks, producing the /private/... form. Without
+	// this the assert fails on Darwin but passes on Linux.
+	dirResolved, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	assert.True(t, insideDir(dirResolved, got), "resolved path must be inside base")
 }
 
 func TestResolveResource_NonExistentFileStillSafe(t *testing.T) {
