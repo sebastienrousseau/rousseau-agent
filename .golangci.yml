@@ -60,6 +60,13 @@ linters:
           - forbidigo
           - gocritic
           - errcheck
+      # The skills-validator doc + spec parser + tests deliberately
+      # reference the misspelling "descripton" — it's the exact input
+      # the validator has to reject. Suppressing misspell here
+      # preserves the pedagogical accuracy of the example.
+      - path: ^internal/(cli/skills_validate|skills/spec)(_test)?\.go$
+        linters:
+          - misspell
 
 formatters:
   enable:

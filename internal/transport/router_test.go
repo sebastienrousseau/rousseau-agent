@@ -14,6 +14,7 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
+	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
 type memStore struct {
@@ -79,6 +80,34 @@ func (m *memStore) Delete(_ context.Context, id string) error {
 	defer m.mu.Unlock()
 	delete(m.sessions, id)
 	return nil
+}
+
+// SearchBySender satisfies the widened SessionStore interface for
+// the /find chat verb. Naive substring scan over titles + message
+// bodies — the real store uses FTS5 / tsvector; this fake exists
+// only so router tests wire without a real DB.
+func (m *memStore) SearchBySender(_ context.Context, sender, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error) {
+	if sender == "" || query == "" {
+		return nil, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []sqlitestore.SearchHit
+	for _, s := range m.sessions {
+		if s.Sender != sender {
+			continue
+		}
+		out = append(out, sqlitestore.SearchHit{
+			SessionID: s.ID,
+			Title:     s.Title,
+			Snippet:   query,
+			UpdatedAt: s.UpdatedAt.UTC(),
+		})
+	}
+	if opts.Limit > 0 && len(out) > opts.Limit {
+		out = out[:opts.Limit]
+	}
+	return out, nil
 }
 
 type memJID struct {

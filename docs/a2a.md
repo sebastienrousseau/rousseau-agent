@@ -1,17 +1,75 @@
 # Agent-to-Agent (A2A) protocol
 
 **Status: runtime shipped in `v0.0.2` — HTTP/JSON server + SSE
-streaming + client. See `examples/embed-a2a` for a self-contained
-demo and `internal/a2a/a2a_integration_test.go` for the wire-level
-contract.**
+streaming + client. Spec-conformant v1.0.1 wire routes ship in
+`v0.0.4` alongside the legacy v0-shorthand.** See
+[`examples/embed-a2a`](../examples/embed-a2a) (legacy shape) and
+[`examples/embed-a2a-federated`](../examples/embed-a2a-federated)
+(A2A v1.0.1 federated peer) for self-contained demos, and
+[`internal/a2a/a2a_integration_test.go`](../internal/a2a/a2a_integration_test.go)
+for the wire-level contract.
+
+For the spec-conformance status — what ships, what doesn't, and the
+sequenced roadmap to full v1.0.1 conformance — see
+[`a2a-conformance.md`](./a2a-conformance.md).
 
 The [`internal/a2a`](../internal/a2a) package defines the payload
-types and interfaces rousseau-agent will use to speak the
-[google/A2A](https://google.github.io/A2A/) protocol. The wire-level
-HTTP + SSE transport is intentionally deferred: the spec is
-substantial enough that a full implementation belongs in its own
-release cycle, and by the time we ship it we'd like the ecosystem to
-have converged on which optional parts matter.
+types and interfaces rousseau-agent uses to speak the
+[A2A protocol (Linux Foundation)](https://a2a-protocol.org/latest/specification/).
+Both v0-shorthand routes (from the pre-LF-donation era) and
+v1.0.1-conformant routes are served concurrently so peers on either
+version can talk to rousseau.
+
+**Daemon wiring (v0.0.5):** The A2A server is now assembled at
+daemon startup when `a2a.server.enabled: true` in the config. It
+runs alongside SCIM in `StartBackgroundServers` and bridges inbound
+tasks to `agent.Turn` on a fresh per-task session.
+
+**A2A client peers** are also constructed at daemon assembly from
+`a2a.clients[]`. Each peer entry becomes an
+`a2aclient.Client` on the wiring's `A2AClients` map keyed by
+peer Name. Trust lists (base64-encoded Ed25519 public key files) and
+per-peer `RequireSignedCard` posture are honoured at construction
+time. Broken peers WARN + drop out of the map so the daemon still
+runs the healthy ones.
+
+**Agent-side dispatch tool.** When at least one A2A peer resolves at
+boot, the `a2a_dispatch` tool is registered on the model's tool
+surface. The tool's schema advertises the configured peer names as
+an `enum` so the model gets an allow-list at the input-validation
+layer, not just at execution time. Input shape:
+
+```json
+{
+  "peer": "spec-writer",
+  "prompt": "Draft an OpenAPI schema for a payment endpoint",
+  "skill_name": "openapi-drafter",
+  "timeout_seconds": 60
+}
+```
+
+The tool blocks until the peer's task reaches a terminal status and
+returns the concatenation of every `OutputText` frame the peer
+emitted. Peer failures surface as the tool error (with the peer's
+`FailureCode`), so the model can reason about downstream failures
+the same way it reasons about local tool failures. The daemon's
+regular Approver still gates every dispatch — no A2A-specific
+approval bypass.
+
+**Live progress emission.** Each non-terminal peer update (frames
+with `Status=running` and a non-empty `Message` or `OutputText`)
+fires a `progress.Event` onto the caller's `progress.Bus`. Chat
+transports subscribe to that bus and render the events as live
+"peer is still working on it…" bubbles so users see life during
+long dispatches. When no publisher is on the context (headless
+usage, CLI, tests), emission drops silently — the tool behaves
+identically to a non-streaming implementation. The terminal frame
+is deliberately NOT emitted as progress because the outer tool
+loop already surfaces it via `KindToolFinished`; a duplicate would
+render as two bubbles for the same event.
+
+See the config schema below and `identity.a2a.*` rows in
+`rousseau doctor` for the operator-visible surface.
 
 ## Why A2A
 
@@ -30,11 +88,18 @@ Adjacent protocols we're tracking:
 - **Nostr / Buzz** (Block's) — cryptographic identity for agent
   chains-of-custody. Complementary; would sit on top of A2A.
 
-## Surface (planned)
+## Surface (v1.0.1 spec + legacy — both served)
 
 ### Server (rousseau accepts inbound tasks)
 
 ```
+# A2A v1.0.1 spec routes (preferred)
+GET  /.well-known/agent-card.json        → JSON AgentCard (application/a2a+json)
+POST /message:send                       → accept a Message, return SpecTask
+GET  /tasks/{id}:subscribe               → SSE stream of StreamResponse frames
+POST /tasks/{id}:cancel                  → cancel
+
+# Legacy v0-shorthand routes (kept for backwards compatibility, deprecated in v0.0.6)
 GET  /.well-known/agent-capabilities     → JSON CapabilityCard
 POST /tasks                              → accept a Task, return task_id
 GET  /tasks/{id}                         → poll status

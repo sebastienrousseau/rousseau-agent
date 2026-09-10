@@ -51,6 +51,74 @@ type Config struct {
 	Media         MediaConfig         `mapstructure:"media"`
 	Tools         ToolsConfig         `mapstructure:"tools"`
 	Auth          AuthConfig          `mapstructure:"auth"`
+	A2A           A2AConfig           `mapstructure:"a2a"`
+}
+
+// A2AConfig configures the Agent-to-Agent protocol surface — both the
+// server (rousseau accepts inbound tasks from peer agents) and the
+// client peer list (rousseau dispatches to configured peers). Empty
+// leaves A2A off; see docs/a2a.md for the wire protocol.
+type A2AConfig struct {
+	// Server configures the inbound A2A HTTP endpoint. Empty
+	// (Enabled=false) leaves the server off.
+	Server A2AServerConfig `mapstructure:"server"`
+	// Clients lists per-peer client configurations. Each entry
+	// creates a client.Client the daemon can dispatch to via the
+	// (not-yet-wired) agent-side A2A tool.
+	Clients []A2AClientConfig `mapstructure:"clients"`
+}
+
+// A2AServerConfig is the inbound-side surface.
+type A2AServerConfig struct {
+	// Enabled turns the A2A server on. Off by default so the daemon
+	// doesn't expose a network surface without operator opt-in.
+	Enabled bool `mapstructure:"enabled"`
+	// Listen is the bind address (Go net.Listen syntax). Empty
+	// defaults to :7443.
+	Listen string `mapstructure:"listen"`
+	// AuthTokensFile points at a newline-separated bearer-token
+	// allowlist. Every non-empty non-comment line is one accepted
+	// token. Comments start with '#'. Empty disables auth — DO NOT
+	// deploy without setting this.
+	AuthTokensFile string `mapstructure:"auth_tokens_file"`
+	// SigningKeyFile is the base64-encoded Ed25519 private key file
+	// (see `rousseau a2a keygen`). When set, the well-known
+	// AgentCard route JWS-signs its response so peers with the
+	// corresponding public key can verify authenticity.
+	SigningKeyFile string `mapstructure:"signing_key_file"`
+	// AgentName is what appears on the served CapabilityCard's Name
+	// field. Empty defaults to "rousseau-agent".
+	AgentName string `mapstructure:"agent_name"`
+	// AgentID is the stable identifier peers use to refer to this
+	// deployment. Empty defaults to the operator's hostname.
+	AgentID string `mapstructure:"agent_id"`
+	// ExposedSkills is the allow-list of skill names peers can
+	// invoke via the SkillName field on a Task. Empty means no
+	// skill is exposed — the default handler receives every task.
+	ExposedSkills []string `mapstructure:"exposed_skills"`
+}
+
+// A2AClientConfig is one outbound-peer entry.
+type A2AClientConfig struct {
+	// Name identifies the peer in logs, metrics, and (future)
+	// tool-call routing. Required.
+	Name string `mapstructure:"name"`
+	// Endpoint is the peer's A2A base URL (e.g.
+	// https://spec-writer.internal). Required.
+	Endpoint string `mapstructure:"endpoint"`
+	// AuthHeaderEnv names the env var whose value goes on the
+	// Authorization header verbatim (typically "Bearer <token>").
+	// Empty disables auth for this peer.
+	AuthHeaderEnv string `mapstructure:"auth_header_env"`
+	// TrustedPublisherKeys are file paths to base64-encoded Ed25519
+	// public keys the operator has authorised to sign this peer's
+	// AgentCard. When non-empty, the client verifies the card's
+	// signatures[] before treating it as authoritative.
+	TrustedPublisherKeys []string `mapstructure:"trusted_publisher_keys"`
+	// RequireSignedCard, when true, causes the client to reject
+	// unsigned cards even in the "no trusted key list" case. Use
+	// against peers you've onboarded via out-of-band key exchange.
+	RequireSignedCard bool `mapstructure:"require_signed_card"`
 }
 
 // AuthConfig groups authentication surfaces. Today only SSO has
@@ -722,12 +790,46 @@ type AgentConfig struct {
 	Approver      ApproverConfig    `mapstructure:"approver"`
 	Compression   CompressionConfig `mapstructure:"compression"`
 	SkillsDir     string            `mapstructure:"skills_dir"`
+	// SkillsMode selects the skills loader. Two values today:
+	//
+	//   "" or "legacy" (default) — the pre-Phase-2.1 flat-file
+	//     format. SkillsDir is scanned non-recursively for *.md
+	//     files; each file's `triggers: [...]` frontmatter drives
+	//     keyword activation. Kept as default for backwards
+	//     compatibility while callers migrate their skill files.
+	//
+	//   "spec" — the agentskills.io three-tier progressive-
+	//     disclosure model. SkillsDir is walked for subdirectories
+	//     containing SKILL.md; each skill's name + description are
+	//     injected as a <available_skills> catalog into the system
+	//     prompt, and the model loads bodies lazily via its Read
+	//     tool on demand. Roughly 90-95% token reduction on
+	//     skills-heavy installations. See docs/skills.md for the
+	//     migration guide.
+	//
+	// SkillBundles (enterprise) is currently legacy-only; a
+	// spec-mode bundle path lands with the metadata.x-rousseau-
+	// signature verification in a subsequent commit.
+	SkillsMode string `mapstructure:"skills_mode"`
 	// SkillBundles configures the enterprise-only
 	// cryptographically-signed skill bundle loader (see
 	// internal/skills/bundle). Zero value leaves the loader
 	// off — plain-markdown SkillsDir behaviour is unchanged.
-	// Requires FeatureGovernanceAdvanced.
+	// Requires FeatureGovernanceAdvanced. Legacy-mode only for
+	// now; spec-mode ignores this with a WARN log.
 	SkillBundles SkillBundlesConfig `mapstructure:"skill_bundles"`
+	// EnableConfidenceElicitation appends a one-line instruction
+	// to every system prompt asking the model to close each turn
+	// with <confidence>0.NN</confidence>. Agent.Turn parses the
+	// tag, pairs it with the outcome, and emits a Predictability
+	// "pair" sample the reliability aggregator's Brier / ECE /
+	// AUROC calculations consume.
+	//
+	// Costs ~40 tokens per turn (the addendum) plus ~10 tokens
+	// per reply (the closing tag). Turn on when you want real
+	// live Predictability numbers in `rousseau reliability`;
+	// leave off for token-sensitive deployments.
+	EnableConfidenceElicitation bool `mapstructure:"enable_confidence_elicitation"`
 }
 
 // SkillBundlesConfig is the operator-facing view of the

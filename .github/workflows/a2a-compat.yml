@@ -1,0 +1,111 @@
+name: a2a-compat
+
+# Contract test for the A2A v1.0.1 wire protocol. Ensures the Go
+# server + client we ship stay conformant to the spec paths / headers
+# / enum values. Runs on every PR that touches the a2a surface so a
+# spec-drift regression fails CI, not silently ships.
+#
+# See docs/a2a-conformance.md for the diff document this test
+# defends.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'internal/a2a/**'
+      - 'examples/embed-a2a-federated/**'
+      - 'docs/a2a-conformance.md'
+      - '.github/workflows/a2a-compat.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/a2a/**'
+      - 'examples/embed-a2a-federated/**'
+      - 'docs/a2a-conformance.md'
+      - '.github/workflows/a2a-compat.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: a2a-compat contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      # Run the a2a package tests with -race so any wire-shape or
+      # concurrency regression on the spec surfaces surfaces here
+      # before it gets buried in the umbrella `go test ./...` run.
+      - name: server + client tests (race-mode)
+        run: |
+          go test -race -count=1 -v \
+            ./internal/a2a/... \
+            ./examples/embed-a2a-federated/...
+
+      # Belt-and-braces on the spec-conformance test names —
+      # regression on any of these means we broke a v1.0 surface a
+      # federated peer will depend on. Grepping the -run pattern
+      # keeps the gate explicit so a rename of a test function is a
+      # deliberate decision.
+      - name: enumerate spec-conformance test coverage
+        run: |
+          set -euo pipefail
+          expected=(
+            TestSpec_AgentCardServed
+            TestSpec_MessageSend_HappyPath
+            TestSpec_MessageSend_EmptyPartsRejected
+            TestSpec_ColonVerb_Cancel
+            TestSpec_ColonVerb_UnknownVerbIs404
+            TestSpec_ColonVerb_Subscribe_ReceivesStreamResponseFrames
+            TestSpec_LegacyPathsStillWork
+            TestSpec_BaseURL_HonoursForwardedHeaders
+            TestSpec_GetAgentCard_HappyPath
+            TestSpec_GetAgentCard_LegacyFallback
+            TestSpec_SendMessage_HappyPath
+            TestSpec_SendMessage_LegacyFallback
+            TestSpec_SubscribeToTask_HappyPath
+            TestSpec_SubscribeToTask_LegacyFallback
+            TestSpec_CancelTask_HappyPath
+            TestSpec_CancelTask_LegacyFallback
+          )
+          for tname in "${expected[@]}"; do
+            if ! grep -qr "func ${tname}(" internal/a2a/; then
+              echo "::error::spec-conformance test missing: ${tname}"
+              exit 1
+            fi
+          done
+          echo "all ${#expected[@]} spec-conformance test names present"
+
+      # Shape gate: the diff document is authoritative for what we
+      # claim to conform to. Fail the job if it disappears — a silent
+      # deletion would represent an undeclared conformance regression.
+      - name: conformance doc present
+        run: test -f docs/a2a-conformance.md
+
+      # Federated example must build + run end-to-end so the
+      # cross-vendor interop demo doesn't silently rot.
+      - name: federated example smoke
+        run: go run ./examples/embed-a2a-federated | tee /tmp/federated.out
+      - name: assert v1 wire markers on federated example stdout
+        run: |
+          set -euo pipefail
+          for marker in \
+            "protocol=1.0" \
+            "state=TASK_STATE_SUBMITTED" \
+            "state=TASK_STATE_COMPLETED" \
+            "cancelled:"; do
+            if ! grep -q "${marker}" /tmp/federated.out; then
+              echo "::error::federated example missing marker: ${marker}"
+              cat /tmp/federated.out
+              exit 1
+            fi
+          done

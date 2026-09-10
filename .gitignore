@@ -8,6 +8,8 @@
 *.out
 coverage.*
 /coverage/
+# But keep the shields.io badge JSON — the README badge reads from it.
+!/.github/badges/coverage.json
 
 # Go workspace
 go.work

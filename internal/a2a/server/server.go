@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -52,6 +53,12 @@ type Server struct {
 	// Auth is the bearer-token allowlist. Empty disables auth — DO
 	// NOT deploy without setting this in production.
 	Auth []string
+	// SigningKey, when set, causes the v1.0 well-known AgentCard route
+	// to sign the response with Ed25519 + JWS per the A2A v1.0.1
+	// signatures[] surface. Peers that trust the corresponding
+	// public key can then verify card authenticity + integrity.
+	// Zero-value skips signing — cards are served unsigned.
+	SigningKey ed25519.PrivateKey
 
 	mu    sync.Mutex
 	tasks map[string]*taskState
@@ -113,14 +120,32 @@ func (s *Server) serveListener(ctx context.Context, ln net.Listener) error {
 // (behind their own mux, TLS, etc.) instead of calling Serve.
 func (s *Server) Router() http.Handler { return s.mux() }
 
-// mux wires the router.
+// mux wires the router. Both the legacy v0-shorthand routes and the
+// A2A v1.0.1 spec routes are served — see docs/a2a-conformance.md for
+// the deprecation timeline.
+//
+// The spec's colon-verb routes (e.g. `/tasks/{id}:cancel`) don't fit
+// Go's ServeMux wildcard grammar, which forbids mixed literal + wildcard
+// segments. We dispatch on the raw segment inside a single handler
+// per method (see [Server.handleGetTaskVerb], [Server.handlePostTaskVerb])
+// which strips the `:verb` suffix and routes to the right handler,
+// falling back to the legacy shape when the segment is a bare id.
 func (s *Server) mux() http.Handler {
 	m := http.NewServeMux()
+	// Legacy v0-shorthand routes (kept for backwards compatibility).
 	m.HandleFunc("GET /.well-known/agent-capabilities", s.handleCard)
 	m.HandleFunc("POST /tasks", s.authed(s.handleSubmit))
-	m.HandleFunc("GET /tasks/{id}", s.authed(s.handleStatus))
 	m.HandleFunc("GET /tasks/{id}/events", s.authed(s.handleEvents))
 	m.HandleFunc("POST /tasks/{id}/cancel", s.authed(s.handleCancel))
+	// A2A v1.0.1 spec routes.
+	m.HandleFunc("GET /.well-known/agent-card.json", s.handleSpecCard)
+	m.HandleFunc("POST /message:send", s.authed(s.handleSpecMessageSend))
+	// Combined dispatchers — see doc comment above.
+	m.HandleFunc("GET /tasks/{spec}", s.authed(s.handleGetTaskVerb))
+	m.HandleFunc("POST /tasks/{spec}", s.authed(s.handlePostTaskVerb))
+	// A2A JSON-RPC 2.0 binding — single endpoint, method dispatch
+	// inside handleJSONRPC.
+	m.HandleFunc("POST /jsonrpc", s.authed(s.handleJSONRPC))
 	return m
 }
 
@@ -151,16 +176,6 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		"task_id": state.id,
 		"status":  string(a2a.TaskStatusRunning),
 	})
-}
-
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	state := s.lookup(id)
-	if state == nil {
-		writeErr(w, http.StatusNotFound, "unknown task_id")
-		return
-	}
-	writeJSON(w, http.StatusOK, state.snapshot())
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {

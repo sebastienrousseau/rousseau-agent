@@ -256,12 +256,24 @@ func TestReporter_BreakerStopsProgressButStillTriesTheFinalUpdate(t *testing.T) 
 func TestReporter_SurfacesDroppedEvents(t *testing.T) {
 	sink := &fakeSink{}
 	h := newHarness(t, sink, Policy{})
-	h.run(context.Background())
 
-	// Ring size is 4; overflow it before the reporter can drain.
+	// Publish BEFORE starting the reporter so all 12 events queue
+	// into the ring at once — RingSize=4 means 8 events are
+	// guaranteed to drop. The previous ordering (h.run first,
+	// then publish) was racy: the reporter goroutine could drain
+	// each event before the next Publish call, in which case the
+	// ring never filled and no drops occurred.
 	for i := 0; i < 12; i++ {
 		h.bus.Publish(Event{Key: "k", Kind: KindThinking, Iteration: i + 1})
 	}
+	// Sanity-check the ring overflowed before we start the
+	// reporter. If this ever regresses (e.g. RingSize default
+	// changes) the test fails with a legible message instead of
+	// the enigmatic "does not contain 'events dropped'".
+	require.Positive(t, h.sub.Dropped(),
+		"pre-condition: at least one event must have been dropped by the ring overflow (got Dropped()=%d)", h.sub.Dropped())
+
+	h.run(context.Background())
 	h.pulse(30 * time.Second)
 	require.NotEmpty(t, sink.sends())
 	assert.Contains(t, sink.sends()[0].Text, "events dropped")
