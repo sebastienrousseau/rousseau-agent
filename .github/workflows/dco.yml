@@ -53,6 +53,13 @@ jobs:
           # `%(trailers:...)` — the trailer field appends its own
           # newline, so any format field placed AFTER it appears on
           # a subsequent line and the read-loop assigns it wrong.
+          #
+          # `--no-merges` skips merge commits. Those are created by
+          # `gh pr update-branch` or `git merge` when a PR is refreshed
+          # against main, are authored by whoever clicked the button
+          # (not the contributor), and by convention aren't
+          # DCO-attested (the substantive DCO lives on the merged
+          # commits themselves).
           bot_authors="^(dependabot\[bot\]|dependabot-preview\[bot\]|github-actions\[bot\])$"
           while IFS=$'\t' read -r sha author trailers; do
               if [ -z "$sha" ]; then
@@ -65,7 +72,7 @@ jobs:
                   echo "::error::commit $sha (author: $author) is missing a Signed-off-by trailer"
                   bad=$((bad + 1))
               fi
-          done < <(git log --format='%H%x09%an%x09%(trailers:key=Signed-off-by,valueonly)' "$BASE_SHA..$HEAD_SHA")
+          done < <(git log --no-merges --format='%H%x09%an%x09%(trailers:key=Signed-off-by,valueonly)' "$BASE_SHA..$HEAD_SHA")
           if [ "$bad" -gt 0 ]; then
               cat >&2 <<'EOF'
 
