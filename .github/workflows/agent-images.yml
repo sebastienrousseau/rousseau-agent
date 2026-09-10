@@ -342,7 +342,11 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # contents:write is needed by anchore/sbom-action@v0 on tag
+      # push — it uploads the generated SPDX SBOM as a release
+      # asset via the GitHub Releases API. Same root cause as the
+      # container-release fix in #183.
+      contents: write
       packages: read
     steps:
       - uses: actions/checkout@v7

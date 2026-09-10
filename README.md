@@ -1,21 +1,30 @@
 <!-- markdownlint-disable MD033 MD041 -->
-<!-- SPDX-License-Identifier: Apache-2.0 OR MIT -->
+<!-- SPDX-License-Identifier: FSL-1.1-Apache-2.0 -->
 
 <h1 align="center">rousseau-agent</h1>
 
 <p align="center">
-  <em>A self-hosted personal AI agent daemon that bridges nine chat
-  transports to the LLM provider of your choice, in a single static Go
-  binary.</em>
+  <em>A self-hosted AI agent daemon for teams that cannot use SaaS.
+  Single static Go binary, rootless container, offline-verified
+  license — deployable inside your perimeter with enforced SSO,
+  OPA policy, and signed audit egress to your SIEM. Reachable from
+  the chat transports your organisation already runs.</em>
+</p>
+
+<p align="center">
+  <sub>Built for regulated verticals under DORA / EU AI Act / HIPAA
+  and for sovereignty-first prosumers who want a real daemon on
+  their own hardware. See <a href="./docs/BUYER.md">docs/BUYER.md</a>
+  for who this is for and who it is not.</sub>
 </p>
 
 <p align="center">
   <a href="https://github.com/sebastienrousseau/rousseau-agent/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/sebastienrousseau/rousseau-agent/ci.yml?branch=main&style=for-the-badge&logo=github&label=CI" alt="CI" /></a>
   <a href="https://github.com/sebastienrousseau/rousseau-agent/actions/workflows/slsa.yml"><img src="https://img.shields.io/badge/SLSA-Level%203-blueviolet?style=for-the-badge" alt="SLSA Level 3" /></a>
-  <a href="#development"><img src="https://img.shields.io/badge/coverage-98.1%25-66c2a5?style=for-the-badge&labelColor=555555" alt="Coverage 98.1%" /></a>
+  <a href="#development"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/sebastienrousseau/rousseau-agent/main/.github/badges/coverage.json&style=for-the-badge&labelColor=555555" alt="Coverage" /></a>
   <a href="https://pkg.go.dev/github.com/sebastienrousseau/rousseau-agent"><img src="https://img.shields.io/badge/pkg.go.dev-reference-informational?style=for-the-badge&logo=go" alt="Go reference" /></a>
   <img src="https://img.shields.io/badge/Go-1.26-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26" />
-  <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue?style=for-the-badge" alt="Apache-2.0 OR MIT" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-FSL--1.1--Apache--2.0-blue?style=for-the-badge" alt="FSL-1.1-Apache-2.0 (transitions to Apache-2.0 after 2 years)" /></a>
 </p>
 
 ---
@@ -63,11 +72,22 @@ toolchain at build time and no libc coupling at runtime.
 
 | Channel | Install |
 |---|---|
+| **One-line install (recommended)** | `curl -sSL https://raw.githubusercontent.com/sebastienrousseau/rousseau-agent/main/scripts/install.sh \| bash` |
 | Go toolchain | `go install github.com/sebastienrousseau/rousseau-agent/cmd/rousseau@latest` |
 | Source | `git clone https://github.com/sebastienrousseau/rousseau-agent && cd rousseau-agent && make build` |
 | Container (full) | `podman pull ghcr.io/sebastienrousseau/rousseau-agent:latest` |
 | Container (distroless) | `podman pull ghcr.io/sebastienrousseau/rousseau-agent:distroless-latest` |
 | Signed release archive | GitHub Releases — archive, `checksums.txt`, CycloneDX SBOM, cosign signature, SLSA provenance |
+
+The one-line installer detects your OS + architecture, downloads
+the matching binary from the latest GitHub Release, verifies its
+SHA-256 checksum, verifies the cosign signature when `cosign` is
+on PATH, and installs to `~/.local/bin/rousseau`. Then run
+`rousseau setup` for the interactive first-run wizard (writes
+`~/.config/rousseau/config.yaml`; five-minute total time-to-first-
+message target on a fresh Linux / macOS box). For the full
+container-native production layout (Podman + systemd Quadlet),
+use `scripts/install-from-source.sh` after cloning instead.
 
 Go **1.26** is the floor; `go.mod` declares `go 1.26` and pins
 `toolchain go1.26.6`. CI compiles the binary for twelve GOOS/GOARCH/tag
@@ -676,6 +696,14 @@ image builds work under Docker (`make images ENGINE=docker`), but
 Quadlet, `UserNS=keep-id`, and the `pasta` network stack are podman
 features.
 
+After the initial install, ship a new build with `make deploy` —
+rebuilds the daemon image, restarts the Quadlet service, and confirms
+the new binary is live by execing `rousseau version` inside the
+container. Podman-only; refuses to run if the service is not installed.
+Prior `make build` alone only updated `./bin/rousseau` on the host and
+left the containerised daemon on the old image, which drifted silently
+until the next explicit image rebuild.
+
 ### Runtime posture
 
 Every line below is in `docker/rousseau-agent.container`.
@@ -1047,10 +1075,24 @@ here against their public definitions.
 
 ## License
 
-Dual-licensed under [Apache License 2.0](./LICENSE-APACHE) or
-[MIT](./LICENSE-MIT), at your option.
+Current versions are licensed under the [Functional Source License,
+Version 1.1, Apache 2.0 Future License (FSL-1.1-Apache-2.0)](./LICENSE).
+Each version automatically transitions to Apache 2.0 on the second
+anniversary of its release — the fair-source pattern also used by
+Sentry and others.
 
-`SPDX-License-Identifier: Apache-2.0 OR MIT`
+`SPDX-License-Identifier: FSL-1.1-Apache-2.0`
+
+**Versions v0.0.3 and earlier** were dual-licensed under [Apache
+License 2.0](./LICENSE-APACHE) or [MIT](./LICENSE-MIT), at your
+option. Those releases retain their original license terms — the
+relicense applies only from the next version forward.
+
+The rationale for the license choice is documented in
+[`docs/LICENSE-RATIONALE.md`](./docs/LICENSE-RATIONALE.md).
+Contributions require signing off under the
+[Developer Certificate of Origin](./CLA.md) — every commit needs a
+`Signed-off-by:` trailer (`git commit -s`).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for release history.
 

@@ -92,3 +92,19 @@ ON CONFLICT (session_id) DO NOTHING
 		slog.Warn("postgres: remember claude session", "id", id, "err", err)
 	}
 }
+
+// Forget drops id from both the hot cache and the persistent table.
+// Called by the claudecli session-in-use recovery path so the next
+// Stream attempt uses --session-id (fresh transcript) rather than
+// --resume (which would fail post-rotate). DB errors are logged and
+// swallowed — a stale row is a latency-only artefact.
+func (c *ClaudeSessionCache) Forget(id string) {
+	c.mu.Lock()
+	delete(c.hot, id)
+	c.mu.Unlock()
+
+	const q = `DELETE FROM claude_sessions WHERE session_id = $1`
+	if _, err := c.db.ExecContext(context.Background(), q, id); err != nil {
+		slog.Warn("postgres: forget claude session", "id", id, "err", err)
+	}
+}

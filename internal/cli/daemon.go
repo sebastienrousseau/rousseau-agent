@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	a2aclient "github.com/sebastienrousseau/rousseau-agent/internal/a2a/client"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
@@ -19,9 +20,11 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/license"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 	mcpclient "github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
+	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
@@ -90,6 +93,17 @@ type daemonWiring struct {
 	// the ListenAndServe goroutine with the same lifetime as
 	// itself.
 	SCIMAddr string
+	// A2A is the (optional) Agent-to-Agent HTTP server runtime.
+	// Nil when a2a.server.enabled=false OR the operator's config
+	// is broken. When non-nil, callers start it via
+	// StartBackgroundServers alongside the SCIM server.
+	A2A *a2aRuntime
+	// A2AClients holds the peer clients constructed from
+	// cfg.A2A.Clients[]. Empty map when the operator hasn't
+	// configured any peers. Keyed by peer Name so the (future)
+	// agent-side A2A tool can look up a client by the operator's
+	// declared identifier.
+	A2AClients map[string]*a2aclient.Client
 	// AuditSink is the enterprise audit-egress sink; downstream
 	// callers (agent tool-call instrumentation, SSO
 	// login/logout, license state changes) Emit into it. Never
@@ -150,6 +164,9 @@ func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
 				)
 			}
 		}()
+	}
+	if w.A2A != nil {
+		go runA2AServer(ctx, w.A2A, w.Logger)
 	}
 }
 
@@ -223,6 +240,11 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	if err != nil {
 		return nil, err
 	}
+	// concrete is the driver-native store. `sessions` keeps the
+	// state.Store interface for callers that only touch the
+	// canonical Save/Load/List/Delete surface; the transport
+	// router below needs the wider SearchBySender + Search
+	// methods so it holds the concrete `concrete` directly.
 	sessions := state.Store(concrete)
 
 	identities, err := openIdentityStore(ctx, concrete)
@@ -248,6 +270,44 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 	if cc, ok := provider.(*claudecli.Provider); ok {
 		cc.WithCache(claudeCache)
+	}
+
+	// Reliability sample stream — the four-dimension decomposition
+	// per arXiv:2602.16666. Two recorders: an in-memory Aggregator
+	// serving the current process's `rousseau reliability` reads,
+	// and a SQLite store so a separate CLI process from a shell
+	// can see the same data. Fanned out via MultiRecorder so
+	// callsites (agent.Turn today; approver + transport in the
+	// follow-on wave) don't have to know about both.
+	reliabilityAgg := reliability.NewAggregator(0)
+	reliabilityStore, err := openReliabilitySampleStore(ctx, concrete, opts.Logger)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, fmt.Errorf("cli: open reliability store: %w", err)
+	}
+	// Prometheus surface — feeds the running daemon's /metrics
+	// endpoint. Constructed against observability.Registry so
+	// existing scrapers see the reliability metrics without any
+	// scrape-config change on the operator's side.
+	reliabilityProm := reliability.NewPrometheusRecorder(observability.Registry)
+
+	// Fan-out: aggregator (process-lifetime CLI reads) + store
+	// (cross-process durability) + prometheus (/metrics scrape).
+	recorders := []reliability.Recorder{reliabilityAgg, reliabilityProm}
+	if reliabilityStore != nil {
+		recorders = append(recorders, reliabilityStore)
+	}
+	reliabilityRecorder := reliability.Recorder(reliability.NewMultiRecorder(recorders...))
+
+	// Retention loop for the persistent store — prune samples
+	// older than 30 days every 6 hours. Runs as long as the
+	// daemon's ctx is alive; a nil store (postgres deployment
+	// today) disables the loop cleanly via the Pruner interface
+	// check inside RunPruner.
+	if pr, ok := reliabilityStore.(reliability.Pruner); ok {
+		go reliability.RunPruner(ctx, pr, reliability.PruneConfig{
+			Logger: opts.Logger,
+		})
 	}
 
 	registry := tools.NewRegistry()
@@ -376,6 +436,20 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		newApprovalAuditAdapter(auditSink), opts.Logger,
 	)
 
+	// Sit the reliability recorder OUTSIDE every other approver
+	// wrap. This way any denial (pattern / RBAC / OPA / multi-party)
+	// emits exactly one Safety violation sample — the outer-wrap
+	// position guarantees we count the FINAL verdict, not every
+	// intermediate layer's decision. If we sat inside a layer that
+	// itself wraps another approver, we'd double-count when the
+	// inner ally denies and the outer forwards.
+	approver = &agent.RecordingApprover{
+		Inner:      approver,
+		Recorder:   reliabilityRecorder,
+		Severity:   "medium",
+		Constraint: "approver-deny",
+	}
+
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
 		SystemPrompt:   systemPrompt(cfg.Agent.SystemPrompt),
@@ -387,10 +461,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		// sqlite.SessionCostStore and postgres.SessionCostStore
 		// satisfy the widened interface. Kept in the sqlite
 		// package for locality with pricing; the type is neutral.
-		CostRecorder: sqlitestore.NewCostRecorder(costStore, nil),
-		Hooks:        buildHooks(cfg.Hooks, opts.Logger),
-		Progress:     progressBus,
-		AuditSink:    auditSink,
+		CostRecorder:                sqlitestore.NewCostRecorder(costStore, nil),
+		Hooks:                       buildHooks(cfg.Hooks, opts.Logger),
+		Progress:                    progressBus,
+		AuditSink:                   auditSink,
+		Reliability:                 reliabilityRecorder,
+		EnableConfidenceElicitation: cfg.Agent.EnableConfidenceElicitation,
 	})
 
 	// Build the optional SCIM Service Provider — pull-based
@@ -430,13 +506,28 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		Approvals:     pendingApprovals,
 		BuildStamp:    fmt.Sprintf("%s (commit %s, built %s)", version, commit, buildDate),
 	}
-	router := transport.NewRouter(ag, sessions, jidMap, opts.Logger, routerOpts)
+	router := transport.NewRouter(ag, concrete, jidMap, opts.Logger, routerOpts)
 
 	cronStore, err := openCronStore(ctx, concrete)
 	if err != nil {
 		closeMCPClients(mcpClients, opts.Logger)
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
+	}
+
+	// A2A server assembly — fail-open, WARN on config errors so a
+	// broken a2a config doesn't take chat transports offline.
+	a2aRt := buildA2AServer(cfg.A2A, ag, opts.Logger)
+	// A2A client peers — same fail-open discipline; each broken
+	// peer drops out of the map without stopping the daemon.
+	a2aClients := buildA2AClients(cfg.A2A.Clients, opts.Logger)
+	// Register the a2a_dispatch tool only when at least one peer
+	// wired up — a tool that promises "no peers configured" is
+	// noise the model has to filter. Skip when the map is empty
+	// so the model's tool list stays crisp.
+	if len(a2aClients) > 0 {
+		registry.MustRegister(builtin.NewA2ADispatchTool(a2aClients))
+		opts.Logger.Info("a2a.dispatch_tool_registered", slog.Int("peer_count", len(a2aClients)))
 	}
 
 	return &daemonWiring{
@@ -461,6 +552,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		AuditSink:    auditSink,
 		SCIMServer:   scimServer,
 		SCIMAddr:     scimAddr,
+		A2A:          a2aRt,
+		A2AClients:   a2aClients,
 	}, nil
 }
 
@@ -750,7 +843,11 @@ func (w *daemonWiring) routerFor(name string) *transport.Router {
 	opts := w.routerOpts
 	opts.Identity = w.Identities
 	opts.Transport = name
-	r := transport.NewRouter(w.Agent, w.Sessions, w.JIDMap, w.Logger, opts)
+	// Concrete (SearchableStore) rather than Sessions
+	// (state.Store) so the router can reach the wider
+	// SearchBySender + Search methods it needs for /find and
+	// the recall provider.
+	r := transport.NewRouter(w.Agent, w.Concrete, w.JIDMap, w.Logger, opts)
 	w.routers[name] = r
 	return r
 }

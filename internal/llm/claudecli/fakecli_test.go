@@ -197,9 +197,13 @@ func TestStream_NonZeroExitSurfacesStderr(t *testing.T) {
 	assert.False(t, p.knowsSession("sess-x"), "a failed stream must not prime the cache")
 }
 
-// TestStream_ParseErrorWinsOverExitStatus: when the stream never yields
-// a result line the parse error is reported, not the exit status.
-func TestStream_ParseErrorWinsOverExitStatus(t *testing.T) {
+// TestStream_ExitAndStderrWinOverEmptyStreamSentinel: when the CLI
+// exits non-zero without emitting a result line, the caller sees the
+// exit status + stderr — not the generic "stream ended without a
+// result line" sentinel. Locks in the reversal of the pre-fix
+// behaviour, which masked useful CLI failure messages (auth errors,
+// missing config, killed subprocess) behind a diagnostic dead end.
+func TestStream_ExitAndStderrWinOverEmptyStreamSentinel(t *testing.T) {
 	cli := newFakeCLI(t, "Claude configuration file not found\n", "boom\n", 1)
 	p := New(Config{Binary: cli.path})
 
@@ -210,9 +214,30 @@ func TestStream_ParseErrorWinsOverExitStatus(t *testing.T) {
 	require.NoError(t, err)
 	_, report := collect(t, evs, rep)
 	require.Error(t, report.Err)
-	assert.Contains(t, report.Err.Error(), "ended without a result line")
-	assert.NotContains(t, report.Err.Error(), "stream exit")
+	assert.Contains(t, report.Err.Error(), "stream exit")
+	assert.Contains(t, report.Err.Error(), "exit status 1")
+	assert.Contains(t, report.Err.Error(), "boom")
+	assert.NotContains(t, report.Err.Error(), "ended without a result line")
 	assert.False(t, p.knowsSession("sess-y"))
+}
+
+// TestStream_EmptyStreamSentinelWhenCLIExitsCleanly: if the CLI
+// somehow returns exit 0 with an empty / non-JSON stdout AND no
+// stderr context, we fall back to the sentinel. Pathological but
+// worth locking in so a future refactor doesn't accidentally drop
+// the sentinel altogether.
+func TestStream_EmptyStreamSentinelWhenCLIExitsCleanly(t *testing.T) {
+	cli := newFakeCLI(t, "Claude configuration file not found\n", "", 0)
+	p := New(Config{Binary: cli.path})
+
+	evs, rep, err := p.Stream(context.Background(), agent.Request{
+		SessionID: "sess-z",
+		Messages:  []agent.Message{agent.NewUserText("hi")},
+	})
+	require.NoError(t, err)
+	_, report := collect(t, evs, rep)
+	require.Error(t, report.Err)
+	assert.ErrorIs(t, report.Err, ErrEmptyStream)
 }
 
 // TestStream_ImagesBecomeImageFlags checks image temp files are passed
@@ -284,6 +309,9 @@ func TestStream_StartFailureIsSynchronous(t *testing.T) {
 
 // TestStream_ContextCancellationKillsChild proves ctx cancellation
 // terminates the subprocess rather than hanging the report goroutine.
+// The report surfaces the SIGKILL wait status (via the exit-promotes-
+// sentinel path) rather than the ErrEmptyStream sentinel, because a
+// killed subprocess is a real failure the caller should see.
 func TestStream_ContextCancellationKillsChild(t *testing.T) {
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skip("no sleep binary")
@@ -301,7 +329,8 @@ func TestStream_ContextCancellationKillsChild(t *testing.T) {
 	cancel()
 	_, report := collect(t, evs, rep)
 	require.Error(t, report.Err)
-	assert.Contains(t, report.Err.Error(), "ended without a result line")
+	assert.Contains(t, report.Err.Error(), "stream exit")
+	assert.Contains(t, report.Err.Error(), "killed")
 }
 
 // -- Complete: retry + image paths -------------------------------------
@@ -540,7 +569,7 @@ func TestClassifyLine_Table(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			kind, delta, final, isResult := classifyLine(json.RawMessage(tc.line))
+			kind, delta, final, isResult, _ := classifyLine(json.RawMessage(tc.line)) //nolint:errcheck // table-driven test doesn't discriminate on resultErr
 			assert.Equal(t, tc.kind, kind)
 			assert.Equal(t, tc.delta, delta)
 			assert.Equal(t, tc.isResult, isResult)
