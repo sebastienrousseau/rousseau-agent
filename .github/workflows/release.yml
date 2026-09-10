@@ -19,6 +19,13 @@ jobs:
         with:
           go-version: '1.26.6'
           cache: true
+      # goreleaser's `sboms:` block invokes syft to produce a
+      # CycloneDX SBOM per archive artifact. syft isn't preinstalled
+      # on ubuntu-latest runners, so we pull it before invoking
+      # goreleaser — the alternative is dropping SBOMs, which would
+      # regress the supply-chain story (README claims SBOM-per-release).
+      - name: install syft (SBOM generator)
+        uses: anchore/sbom-action/download-syft@v0
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
