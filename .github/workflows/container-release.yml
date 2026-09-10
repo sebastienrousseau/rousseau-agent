@@ -135,6 +135,20 @@ jobs:
           load: ${{ !startsWith(github.ref, 'refs/tags/') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Stamp the binary with real version metadata. Both
+          # Dockerfile + Dockerfile.distroless accept these ARGs
+          # and thread them into -X ldflags for
+          # internal/cli.{version,commit,buildDate}. Without them
+          # `rousseau version` reports "container (commit unknown,
+          # built unknown)" — an operator diagnosing a running
+          # container can't tell which release they're on.
+          #
+          # github.ref_name is the tag on tag pushes (v0.0.9);
+          # falls back to a symbolic ref for edge builds.
+          build-args: |
+            VERSION=${{ github.ref_type == 'tag' && github.ref_name || format('edge-{0}', github.sha) }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.run_started_at }}
           # Layer cache to shave minutes off subsequent builds
           cache-from: type=gha,scope=${{ matrix.flavour }}
           cache-to: type=gha,scope=${{ matrix.flavour }},mode=max
