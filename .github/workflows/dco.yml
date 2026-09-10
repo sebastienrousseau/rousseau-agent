@@ -43,15 +43,29 @@ jobs:
           # `awk` filter below, the while-loop reads those blank
           # lines as commits with empty SHA + empty trailer and
           # every real commit gets flagged as missing.
-          while IFS=$'\t' read -r sha trailers; do
+          # Bot-authored commits are exempt from DCO: dependabot and
+          # github-actions have no human contributor to attest, and
+          # both are already GPG-signed by GitHub's own identity. This
+          # matches the pattern most CNCF/LF projects use (e.g.
+          # kubernetes/kubernetes exempts dependabot from DCO).
+          #
+          # Format ordering matters: `%an` MUST come before
+          # `%(trailers:...)` — the trailer field appends its own
+          # newline, so any format field placed AFTER it appears on
+          # a subsequent line and the read-loop assigns it wrong.
+          bot_authors="^(dependabot\[bot\]|dependabot-preview\[bot\]|github-actions\[bot\])$"
+          while IFS=$'\t' read -r sha author trailers; do
               if [ -z "$sha" ]; then
                   continue # skip blank lines between records
               fi
+              if [[ "$author" =~ $bot_authors ]]; then
+                  continue # bot commit — exempt
+              fi
               if [ -z "$trailers" ]; then
-                  echo "::error::commit $sha is missing a Signed-off-by trailer"
+                  echo "::error::commit $sha (author: $author) is missing a Signed-off-by trailer"
                   bad=$((bad + 1))
               fi
-          done < <(git log --format='%H%x09%(trailers:key=Signed-off-by,valueonly)' "$BASE_SHA..$HEAD_SHA")
+          done < <(git log --format='%H%x09%an%x09%(trailers:key=Signed-off-by,valueonly)' "$BASE_SHA..$HEAD_SHA")
           if [ "$bad" -gt 0 ]; then
               cat >&2 <<'EOF'
 
