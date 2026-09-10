@@ -108,15 +108,25 @@ sboms:
     args: ["scan", "$artifact", "--output", "cyclonedx-json=$document"]
 
 # Cosign-signed checksums so release consumers can verify provenance
-# without trusting the GitHub tarball alone.
+# without trusting the GitHub tarball alone. Keyless signing via
+# Sigstore Fulcio + Rekor — the release workflow has
+# `id-token: write`, so cosign uses the Actions OIDC identity as the
+# signing subject. No long-lived key or password.
+#
+# Verify (consumer side):
+#   cosign verify-blob \
+#     --certificate  <artifact>.pem \
+#     --signature    <artifact>.sig \
+#     --certificate-identity-regexp='https://github.com/sebastienrousseau/rousseau-agent/.*' \
+#     --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+#     <artifact>
 signs:
   - cmd: cosign
-    stdin: '{{ .Env.COSIGN_PASSWORD }}'
     args:
       - "sign-blob"
       - "--yes"
-      - "--key=env://COSIGN_PRIVATE_KEY"
       - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
       - "${artifact}"
     artifacts: checksum
     output: true

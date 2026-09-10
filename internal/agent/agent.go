@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability/audit_egress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
+	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
@@ -69,6 +72,40 @@ type Options struct {
 	// [sso.IdentityFromContext] when available; anonymous
 	// requests emit `actor: "anonymous"`.
 	AuditSink audit_egress.Sink
+	// Reliability receives per-turn samples the four-dimension
+	// decomposition (arXiv:2602.16666) is built on. Turn emits:
+	//
+	//   - resource_cv_latency (Consistency): wall-clock ms per turn,
+	//     bucketed by SessionID so per-session variance rolls up
+	//     into the Consistency ring.
+	//   - resource_cv_tokens (Consistency): sum of input + output
+	//     tokens per turn, same bucket.
+	//   - resource_cv_calls (Consistency): tool-call count per turn.
+	//   - turn (Safety): 1 when the turn completed without a
+	//     harmful-tool denial, 0 otherwise.
+	//   - fault (Robustness): 1/0 outcome stratified by whether an
+	//     upstream fault was observed.
+	//   - pair (Predictability): (confidence, outcome) when
+	//     EnableConfidenceElicitation is true and the model emitted
+	//     a <confidence>0.XX</confidence> tag.
+	//
+	// Nil recorder means no telemetry (NopRecorder). Wired by the
+	// daemon assembly to a [reliability.MultiRecorder] fanning to
+	// the process-scoped Aggregator + the SQLite persistent store.
+	Reliability reliability.Recorder
+	// EnableConfidenceElicitation appends a short instruction to the
+	// system prompt asking the model to close every turn with a
+	// <confidence>0.XX</confidence> tag. Turn parses the value,
+	// pairs it with the outcome (success = end_turn without error,
+	// failure = anything else), and emits a Predictability "pair"
+	// sample. The Brier score aggregator in package reliability
+	// consumes these pairs.
+	//
+	// Off by default because it costs a few tokens per turn and
+	// isn't useful without a running reliability collector. Turn
+	// on when you want Predictability numbers in `rousseau
+	// reliability`.
+	EnableConfidenceElicitation bool
 }
 
 // CostRecorder is the seam the agent loop uses to persist per-call
@@ -138,14 +175,208 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	start := time.Now()
 	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
-	msg, err := a.turn(ctx, s)
+	stats := &turnStats{}
+	msg, err := a.turnWithStats(ctx, s, stats)
 	a.emitTerminal(ctx, s, start, err)
+	a.recordReliabilitySamples(s, start, err, stats, msg)
 	return msg, err
 }
 
-// turn is Turn's body, split out so Turn can bracket it with the
-// progress turn_started / terminal pair on every exit path.
-func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
+// turnStats accumulates per-turn counters the outer Turn wants to
+// record after the loop returns — tokens across every provider
+// round-trip, tool calls attempted (allowed OR denied), iteration
+// count. Kept simple: no mutex because turn() is single-goroutine.
+// Nil is treated as "don't accumulate" so callers who never look
+// at stats can pass nil safely.
+type turnStats struct {
+	inputTokens  int
+	outputTokens int
+	toolCalls    int
+}
+
+// recordReliabilitySamples fires one Sample per dimension the agent
+// loop can measure without instrumenting every provider / tool /
+// approver call:
+//
+//   - Consistency: resource_cv_latency (per-turn wall-clock ms),
+//     bucketed by session so cross-turn variance within a
+//     conversation rolls up into the paper's C_res.
+//   - Safety: turn (1 = completed cleanly, 0 = error). Violation
+//     samples with severity come from the approver wrapper — this
+//     signal is the "everything else went fine" turn counter.
+//
+// A nil Reliability recorder is a no-op via the NopRecorder
+// contract; callers never need to check. Latency of the recording
+// itself is a map lookup + two struct copies — cheap enough to sit
+// in the hot path.
+//
+// Tokens + tool-call counts + confidence pairs come from follow-on
+// instrumentation (provider.Complete, tool dispatch, confidence
+// prompt) — this method only records what Turn can see at the
+// outer bracket without touching the inner loop.
+func (a *Agent) recordReliabilitySamples(s *Session, start time.Time, turnErr error, stats *turnStats, final Message) {
+	rec := a.opts.Reliability
+	if rec == nil {
+		return
+	}
+	now := time.Now()
+	sessID := ""
+	if s != nil {
+		sessID = s.ID
+	}
+	rec.Record(reliability.Sample{
+		At:        now,
+		Dimension: reliability.DimConsistency,
+		SubMetric: "resource_cv_latency",
+		Value:     float64(now.Sub(start).Milliseconds()),
+		SessionID: sessID,
+		// Bucket by session so the paper's per-bucket CV is
+		// computed over "how variable is this specific
+		// conversation's turn latency" — the operator-meaningful
+		// question. Cross-session variance is a different metric.
+		Bucket: sessID,
+	})
+	turnValue := 1.0
+	if turnErr != nil {
+		turnValue = 0
+	}
+	rec.Record(reliability.Sample{
+		At:        now,
+		Dimension: reliability.DimSafety,
+		SubMetric: "turn",
+		Value:     turnValue,
+		SessionID: sessID,
+	})
+	// Robustness fault stratification: every turn contributes a
+	// (success, fault_observed) pair the aggregator's
+	// faultRobustness code turns into Acc_faulted / Acc_clean.
+	// "Fault observed" is a heuristic — we can't distinguish a
+	// provider-network-error from an agent-logic-error at this
+	// layer, but string-classify the returned error so the two
+	// strata at least exist when the daemon experiences real
+	// upstream faults.
+	rec.Record(reliability.Sample{
+		At:        now,
+		Dimension: reliability.DimRobustness,
+		SubMetric: "fault",
+		Value:     turnValue,
+		SessionID: sessID,
+		Metadata: map[string]string{
+			"fault": faultObservedFromError(turnErr),
+		},
+	})
+	// Consistency C_res sub-metrics: token totals + tool-call
+	// count per turn, bucketed by session so cross-turn CV
+	// within a conversation rolls up. Zero values still emitted
+	// so the histograms have observations even on trivial turns
+	// (the CV computation ignores zero-mean buckets anyway).
+	if stats != nil {
+		tokens := float64(stats.inputTokens + stats.outputTokens)
+		rec.Record(reliability.Sample{
+			At:        now,
+			Dimension: reliability.DimConsistency,
+			SubMetric: "resource_cv_tokens",
+			Value:     tokens,
+			SessionID: sessID,
+			Bucket:    sessID,
+		})
+		rec.Record(reliability.Sample{
+			At:        now,
+			Dimension: reliability.DimConsistency,
+			SubMetric: "resource_cv_calls",
+			Value:     float64(stats.toolCalls),
+			SessionID: sessID,
+			Bucket:    sessID,
+		})
+	}
+	// Predictability pair sample when confidence elicitation is on
+	// AND the model actually emitted the tag. A missing tag is not
+	// an error — some turns are aborted / tool-heavy and never
+	// reach the closing instruction. Aggregator's Brier/ECE/AUROC
+	// simply see fewer pairs.
+	if a.opts.EnableConfidenceElicitation {
+		if conf, ok := parseConfidence(finalText(final)); ok {
+			outcome := "1"
+			if turnErr != nil {
+				outcome = "0"
+			}
+			rec.Record(reliability.Sample{
+				At:        now,
+				Dimension: reliability.DimPredictability,
+				SubMetric: "pair",
+				Value:     conf,
+				SessionID: sessID,
+				Metadata: map[string]string{
+					"outcome": outcome,
+				},
+			})
+		}
+	}
+}
+
+// finalText concatenates the ContentText blocks of a message into
+// one string so parseConfidence has a single-shot input regardless
+// of how the model split its reply across content blocks.
+func finalText(m Message) string {
+	var b strings.Builder
+	for _, c := range m.Content {
+		if c.Kind == ContentText && c.Text != "" {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
+}
+
+// faultObservedFromError classifies whether the turn's terminal
+// error (if any) looks like an upstream fault — provider network
+// glitch, tool subprocess crash, MCP server dial failure — as
+// opposed to an internal-logic failure. Returns "true" or
+// "false" (string form so it round-trips through the reliability
+// Sample.Metadata map cleanly).
+//
+// Heuristic — matches on error text. When rousseau's provider /
+// tool layers get first-class error types the switch will move
+// to errors.Is. For today, substring matching is sufficient and
+// covers the majority of real upstream faults in practice.
+func faultObservedFromError(err error) string {
+	if err == nil {
+		return "false"
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"timeout",
+		"deadline exceeded",
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"network",
+		"eof",
+		"i/o timeout",
+		"context canceled",
+		"provider:",   // wrapped provider errors from turn.go
+		"subprocess",  // tool-shell-out failures
+		"exit status", // subprocess exit codes
+	} {
+		if strings.Contains(msg, marker) {
+			return "true"
+		}
+	}
+	return "false"
+}
+
+// turnWithStats is Turn's body, split out so Turn can bracket it
+// with the progress turn_started / terminal pair on every exit
+// path AND accumulate per-turn reliability counters (tokens,
+// tool-call count) that Turn emits as Consistency resource_cv_*
+// samples after the loop returns.
+//
+// stats may be nil — most callers pass nil; the outer Turn passes
+// a fresh struct. The nil check is per-callsite for zero
+// per-iteration overhead when accumulation is off.
+func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats) (Message, error) {
 	if len(s.Messages) == 0 {
 		return Message{}, ErrEmptySession
 	}
@@ -187,6 +418,25 @@ func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
 		if err != nil {
 			observability.ProviderErrors.WithLabelValues(a.provider.Name(), "other").Inc()
 			return Message{}, fmt.Errorf("provider: %w", err)
+		}
+		// Accumulate per-turn resource counters for Consistency
+		// C_res: token totals and tool-call count. Silent no-op
+		// when stats is nil so the legacy turn() call site pays
+		// nothing extra.
+		if stats != nil {
+			stats.inputTokens += resp.Usage.InputTokens
+			stats.outputTokens += resp.Usage.OutputTokens
+			// A response with StopReason == StopToolUse triggered
+			// at least one tool call — count it here so an
+			// aborted-mid-tool turn still records the call
+			// attempt.
+			if resp.StopReason == StopToolUse {
+				for _, c := range resp.Message.Content {
+					if c.Kind == ContentToolUse {
+						stats.toolCalls++
+					}
+				}
+			}
 		}
 
 		// Record cost telemetry — best effort. Nil recorder disables.
@@ -244,7 +494,7 @@ func (a *Agent) turn(ctx context.Context, s *Session) (Message, error) {
 // slow providers that block will delay the model round-trip and are
 // caller-visible.
 func (a *Agent) systemPrompt(ctx context.Context, s *Session) string {
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 4)
 	if a.opts.SystemPrompt != "" {
 		parts = append(parts, a.opts.SystemPrompt)
 	}
@@ -258,10 +508,54 @@ func (a *Agent) systemPrompt(ctx context.Context, s *Session) string {
 			parts = append(parts, x)
 		}
 	}
+	if a.opts.EnableConfidenceElicitation {
+		parts = append(parts, confidencePromptAddendum)
+	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// confidencePromptAddendum is the one-shot instruction that turns
+// on the Predictability "pair" signal. Deliberately terse — a few
+// tokens per turn is worth the closed-loop calibration metric,
+// but not a paragraph. Post-hoc self-assessment is the paper's
+// (arXiv:2602.16666 §3.3) recommended elicitation shape:
+// evaluate AFTER the task, not before.
+const confidencePromptAddendum = `Close every reply with a single line containing your calibrated confidence that the response satisfies the user's request, in the exact form: <confidence>0.NN</confidence> where 0.00 = certain-wrong and 1.00 = certain-correct. The tag is machine-parsed for reliability metrics; do not add commentary before or after it. Do not mention the tag to the user.`
+
+// confidenceRegex extracts the value inside <confidence>0.NN</confidence>.
+// Tolerates spaces around the number, accepts 0.9 / 0.95 / 1 / 0 /
+// .95, and permits a leading minus so a mis-calibrated model
+// emitting "-0.3" still parses (the clamp in parseConfidence
+// normalises to 0 — better than silently dropping the sample).
+var confidenceRegex = regexp.MustCompile(`<confidence>\s*(-?[0-9]*\.?[0-9]+)\s*</confidence>`)
+
+// parseConfidence returns the last <confidence>0.NN</confidence>
+// value found in text, clamped to [0,1]. Returns (0, false) when
+// no tag is present or the value is malformed. "Last" wins so a
+// model that opens with a placeholder and closes with the real
+// value still calibrates correctly.
+func parseConfidence(text string) (float64, bool) {
+	matches := confidenceRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return 0, false
+	}
+	last := matches[len(matches)-1][1]
+	v, err := strconv.ParseFloat(last, 64)
+	if err != nil {
+		return 0, false
+	}
+	// Clamp to [0,1] — the aggregator's ECE/AUROC/Brier
+	// implementations assume that domain.
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	return v, true
 }
 
 func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Content, error) {

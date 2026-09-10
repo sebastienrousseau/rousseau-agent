@@ -42,7 +42,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # contents:write is needed by anchore/sbom-action@v0 on tag push
+  # — it uploads the generated SPDX SBOM as a release asset via the
+  # GitHub Releases API. With contents:read the upload fails
+  # "Resource not accessible by integration" (v0.0.4 → v0.0.6
+  # container releases all hit this).
+  contents: write
   packages: write
   # id-token for cosign keyless + SLSA attestations
   id-token: write

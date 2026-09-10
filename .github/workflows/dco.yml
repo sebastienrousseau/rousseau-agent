@@ -1,0 +1,75 @@
+# DCO enforcement — every PR commit must carry a Signed-off-by trailer
+# (per the Developer Certificate of Origin, see CLA.md). Rejects at PR
+# time rather than at merge time so contributors see the feedback while
+# their branch is still local and easy to fix.
+#
+# On check failure, the workflow prints paste-ready remediation commands
+# so the fix is one copy-paste away, not a stack-overflow trip.
+
+name: dco
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco-check:
+    name: dco sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Fetch the full PR range so we can inspect every commit,
+          # not just the merge commit GitHub generates.
+          fetch-depth: 0
+      - name: verify Signed-off-by on every PR commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          bad=0
+          # `%H` = full hash, `%(trailers:key=Signed-off-by,valueonly)`
+          # gives every Signed-off-by value on the commit (or empty
+          # when none present).
+          #
+          # NOTE: git-log's `%(trailers:...)` format ALWAYS appends a
+          # trailing newline after the trailer value, producing an
+          # empty line between every commit's record. Without the
+          # `awk` filter below, the while-loop reads those blank
+          # lines as commits with empty SHA + empty trailer and
+          # every real commit gets flagged as missing.
+          while IFS=$'\t' read -r sha trailers; do
+              if [ -z "$sha" ]; then
+                  continue # skip blank lines between records
+              fi
+              if [ -z "$trailers" ]; then
+                  echo "::error::commit $sha is missing a Signed-off-by trailer"
+                  bad=$((bad + 1))
+              fi
+          done < <(git log --format='%H%x09%(trailers:key=Signed-off-by,valueonly)' "$BASE_SHA..$HEAD_SHA")
+          if [ "$bad" -gt 0 ]; then
+              cat >&2 <<'EOF'
+
+          DCO check failed: $bad commit(s) missing Signed-off-by.
+
+          Fix (all commits since the base branch):
+
+            git rebase --signoff $BASE_SHA
+            git push --force-with-lease
+
+          Or, for the most recent commit only:
+
+            git commit --amend --signoff --no-edit
+            git push --force-with-lease
+
+          See CLA.md for what Signed-off-by attests to and why the
+          project requires it.
+          EOF
+              exit 1
+          fi
+          echo "dco: ok — every PR commit carries Signed-off-by"

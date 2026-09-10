@@ -133,6 +133,66 @@ LIMIT %d
 	return out, nil
 }
 
+// SearchBySender runs Search but restricts hits to sessions
+// whose sender matches the caller's JID. Backs the transport
+// /find chat verb — every operator only sees their own
+// conversation history. Empty sender short-circuits to nil so
+// a bug that forgot to plumb the sender through never
+// accidentally leaks cross-sender content.
+func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts SearchOptions) ([]SearchHit, error) {
+	if sender == "" {
+		return nil, nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, errors.New("sqlite: empty search query")
+	}
+	if opts.Limit == 0 {
+		opts.Limit = 20
+	}
+	if opts.SnippetChars == 0 {
+		opts.SnippetChars = 200
+	}
+	q := fmt.Sprintf(`
+SELECT
+    f.session_id,
+    s.title,
+    snippet(sessions_fts, 2, '', '', '…', %d) AS snippet,
+    s.updated_at,
+    bm25(sessions_fts) AS rank
+FROM sessions_fts f
+JOIN sessions s ON s.id = f.session_id
+WHERE sessions_fts MATCH ? AND s.sender = ?
+ORDER BY rank
+LIMIT %d
+`, opts.SnippetChars/16, opts.Limit)
+
+	rows, err := s.db.QueryContext(ctx, q, query, sender)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: search by sender: %w", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
+
+	var out []SearchHit
+	for rows.Next() {
+		var (
+			hit       SearchHit
+			updatedAt string
+		)
+		if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Snippet, &updatedAt, &hit.Rank); err != nil {
+			return nil, fmt.Errorf("sqlite: scan hit: %w", err)
+		}
+		if t, err := time.Parse("2006-01-02T15:04:05.000Z", updatedAt); err == nil {
+			hit.UpdatedAt = t
+		}
+		out = append(out, hit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate hits: %w", err)
+	}
+	return out, nil
+}
+
 // RecentSessions is a small helper that lists the N most recently
 // touched sessions. Handy for CLI commands that render a picker.
 func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*agent.Session, error) {

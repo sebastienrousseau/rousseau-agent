@@ -17,6 +17,12 @@
 Description=rousseau-agent WhatsApp bridge
 After=network-online.target
 Wants=network-online.target
+# Stop restart-looping if the image is genuinely broken: at most 5
+# restarts within 10 minutes, otherwise systemd marks the unit failed
+# so `systemctl --user status` surfaces the real problem instead of
+# hiding it behind a silent retry loop.
+StartLimitBurst=5
+StartLimitIntervalSec=600
 
 [Container]
 Image=localhost/rousseau-agent:local
@@ -92,7 +98,12 @@ Environment=ROUSSEAU_WHATSAPP_ALLOW=15551234567@s.whatsapp.net
 Exec=whatsapp
 
 [Service]
-Restart=on-failure
+# Restart=always (not on-failure) because whatsmeow exits cleanly
+# (status=0) when the WhatsApp session is displaced (StreamReplaced,
+# stream-end frame, etc). A clean exit here still means we lost the
+# bridge, so we always want systemd to bring it back. Rate-limited by
+# the [Unit] StartLimit* above so a bad image can't spin forever.
+Restart=always
 RestartSec=10s
 TimeoutStartSec=90s
 
