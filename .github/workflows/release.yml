@@ -7,6 +7,13 @@ on:
 
 permissions:
   contents: write
+  # Needed for cosign keyless signing via the GitHub Actions OIDC
+  # token — Fulcio issues a short-lived cert against this identity
+  # instead of requiring a long-lived key + password.
+  id-token: write
+  # Needed so cosign can push signatures to the GHCR OCI registry
+  # for container-image signing.
+  packages: write
 
 jobs:
   goreleaser:
@@ -26,6 +33,11 @@ jobs:
       # regress the supply-chain story (README claims SBOM-per-release).
       - name: install syft (SBOM generator)
         uses: anchore/sbom-action/download-syft@v0
+      # cosign for goreleaser's `signs:` block. Keyless mode signs
+      # via the Actions OIDC identity — no long-lived key or
+      # password, transparent Sigstore log entry per artifact.
+      - name: install cosign (keyless artifact signing)
+        uses: sigstore/cosign-installer@v3
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
