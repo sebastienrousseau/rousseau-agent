@@ -35,9 +35,18 @@ jobs:
           bad=0
           # `%H` = full hash, `%(trailers:key=Signed-off-by,valueonly)`
           # gives every Signed-off-by value on the commit (or empty
-          # when none present). One log entry per commit, separated by
-          # a NUL so we can safely handle multi-line trailers.
+          # when none present).
+          #
+          # NOTE: git-log's `%(trailers:...)` format ALWAYS appends a
+          # trailing newline after the trailer value, producing an
+          # empty line between every commit's record. Without the
+          # `awk` filter below, the while-loop reads those blank
+          # lines as commits with empty SHA + empty trailer and
+          # every real commit gets flagged as missing.
           while IFS=$'\t' read -r sha trailers; do
+              if [ -z "$sha" ]; then
+                  continue # skip blank lines between records
+              fi
               if [ -z "$trailers" ]; then
                   echo "::error::commit $sha is missing a Signed-off-by trailer"
                   bad=$((bad + 1))
