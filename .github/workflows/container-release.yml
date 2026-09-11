@@ -103,6 +103,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # `github.run_started_at` was intended for BUILD_DATE, but it
+      # expanded to an empty string in build-args on v0.0.9 (the
+      # exact cause is unclear — possibly a rerun-context quirk).
+      # Compute the timestamp explicitly so the ARG is never empty
+      # and the stamped `built` field is always populated.
+      - name: Compute build date
+        id: date
+        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Derive image tags
         id: meta
         uses: docker/metadata-action@v6
@@ -148,7 +157,7 @@ jobs:
           build-args: |
             VERSION=${{ github.ref_type == 'tag' && github.ref_name || format('edge-{0}', github.sha) }}
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.run_started_at }}
+            BUILD_DATE=${{ steps.date.outputs.date }}
           # Layer cache to shave minutes off subsequent builds
           cache-from: type=gha,scope=${{ matrix.flavour }}
           cache-to: type=gha,scope=${{ matrix.flavour }},mode=max
