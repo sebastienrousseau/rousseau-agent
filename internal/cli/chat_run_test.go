@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -45,12 +46,17 @@ func TestChatCmd_RunsTUIUntilContextCancelled(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.RunE(cmd, nil) }()
 
-	// A fixed 200ms sleep flaked on loaded CI runners — the chat has
-	// to open the store, build every wiring step, and reach the first
-	// session save before cancel arrives. 2s is comfortably longer
-	// than any of the observed slow starts without lengthening the
-	// happy-path meaningfully.
-	time.Sleep(2 * time.Second)
+	// Poll the state file directly (stat, not sqlite Open) rather
+	// than sleeping a fixed duration. Any fixed timeout is racy:
+	// cancel arriving before the first save leaves an empty store
+	// (flake reproduced Sep 10 2026 on ci run 34521092388 with a 2s
+	// sleep). We can't open a second sqlite connection while chat
+	// holds the file lock, so the signal is "file grew past its
+	// empty-schema size" — a save extends the file.
+	require.Eventually(t, func() bool {
+		info, err := os.Stat(opts.Config.State.Path)
+		return err == nil && info.Size() > 32*1024 // empty schema is ~28KB
+	}, 30*time.Second, 100*time.Millisecond, "chat did not persist session before timeout")
 	cancel()
 
 	select {
