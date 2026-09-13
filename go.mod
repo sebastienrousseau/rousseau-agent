@@ -16,7 +16,7 @@ require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
 	github.com/google/gofuzz v1.2.0
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/open-policy-agent/opa v1.20.1
 	github.com/openai/openai-go v1.12.0
