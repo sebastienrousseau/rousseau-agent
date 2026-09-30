@@ -77,6 +77,11 @@ type Client struct {
 	// "go f()". It stays inline by default so unit tests that build a
 	// Client directly keep their synchronous, race-free assertions.
 	dispatch func(func())
+	// fatal carries a session-ending condition (server-side logout)
+	// from the event goroutine to Start, which returns it so the
+	// process exits non-zero and the supervisor restarts it into a
+	// fresh pairing flow. Buffered 1; later sends are dropped.
+	fatal chan error
 }
 
 // Start-path test seams. Start's whatsmeow touchpoints — opening the
@@ -164,6 +169,7 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 		allow:    allowSet,
 		openAll:  len(allowSet) == 0,
 		dispatch: func(f func()) { f() },
+		fatal:    make(chan error, 1),
 	}, nil
 }
 
@@ -214,7 +220,9 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		if err := wmConnect(wm); err != nil {
 			return fmt.Errorf("whatsapp: connect: %w", err)
 		}
+		paired, last := false, ""
 		for evt := range qrChan {
+			last = evt.Event
 			switch evt.Event {
 			case "code":
 				// Log the raw pair code alongside the ASCII render.
@@ -224,17 +232,49 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 				c.logger.Info("whatsapp.qr_ready", slog.String("code", evt.Code))
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, qrOut)
 			case "success":
+				paired = true
 				c.logger.Info("whatsapp.paired")
 			default:
 				c.logger.Warn("whatsapp.qr_event", slog.String("event", evt.Event))
 			}
 		}
+		// The QR channel closes on success, timeout, or error. Only a
+		// success leaves a usable session; anything else used to fall
+		// through to <-ctx.Done() and leave an unpaired daemon idling
+		// forever with systemd reporting it healthy. Exit instead so
+		// the supervisor restarts into a fresh QR window.
+		if !paired && ctx.Err() == nil {
+			_ = c.Stop() //nolint:errcheck // Stop never fails; primary error is the pairing outcome
+			return fmt.Errorf("whatsapp: pairing did not complete (last qr event %q); restart to get a new QR", last)
+		}
+		// Store.ID was nil when captured above; adopt the JID the
+		// pairing just wrote so self-chat attribution works without
+		// a restart.
+		c.adoptOwnID()
 	} else if err := wmConnect(wm); err != nil {
 		return fmt.Errorf("whatsapp: connect: %w", err)
 	}
 
-	<-ctx.Done()
-	return c.Stop()
+	select {
+	case <-ctx.Done():
+		return c.Stop()
+	case err := <-c.fatal:
+		_ = c.Stop() //nolint:errcheck // Stop never fails; primary error is the fatal event
+		return err
+	}
+}
+
+// adoptOwnID refreshes ownID from the whatsmeow store. The store's
+// JID is only populated once pairing succeeds, so a value captured
+// at Start on a fresh device is nil; without this refresh every
+// self-chat message is attributed to the sender's LID and dropped by
+// the allowlist until the next restart.
+func (c *Client) adoptOwnID() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wm != nil && c.wm.Store != nil && c.wm.Store.ID != nil {
+		c.ownID = c.wm.Store.ID
+	}
 }
 
 // Deliver sends a plain-text message to the given JID string. Suitable
@@ -280,6 +320,13 @@ func (c *Client) onEvent(raw any) {
 		c.logger.Warn("whatsapp.disconnected")
 	case *events.LoggedOut:
 		c.logger.Error("whatsapp.logged_out", slog.Int("reason", int(evt.Reason)))
+		// whatsmeow has already deleted the device; the socket will
+		// never deliver another message. Surface it as a process exit
+		// rather than a silently deaf daemon.
+		select {
+		case c.fatal <- fmt.Errorf("whatsapp: logged out by server (reason %d); re-pair required", int(evt.Reason)):
+		default:
+		}
 	case *events.KeepAliveTimeout:
 		c.handleKeepAliveTimeout()
 	case *events.KeepAliveRestored:
@@ -297,6 +344,7 @@ func (c *Client) handleConnected() {
 	c.mu.Lock()
 	c.keepaliveMisses = 0
 	c.mu.Unlock()
+	c.adoptOwnID()
 	c.logger.Info("whatsapp.connected")
 }
 

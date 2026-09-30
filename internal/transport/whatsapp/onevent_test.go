@@ -307,3 +307,12 @@ func TestOnEvent_ConnectedResetsKeepaliveCounter(t *testing.T) {
 	defer c.mu.Unlock()
 	assert.Equal(t, 0, c.keepaliveMisses)
 }
+
+func TestOnEvent_ConnectedAdoptsOwnIDFromStore(t *testing.T) {
+	c := newClientWithLog(t, silentLogger(), &fakeSender{})
+	c.ownID = nil
+	c.wm = pairedClient(t)
+	c.onEvent(&events.Connected{})
+	require.NotNil(t, c.ownID)
+	assert.Equal(t, "15551234567", c.ownID.User)
+}
