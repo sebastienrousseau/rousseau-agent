@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"database/sql"
 
@@ -20,6 +21,24 @@ import (
 //go:embed schema.sql
 var schema string
 
+// fileDSN adds per-connection pragmas to a file path. database/sql
+// pools connections, and a PRAGMA run through db.Exec reaches only the
+// connection that executed it; every other connection would run with
+// busy_timeout=0 (immediate SQLITE_BUSY under contention) and foreign
+// keys off. modernc.org/sqlite applies _pragma parameters on each new
+// connection. ":memory:", existing URIs, and paths containing URI
+// delimiters ('?', '#') are left as given; the latter keep the old
+// single-connection pragmas rather than risk a mis-parsed path.
+func fileDSN(path string) string {
+	if path == ":memory:" || strings.HasPrefix(path, "file:") || strings.ContainsAny(path, "?#") {
+		return path
+	}
+	return "file:" + path +
+		"?_pragma=busy_timeout(15000)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=journal_mode(WAL)"
+}
+
 // Store is a state.Store backed by SQLite.
 type Store struct {
 	db *sql.DB
@@ -28,7 +47,7 @@ type Store struct {
 // Open opens (or creates) a SQLite database at path and applies the
 // schema. Pass ":memory:" for an in-process database.
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", fileDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
