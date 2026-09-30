@@ -762,6 +762,12 @@ type ClaudeCLIConfig struct {
 	Bare bool `mapstructure:"bare"`
 	// ExtraArgs are appended to every invocation.
 	ExtraArgs []string `mapstructure:"extra_args"`
+	// DisablePolicyHook turns off the toolgate bridge. By default the
+	// daemon installs a PreToolUse hook so every tool claude runs goes
+	// through rousseau's approver and audit trail. Only disable it if
+	// you govern claude's tools by other means; the bridge cannot run
+	// alongside Bare (claude --bare skips hooks), so Bare requires it.
+	DisablePolicyHook bool `mapstructure:"disable_policy_hook"`
 }
 
 // LogConfig configures structured logging.

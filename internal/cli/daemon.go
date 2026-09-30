@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
+	"github.com/sebastienrousseau/rousseau-agent/internal/toolgate"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations"
@@ -109,6 +112,10 @@ type daemonWiring struct {
 	// otelShutdown flushes the tracer; set by StartBackgroundServers,
 	// called by Cleanup.
 	otelShutdown func(context.Context) error
+	// toolgate answers claude's PreToolUse hook with this daemon's
+	// approver (nil when the provider is not claudecli or the bridge
+	// is disabled). Closed by Cleanup.
+	toolgate *toolgate.Server
 	// A2A is the (optional) Agent-to-Agent HTTP server runtime.
 	// Nil when a2a.server.enabled=false OR the operator's config
 	// is broken. When non-nil, callers start it via
@@ -214,6 +221,10 @@ func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
 // wiring.Sessions.Close() instead leaks MCP subprocesses and never
 // emits or flushes the daemon.stop audit record.
 func (w *daemonWiring) Cleanup() error {
+	if w.toolgate != nil {
+		_ = w.toolgate.Close() //nolint:errcheck // best-effort; removes the socket dir
+		w.toolgate = nil
+	}
 	closeMCPClients(w.MCPClients, w.Logger)
 	if w.otelShutdown != nil {
 		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -291,6 +302,12 @@ func normalizeEmailAllowlist(in []string) []string {
 // scheduler it starts.
 func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*daemonWiring, error) {
 	cfg := opts.Config
+	bridge := policyBridgeEnabled(cfg)
+	if bridge && cfg.ClaudeCLI.Bare {
+		return nil, errors.New("claudecli.bare skips hooks, so rousseau's approver and audit trail " +
+			"cannot see claude's tool calls. Turn bare off, or set claudecli.disable_policy_hook: true " +
+			"to run ungoverned explicitly")
+	}
 	provider, err := buildProvider(cfg)
 	if err != nil {
 		return nil, err
@@ -598,7 +615,18 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		opts.Logger.Info("a2a.dispatch_tool_registered", slog.Int("peer_count", len(a2aClients)))
 	}
 
+	var gate *toolgate.Server
+	if bridge {
+		gate, err = startPolicyBridge(ctx, provider, ag, opts.Logger)
+		if err != nil {
+			closeMCPClients(mcpClients, opts.Logger)
+			_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+			return nil, err
+		}
+	}
+
 	return &daemonWiring{
+		toolgate:     gate,
 		Provider:     provider,
 		Agent:        ag,
 		Registry:     registry,
@@ -972,4 +1000,55 @@ func (w *daemonWiring) startCron(ctx context.Context, delivery rcron.Delivery, l
 		_ = scheduler.Shutdown(sctx) //nolint:errcheck // best-effort shutdown
 	}
 	return shutdown, nil
+}
+
+// policyBridgeEnabled reports whether claude's own tool calls should be
+// routed through rousseau's approver (see startPolicyBridge).
+func policyBridgeEnabled(cfg *config.Config) bool {
+	return (cfg.Provider == "" || cfg.Provider == "claudecli") && !cfg.ClaudeCLI.DisablePolicyHook
+}
+
+// startPolicyBridge makes rousseau's tool policy govern the claude CLI.
+// claude runs its tools in its own loop, so the agent's Approver never
+// sees them; without this, RBAC, OPA, pattern rules, multi-party
+// approval and the tool audit trail do nothing on the default backend.
+// It serves decisions from ag.DecideExternal on a private unix socket
+// and installs a PreToolUse hook on the provider that asks it before
+// every tool call, failing closed.
+func startPolicyBridge(ctx context.Context, provider agent.Provider, ag *agent.Agent, logger *slog.Logger) (*toolgate.Server, error) {
+	cp, ok := provider.(*claudecli.Provider)
+	if !ok {
+		// Fail closed: a wrapped or substituted provider must not
+		// silently run claude's tools ungoverned.
+		return nil, fmt.Errorf("policy bridge: provider is %T, not *claudecli.Provider; cannot install the hook", provider)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("policy bridge: locate rousseau binary: %w", err)
+	}
+	gate, err := toolgate.Listen(func(dctx context.Context, req toolgate.Request) toolgate.Response {
+		d, reason := ag.DecideExternal(dctx, agent.ApprovalRequest{
+			ToolName: req.ToolName, Input: req.ToolInput, SessionID: req.SessionID,
+		})
+		return toolgate.Response{Allow: d == agent.DecisionAllow, Reason: reason}
+	}, toolgateDecisionTimeout, logger)
+	if err != nil {
+		return nil, fmt.Errorf("policy bridge: %w", err)
+	}
+	settings, err := toolgate.HookSettings(
+		shellQuote(exe)+" hook pre-tool-use --socket "+shellQuote(gate.Path()), toolgateClaudeTimeout)
+	if err != nil {
+		_ = gate.Close() //nolint:errcheck // rollback
+		return nil, fmt.Errorf("policy bridge: %w", err)
+	}
+	cp.SetSettings(settings)
+	go gate.Serve(ctx)
+	logger.Info("policy_bridge.started", slog.String("socket", gate.Path()))
+	return gate, nil
+}
+
+// shellQuote single-quotes s for the POSIX shell claude runs hook
+// commands with.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

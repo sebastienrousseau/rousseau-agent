@@ -986,14 +986,19 @@ Unattended chat-transport daemons fail closed on two points:
 - **Sender allowlist.** Each chat transport refuses to start with an empty
   allowlist (`--allow` or `<transport>.allowlist`) unless `--allow-anyone`
   is passed.
-- **Permission mode.** With the `claudecli` provider, `claude` runs its own
-  tools, so rousseau's `pattern` approver does not see those calls. The
-  daemon refuses to start until `claudecli.permission_mode` (or
-  `ROUSSEAU_CLAUDECLI_PERMISSION_MODE`) is set explicitly:
-  `bypassPermissions` lets claude run any tool for allowlisted senders;
+- **Permission mode.** The daemon refuses to start until
+  `claudecli.permission_mode` (or `ROUSSEAU_CLAUDECLI_PERMISSION_MODE`) is
+  set explicitly: `bypassPermissions` lets claude attempt any tool;
   `dontAsk` plus `claudecli.extra_args: ["--allowedTools", "..."]` limits
-  it to the listed tools. API providers (`anthropic`, `openai`, …) run
-  the `pattern` approver on every call.
+  it to the listed tools.
+- **Policy bridge.** `claude` runs its own tools, so the daemon installs a
+  `PreToolUse` hook (`rousseau hook pre-tool-use`) that asks rousseau's
+  approver chain (pattern, RBAC, OPA, multi-party) over a private unix
+  socket before every call, audits the decision (`executor=external`),
+  and blocks on deny or on any failure to get a decision. It cannot run
+  with `claudecli.bare` (claude skips hooks there); that combination is
+  refused unless `claudecli.disable_policy_hook: true`. API providers
+  apply the same approver natively.
 
 ### Credential handling
 

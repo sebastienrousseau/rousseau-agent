@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/toolgate"
 )
 
 // TestCleanup_ClosesSessionsAndTolerantOfNil confirms the two invariants
@@ -130,4 +134,48 @@ func TestStartBackgroundServers_ServesMetrics(t *testing.T) {
 		_ = resp.Body.Close() //nolint:errcheck // test
 		return resp.StatusCode == http.StatusOK
 	}, 3*time.Second, 20*time.Millisecond, "metrics server never came up on %s", addr)
+}
+
+// TestAssembleDaemon_PolicyBridgeGovernsClaudeCLI pins the bridge end
+// to end inside the daemon: with the claudecli provider, a PreToolUse
+// call through the installed socket is decided by the configured
+// approver (deny wins), and Cleanup removes the socket.
+func TestAssembleDaemon_PolicyBridgeGovernsClaudeCLI(t *testing.T) {
+	opts := makeDaemonOpts(t)
+	opts.Config.Provider = "claudecli"
+	opts.Config.ClaudeCLI.PermissionMode = "bypassPermissions"
+	opts.Config.Agent.Approver = config.ApproverConfig{
+		Mode:    "pattern",
+		Default: "allow",
+		Deny:    []config.PatternEntry{{Tool: "bash", Match: "rm -rf"}},
+	}
+	wiring, err := assembleDaemon(context.Background(), opts, nil)
+	require.NoError(t, err)
+	require.NotNil(t, wiring.toolgate, "claudecli must get the policy bridge by default")
+	sock := wiring.toolgate.Path()
+
+	var stderr bytes.Buffer
+	deny := `{"session_id":"s","tool_name":"Bash","tool_input":{"command":"rm -rf /srv"}}`
+	assert.Equal(t, toolgate.ExitBlock, toolgate.RunHook(strings.NewReader(deny), &stderr, sock, 5*time.Second))
+	allow := `{"session_id":"s","tool_name":"Bash","tool_input":{"command":"ls"}}`
+	assert.Equal(t, toolgate.ExitAllow, toolgate.RunHook(strings.NewReader(allow), &stderr, sock, 5*time.Second))
+
+	require.NoError(t, wiring.Cleanup())
+	_, statErr := os.Stat(sock)
+	assert.True(t, os.IsNotExist(statErr), "Cleanup removes the socket")
+}
+
+func TestAssembleDaemon_PolicyBridgeRefusesBare(t *testing.T) {
+	opts := makeDaemonOpts(t)
+	opts.Config.Provider = "claudecli"
+	opts.Config.ClaudeCLI.Bare = true
+	_, err := assembleDaemon(context.Background(), opts, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disable_policy_hook")
+
+	opts.Config.ClaudeCLI.DisablePolicyHook = true
+	wiring, err := assembleDaemon(context.Background(), opts, nil)
+	require.NoError(t, err, "explicit opt-out is honoured")
+	assert.Nil(t, wiring.toolgate)
+	_ = wiring.Cleanup() //nolint:errcheck // test cleanup
 }

@@ -39,6 +39,9 @@ type Config struct {
 	// ExtraArgs are prepended before -p on every invocation. Useful for
 	// --add-dir, --allowed-tools, --disallowed-tools, --plugin-dir …
 	ExtraArgs []string
+	// Settings, when set, is passed as --settings (a JSON string).
+	// The daemon uses it to install the toolgate PreToolUse hook.
+	Settings string
 }
 
 // runFunc executes an exec.Cmd; extracted so tests can stub it.
@@ -98,6 +101,12 @@ type Provider struct {
 	run   runFunc
 	cache SessionCache
 }
+
+// SetSettings sets the JSON passed to claude's --settings flag on
+// every later invocation (the daemon uses it to install the toolgate
+// PreToolUse hook). Call before the first turn; not safe to call
+// concurrently with running turns.
+func (p *Provider) SetSettings(js string) { p.cfg.Settings = js }
 
 // New constructs a Provider. It does not verify the binary exists;
 // invocations that fail surface at Complete time.
@@ -193,6 +202,9 @@ func (p *Provider) invoke(ctx context.Context, sessionFlag string, req agent.Req
 	}
 	if p.cfg.PermissionMode != "" {
 		args = append(args, "--permission-mode", p.cfg.PermissionMode)
+	}
+	if p.cfg.Settings != "" {
+		args = append(args, "--settings", p.cfg.Settings)
 	}
 	args = append(args, p.cfg.ExtraArgs...)
 

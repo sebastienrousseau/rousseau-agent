@@ -66,6 +66,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.PersistentFlags().BoolVar(&opts.AllowAnyone, "allow-anyone", false, "run a chat transport with no sender allowlist (anyone who can message the account reaches the agent)")
 	root.PersistentFlags().StringVar(&opts.ConfigPath, "config", "", "path to a config file (default: $XDG_CONFIG_HOME/rousseau/config.yaml)")
 
+	root.AddCommand(newHookCmd())
 	root.AddCommand(newChatCmd(opts))
 	root.AddCommand(newWhatsAppCmd(opts))
 	root.AddCommand(newDoctorCmd(opts))
@@ -96,7 +97,8 @@ func Execute(ctx context.Context) int {
 	opts := &Options{}
 	root := NewRoot(opts)
 	err := root.ExecuteContext(ctx)
-	if err != nil {
+	var ec *exitCodeError
+	if err != nil && (!errors.As(err, &ec) || !ec.silent) {
 		fmt.Fprintln(os.Stderr, "error:", err)
 	}
 	return exitCodeFor(err)
@@ -109,8 +111,15 @@ func Execute(ctx context.Context) int {
 const ExitNeedsOperator = 78
 
 type exitCodeError struct {
-	err  error
-	code int
+	err    error
+	code   int
+	silent bool // the command already wrote its own stderr
+}
+
+// silentExit makes Execute exit with code without printing anything,
+// for commands whose stderr is itself the protocol (claude hooks).
+func silentExit(code int) error {
+	return &exitCodeError{err: fmt.Errorf("exit %d", code), code: code, silent: true}
 }
 
 func (e *exitCodeError) Error() string { return e.err.Error() }

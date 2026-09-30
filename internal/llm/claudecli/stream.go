@@ -110,6 +110,9 @@ func (p *Provider) buildStreamArgs(req agent.Request) []string {
 	if p.cfg.PermissionMode != "" {
 		args = append(args, "--permission-mode", p.cfg.PermissionMode)
 	}
+	if p.cfg.Settings != "" {
+		args = append(args, "--settings", p.cfg.Settings)
+	}
 	args = append(args, p.cfg.ExtraArgs...)
 	return args
 }
