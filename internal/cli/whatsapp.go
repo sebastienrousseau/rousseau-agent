@@ -158,7 +158,7 @@ func resolveWhatsAppDSN(path string) (string, error) {
 		}
 		path = filepath.Join(home, ".local", "share", "rousseau", "whatsapp.db")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("create whatsapp store dir: %w", err)
 	}
 	// modernc.org/sqlite DSN pragmas explained in git history; see

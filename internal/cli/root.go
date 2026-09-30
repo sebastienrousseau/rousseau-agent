@@ -94,6 +94,7 @@ func NewRoot(opts *Options) *cobra.Command {
 
 // Execute runs the root command with the process context.
 func Execute(ctx context.Context) int {
+	defer restrictUmask()()
 	opts := &Options{}
 	root := NewRoot(opts)
 	err := root.ExecuteContext(ctx)
