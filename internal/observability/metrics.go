@@ -71,6 +71,23 @@ var (
 		Help: "Outbound messages sent on a transport, by transport and status (ok, error).",
 	}, []string{"transport", "status"})
 
+	// TransportConnected is 1 while a transport holds a live session
+	// with its upstream and 0 otherwise. Set by transports that have a
+	// connection notion (WhatsApp today). Alert on == 0 for longer
+	// than a reconnect takes.
+	TransportConnected = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rousseau_transport_connected",
+		Help: "1 while the transport is connected upstream, 0 otherwise.",
+	}, []string{"transport"})
+
+	// TransportLastInbound is the Unix time of the last inbound
+	// message a transport routed. Alert on time() minus this to catch
+	// a bridge that is up but no longer receiving.
+	TransportLastInbound = factory.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rousseau_transport_last_inbound_timestamp_seconds",
+		Help: "Unix time of the last inbound message routed by the transport.",
+	}, []string{"transport"})
+
 	// CronFires counts every cron job invocation, labelled by job id
 	// and outcome.
 	CronFires = factory.NewCounterVec(prometheus.CounterOpts{

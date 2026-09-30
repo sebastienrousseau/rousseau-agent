@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mau.fi/whatsmeow"
@@ -18,6 +19,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -315,4 +317,20 @@ func TestOnEvent_ConnectedAdoptsOwnIDFromStore(t *testing.T) {
 	c.onEvent(&events.Connected{})
 	require.NotNil(t, c.ownID)
 	assert.Equal(t, "15551234567", c.ownID.User)
+}
+
+// TestOnEvent_ConnectedGaugeTracksLink pins rousseau_transport_connected
+// for WhatsApp: 1 while linked, 0 after a disconnect or a
+// session-ending event.
+func TestOnEvent_ConnectedGaugeTracksLink(t *testing.T) {
+	g := observability.TransportConnected.WithLabelValues("whatsapp")
+	c := newClientWithLog(t, silentLogger(), &fakeSender{})
+
+	c.onEvent(&events.Connected{})
+	assert.Equal(t, 1.0, testutil.ToFloat64(g))
+	c.onEvent(&events.Disconnected{})
+	assert.Equal(t, 0.0, testutil.ToFloat64(g))
+	c.onEvent(&events.Connected{})
+	c.onEvent(&events.LoggedOut{Reason: 401})
+	assert.Equal(t, 0.0, testutil.ToFloat64(g))
 }

@@ -231,7 +231,7 @@ The full command tree:
 | **Identity** | Stable identity IDs across transports (`internal/identity`) so one conversation can move from WhatsApp to Slack to email. `/whoami`, `/link`, `/unlink` chat commands resolve without an LLM round trip. `/version` echoes the daemon's build stamp for post-redeploy sanity checks — same path, no LLM. |
 | **Workspaces** | `internal/workspace` scopes routing, credentials, and per-team approver rules within a single on-premise deployment (not a SaaS boundary — see [`docs/workspaces.md`](./docs/workspaces.md)). |
 | **Cost accounting** | Every completion records provider, model, token usage (input, output, cache-read, cache-creation) and an estimated USD figure from `internal/pricing`. Query with `rousseau session cost`. |
-| **Observability** | Prometheus registry with 15 `rousseau_*` metric families, an OpenTelemetry OTLP/HTTP tracer, and a redacting `slog` handler carrying default rules for every credential shape the daemon touches. |
+| **Observability** | Prometheus registry with 29 `rousseau_*` metric families (including `rousseau_transport_connected` and `rousseau_transport_last_inbound_timestamp_seconds` for liveness alerts), an OpenTelemetry OTLP/HTTP tracer, and a redacting `slog` handler carrying default rules for every credential shape the daemon touches. |
 | **TUI** | Bubble Tea client with viewport, scrollback, streaming indicator, and typing feedback. |
 
 There is no SaaS control plane, no telemetry endpoint, no license server,

@@ -14,6 +14,7 @@ import (
 func InstrumentedHandler(name string, h Handler) Handler {
 	return HandlerFunc(func(ctx context.Context, msg IncomingMessage) (string, error) {
 		observability.TransportIncoming.WithLabelValues(name).Inc()
+		observability.TransportLastInbound.WithLabelValues(name).SetToCurrentTime()
 		reply, err := h.Handle(ctx, msg)
 		status := "ok"
 		if err != nil {

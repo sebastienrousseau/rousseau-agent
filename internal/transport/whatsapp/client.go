@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
+	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite" // register the modernc SQLite driver used by whatsmeow
 
 	"go.mau.fi/whatsmeow"
@@ -28,6 +29,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
@@ -302,6 +304,7 @@ func (c *Client) Stop() error {
 		return nil
 	}
 	c.stopped = true
+	connectedGauge().Set(0)
 	if c.wm != nil {
 		c.wm.Disconnect()
 	}
@@ -316,6 +319,7 @@ func (c *Client) onEvent(raw any) {
 	case *events.Connected:
 		c.handleConnected()
 	case *events.Disconnected:
+		connectedGauge().Set(0)
 		c.logger.Warn("whatsapp.disconnected")
 	case *events.LoggedOut:
 		c.logger.Error("whatsapp.logged_out", slog.Int("reason", int(evt.Reason)))
@@ -341,10 +345,15 @@ func (c *Client) onEvent(raw any) {
 	}
 }
 
+func connectedGauge() prometheus.Gauge {
+	return observability.TransportConnected.WithLabelValues("whatsapp")
+}
+
 // endSession hands a session-ending error to Start. Non-blocking: the
 // first one wins and later ones are dropped, so the whatsmeow event
 // goroutine never stalls.
 func (c *Client) endSession(err error) {
+	connectedGauge().Set(0)
 	select {
 	case c.fatal <- err:
 	default:
@@ -362,6 +371,7 @@ func (c *Client) handleConnected() {
 	c.keepaliveMisses = 0
 	c.mu.Unlock()
 	c.adoptOwnID()
+	connectedGauge().Set(1)
 	c.logger.Info("whatsapp.connected")
 }
 

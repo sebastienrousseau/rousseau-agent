@@ -76,7 +76,7 @@ different problem from directory-based user authentication.
 |---|---|
 | Structured `slog` to stdout | Streaming audit-log egress: Splunk HEC, Datadog Logs, OTLP push, generic HTTPS sink |
 | Full session history in the local SQLite DB (`sessions_fts`) | Immutable, tamper-evident log format (hash-chained records) |
-| Prometheus scrape endpoint (all 15 `rousseau_*` metric families) | Extended PII / secrets redaction rule packs (industry presets: HIPAA, PCI-DSS, GDPR) |
+| Prometheus scrape endpoint (all 29 `rousseau_*` metric families) | Extended PII / secrets redaction rule packs (industry presets: HIPAA, PCI-DSS, GDPR) |
 | OpenTelemetry OTLP/HTTP tracer for spans | SIEM-ready log field mapping (CEF, LEEF) |
 | Default redaction rules (`internal/observability/redact`) | Configurable retention policies with automated purge |
 
