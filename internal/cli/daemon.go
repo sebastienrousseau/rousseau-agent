@@ -93,6 +93,15 @@ type daemonWiring struct {
 	// the ListenAndServe goroutine with the same lifetime as
 	// itself.
 	SCIMAddr string
+	// MetricsAddr and OTLPEndpoint mirror observability.metrics_addr
+	// and observability.otlp_endpoint. StartBackgroundServers starts
+	// the Prometheus /metrics + /healthz server and the OTLP tracer
+	// from them; empty leaves each off.
+	MetricsAddr  string
+	OTLPEndpoint string
+	// otelShutdown flushes the tracer; set by StartBackgroundServers,
+	// called by Cleanup.
+	otelShutdown func(context.Context) error
 	// A2A is the (optional) Agent-to-Agent HTTP server runtime.
 	// Nil when a2a.server.enabled=false OR the operator's config
 	// is broken. When non-nil, callers start it via
@@ -155,6 +164,25 @@ type daemonWiring struct {
 // assembleDaemon, before entering their inbound loop. Idempotent
 // on nil sub-servers; skips ones the operator didn't configure.
 func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
+	if w.MetricsAddr != "" {
+		go func() {
+			if err := observability.StartMetricsServer(ctx, w.MetricsAddr, w.Logger); err != nil {
+				w.Logger.Warn("metrics.serve_failed",
+					slog.String("addr", w.MetricsAddr),
+					slog.String("err", err.Error()))
+			}
+		}()
+	}
+	if w.OTLPEndpoint != "" {
+		shutdown, err := observability.StartOTel(ctx, w.OTLPEndpoint, version, w.Logger)
+		if err != nil {
+			w.Logger.Warn("otel.start_failed",
+				slog.String("endpoint", w.OTLPEndpoint),
+				slog.String("err", err.Error()))
+		} else {
+			w.otelShutdown = shutdown
+		}
+	}
 	if w.SCIMServer != nil && w.SCIMAddr != "" {
 		go func() {
 			if err := w.SCIMServer.ListenAndServe(ctx, w.SCIMAddr); err != nil {
@@ -180,6 +208,12 @@ func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
 // emits or flushes the daemon.stop audit record.
 func (w *daemonWiring) Cleanup() error {
 	closeMCPClients(w.MCPClients, w.Logger)
+	if w.otelShutdown != nil {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = w.otelShutdown(flushCtx) //nolint:errcheck // best-effort span flush on shutdown
+		cancel()
+		w.otelShutdown = nil
+	}
 	// Drain the audit sink first — losing the shutdown record
 	// (daemon.stop) after Sessions.Close blocks would surprise
 	// operators reviewing SIEM histories. Bounded by a small
@@ -553,6 +587,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		AuditSink:    auditSink,
 		SCIMServer:   scimServer,
 		SCIMAddr:     scimAddr,
+		MetricsAddr:  cfg.Observability.MetricsAddr,
+		OTLPEndpoint: cfg.Observability.OTLPEndpoint,
 		A2A:          a2aRt,
 		A2AClients:   a2aClients,
 	}, nil

@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"net"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -95,4 +98,36 @@ func TestTransportHandler_ReusesSupervisorPerTransport(t *testing.T) {
 	wa2 := wiring.supervisorFor("whatsapp", silentLogger())
 	assert.Same(t, wa1, wa2, "the same transport must reuse its Supervisor")
 	assert.NotSame(t, wa1, sig, "different transports must not share a Registry (keys can collide)")
+}
+
+// TestStartBackgroundServers_ServesMetrics pins that
+// observability.metrics_addr actually starts the /metrics + /healthz
+// endpoint. It was configured and documented but never started by any
+// daemon entry point.
+func TestStartBackgroundServers_ServesMetrics(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+
+	opts := makeDaemonOpts(t)
+	opts.Config.Provider = "anthropic"
+	opts.Config.Anthropic = config.AnthropicConfig{APIKey: "sk-test", Model: "claude"}
+	opts.Config.Observability.MetricsAddr = addr
+	wiring, err := assembleDaemon(context.Background(), opts, nil)
+	require.NoError(t, err)
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wiring.StartBackgroundServers(ctx)
+
+	require.Eventually(t, func() bool {
+		resp, err := http.Get("http://" + addr + "/healthz") //nolint:noctx,gosec // local test endpoint
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close() //nolint:errcheck // test
+		return resp.StatusCode == http.StatusOK
+	}, 3*time.Second, 20*time.Millisecond, "metrics server never came up on %s", addr)
 }
