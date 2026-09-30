@@ -27,7 +27,7 @@ func (a *Agent) DecideExternal(ctx context.Context, req ApprovalRequest) (Decisi
 		observability.ToolCalls.WithLabelValues(req.ToolName, label).Inc()
 		a.logger.Warn("tool.denied", slog.String("name", req.ToolName),
 			slog.String("reason", reason), slog.String("executor", "external"))
-		a.emitAudit(ctx, "tool_call", "deny", req.ToolName, result, req.SessionID,
+		a.emitToolAudit(ctx, "deny", req.ToolName, result, req.SessionID,
 			detail(map[string]any{"reason": reason}))
 		return DecisionDeny, reason
 	}
@@ -62,6 +62,6 @@ func (a *Agent) DecideExternal(ctx context.Context, req ApprovalRequest) (Decisi
 		}
 	}
 	observability.ToolCalls.WithLabelValues(req.ToolName, "external_allow").Inc()
-	a.emitAudit(ctx, "tool_call", "allow", req.ToolName, "allowed", req.SessionID, detail(nil))
+	a.emitToolAudit(ctx, "allow", req.ToolName, "allowed", req.SessionID, detail(nil))
 	return DecisionAllow, ""
 }

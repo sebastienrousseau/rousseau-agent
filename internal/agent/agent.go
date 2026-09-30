@@ -588,7 +588,7 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 			}
 			a.logger.Warn("tool.denied", slog.String("name", use.Name), slog.String("reason", reason))
 			a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
-			a.emitAudit(ctx, "tool_call", "deny", use.Name, "denied", sessionID, map[string]any{
+			a.emitToolAudit(ctx, "deny", use.Name, "denied", sessionID, map[string]any{
 				"reason": reason,
 			})
 			results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
@@ -619,7 +619,7 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 					}
 					a.logger.Warn("tool.hook_denied", slog.String("name", use.Name), slog.String("reason", reason))
 					a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
-					a.emitAudit(ctx, "tool_call", "deny", use.Name, "hook_denied", sessionID, map[string]any{
+					a.emitToolAudit(ctx, "deny", use.Name, "hook_denied", sessionID, map[string]any{
 						"reason": reason,
 					})
 					results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
@@ -663,13 +663,13 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 			auditDetail["error"] = err.Error()
 		}
 		a.emitEvent(ctx, done)
-		a.emitAudit(ctx, "tool_call", "run", use.Name, auditResult, sessionID, auditDetail)
+		a.emitToolAudit(ctx, "run", use.Name, auditResult, sessionID, auditDetail)
 		results = append(results, Content{Kind: ContentToolResult, ToolResult: result})
 	}
 	return results, nil
 }
 
-// emitAudit is a nil-safe helper that stamps a Record into the
+// emitToolAudit is a nil-safe helper that stamps a tool_call Record into the
 // configured audit sink. Actor is drawn from
 // [sso.IdentityFromContext] when available so downstream SIEMs
 // can filter events by verified identity. Emit errors are
@@ -677,7 +677,7 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 // observability; a downstream sink hiccup must not derail the
 // agent loop. The sink's own dropped-record counter is the
 // authoritative delivery signal.
-func (a *Agent) emitAudit(ctx context.Context, category, verb, object, result, sessionID string, detail map[string]any) {
+func (a *Agent) emitToolAudit(ctx context.Context, verb, object, result, sessionID string, detail map[string]any) {
 	if a.opts.AuditSink == nil {
 		return
 	}
@@ -690,7 +690,7 @@ func (a *Agent) emitAudit(ctx context.Context, category, verb, object, result, s
 	}
 	detail["session_id"] = sessionID
 	_ = a.opts.AuditSink.Emit(ctx, audit_egress.Record{ //nolint:errcheck // best-effort; sink internal counters authoritative
-		Category: category,
+		Category: "tool_call",
 		Actor:    actor,
 		Verb:     verb,
 		Object:   object,

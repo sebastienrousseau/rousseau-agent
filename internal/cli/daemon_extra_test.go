@@ -131,7 +131,7 @@ func TestStartBackgroundServers_ServesMetrics(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		_ = resp.Body.Close() //nolint:errcheck // test
+		_ = resp.Body.Close()
 		return resp.StatusCode == http.StatusOK
 	}, 3*time.Second, 20*time.Millisecond, "metrics server never came up on %s", addr)
 }

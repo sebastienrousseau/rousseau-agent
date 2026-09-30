@@ -171,7 +171,7 @@ const (
 // exit code. Anything short of an explicit allow blocks.
 func RunHook(stdin io.Reader, stderr io.Writer, socket string, timeout time.Duration) int {
 	block := func(reason string) int {
-		fmt.Fprintln(stderr, reason)
+		_, _ = fmt.Fprintln(stderr, reason) //nolint:errcheck // nothing left to report to if stderr fails; the exit code still blocks
 		return ExitBlock
 	}
 	raw, err := io.ReadAll(io.LimitReader(stdin, maxRequestBytes+1))
