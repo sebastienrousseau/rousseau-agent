@@ -175,10 +175,9 @@ func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
 // underlying state Store. Safe to defer. Errors from MCP client Close
 // calls are logged but not returned — shutdown is best-effort.
 //
-// Callers that predate this helper still work: they may call
-// wiring.Sessions.Close() directly. The tradeoff is that MCP client
-// subprocesses leak until the parent daemon exits (the OS reaps them
-// then, so the leak is bounded).
+// Every transport command defers this. Calling only
+// wiring.Sessions.Close() instead leaks MCP subprocesses and never
+// emits or flushes the daemon.stop audit record.
 func (w *daemonWiring) Cleanup() error {
 	closeMCPClients(w.MCPClients, w.Logger)
 	// Drain the audit sink first — losing the shutdown record
@@ -221,8 +220,8 @@ func setUnattendedPermissionDefault(opts *Options, transportName string) {
 // returns the composed pieces ready for a transport to attach a
 // Deliver function to the cron scheduler.
 //
-// Cleanup: the caller is responsible for closing wiring.Sessions and
-// shutting down any scheduler it starts.
+// Cleanup: the caller must defer wiring.Cleanup() and shut down any
+// scheduler it starts.
 func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*daemonWiring, error) {
 	cfg := opts.Config
 	provider, err := buildProvider(cfg)
