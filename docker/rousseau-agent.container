@@ -28,24 +28,32 @@ StartLimitIntervalSec=600
 Image=localhost/rousseau-agent:local
 ContainerName=rousseau-agent
 
-# Least-privilege bind mounts. The container may write to state and
-# claude auth (claude refreshes cached tokens); the workspace is
-# read-write because the agent's coding tools operate on files there.
-# Nothing else on the host is visible.
+# Least-privilege bind mounts. The container writes only to its own
+# state and its own Claude Code config; nothing else on the host is
+# visible except the workspace.
 #
-# .claude.json (a FILE at HOME root, distinct from the .claude/
-# directory) carries claude-code's permission profile, MCP registry,
-# and per-project session index. Claude 2.1.x refuses to start
-# without it and loops on backups if the file is missing. It has to
-# be bind-mounted separately -- HOME itself is not shared.
+# Claude Code config is CONTAINER-OWNED. CLAUDE_CONFIG_DIR points
+# claude at a directory holding .credentials.json, .claude.json,
+# projects/ and sessions/ together, so the host's ~/.claude and
+# ~/.claude.json are never mounted. Mounting them read-write let a
+# tool call inside the container plant settings.json hooks, plugins,
+# CLAUDE.md or MCP servers that the HOST's claude would then execute.
+# It also removes the inode-staleness restarts the
+# rousseau-agent-claude-creds.path unit existed for: claude refreshes
+# its token in place inside this directory.
 #
-# The file bind on .claude.json shares the atomic-rename inode
-# staleness footgun with the pre-PR-50 .credentials.json bind:
-# rousseau-agent-claude-creds.path watches both files and restarts
-# the daemon whenever either is replaced.
+# One-time setup: give the container its own login rather than
+# copying the host's credentials (OAuth refresh tokens rotate, so two
+# copies can sign each other out). See docker/README.md.
 Volume=%h/.local/share/rousseau:/home/rousseau/.local/share/rousseau:rw,Z
-Volume=%h/.claude:/home/rousseau/.claude:rw,Z
-Volume=%h/.claude.json:/home/rousseau/.claude.json:rw
+Volume=%h/.local/share/rousseau/claude:/home/rousseau/.claude:rw,Z
+Environment=CLAUDE_CONFIG_DIR=/home/rousseau/.claude
+
+# The workspace is read-write because the agent's coding tools edit
+# files there. Anything the agent writes is later seen by the host:
+# prefer a dedicated directory of agent clones over your main
+# workspace, and never mount the rousseau-agent source the image is
+# built from (a planted change would survive the next build).
 Volume=%h/team-rousseau-workspace:/workspace:rw,Z
 
 # No published ports — rousseau exposes no HTTP surface. Egress-only
@@ -93,8 +101,25 @@ SeccompProfile=/usr/share/containers/seccomp.json
 
 # CLI args: run the WhatsApp subcommand. Supply your JID via the
 # ROUSSEAU_WHATSAPP_ALLOW env var (Environment= below, or drop an
-# EnvironmentFile= directive pointing at a systemd secret).
+# EnvironmentFile= directive pointing at a systemd secret). The daemon
+# refuses to start with an empty allowlist unless --allow-anyone.
 Environment=ROUSSEAU_WHATSAPP_ALLOW=15551234567@s.whatsapp.net
+
+# Required: the daemon refuses to start without an explicit claude
+# permission mode. bypassPermissions lets claude attempt any tool;
+# every call still passes rousseau's policy bridge (a PreToolUse hook
+# asking the configured approver, audited, failing closed). For a
+# narrower posture use dontAsk plus claudecli.extra_args
+# ["--allowedTools", "..."].
+Environment=ROUSSEAU_CLAUDECLI_PERMISSION_MODE=bypassPermissions
+
+# Credentials the agent's tools need (e.g. a GitHub token for gh/git)
+# belong in podman secrets, not EnvironmentFile=: create with
+# `printf %s "$TOKEN" | podman secret create rousseau_gh_token -` and
+# use a fine-grained token scoped to the repos the agent works on,
+# contents read/write only, no workflow scope.
+#Secret=rousseau_gh_token,type=env,target=GH_TOKEN
+
 Exec=whatsapp
 
 [Service]
