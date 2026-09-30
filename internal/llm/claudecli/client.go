@@ -198,6 +198,7 @@ func (p *Provider) invoke(ctx context.Context, sessionFlag string, req agent.Req
 
 	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
 	cmd.Stdin = strings.NewReader(promptText(prompt, imagePaths))
+	setGracefulCancel(cmd)
 	out, err := p.run(cmd)
 	if err != nil {
 		return agent.Response{}, fmt.Errorf("claudecli: run: %w: %s", err, truncate(string(out), 400))

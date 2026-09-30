@@ -119,6 +119,7 @@ func (p *Provider) buildStreamArgs(req agent.Request) []string {
 func (p *Provider) startStream(ctx context.Context, args []string, input string) (*exec.Cmd, io.Reader, *bytes.Buffer, error) {
 	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
 	cmd.Stdin = strings.NewReader(input) // see promptText
+	setGracefulCancel(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("claudecli: stdout pipe: %w", err)

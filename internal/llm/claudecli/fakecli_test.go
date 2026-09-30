@@ -345,9 +345,11 @@ func TestStream_StartFailureIsSynchronous(t *testing.T) {
 
 // TestStream_ContextCancellationKillsChild proves ctx cancellation
 // terminates the subprocess rather than hanging the report goroutine.
-// The report surfaces the SIGKILL wait status (via the exit-promotes-
+// The report surfaces the signal wait status (via the exit-promotes-
 // sentinel path) rather than the ErrEmptyStream sentinel, because a
-// killed subprocess is a real failure the caller should see.
+// stopped subprocess is a real failure the caller should see. The
+// signal is SIGTERM to the process group first (setGracefulCancel);
+// SIGKILL follows only if the group outlives killGrace.
 func TestStream_ContextCancellationKillsChild(t *testing.T) {
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skip("no sleep binary")
@@ -366,7 +368,7 @@ func TestStream_ContextCancellationKillsChild(t *testing.T) {
 	_, report := collect(t, evs, rep)
 	require.Error(t, report.Err)
 	assert.Contains(t, report.Err.Error(), "stream exit")
-	assert.Contains(t, report.Err.Error(), "killed")
+	assert.Regexp(t, `terminated|killed`, report.Err.Error())
 }
 
 // -- Complete: retry + image paths -------------------------------------

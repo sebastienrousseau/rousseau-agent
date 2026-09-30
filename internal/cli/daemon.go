@@ -99,6 +99,12 @@ type daemonWiring struct {
 	// from them; empty leaves each off.
 	MetricsAddr  string
 	OTLPEndpoint string
+	// TurnTimeout mirrors agent.turn_timeout; TransportHandler
+	// applies it to each routed turn (0 = no limit).
+	TurnTimeout time.Duration
+	// turnLimiter caps concurrent agent turns across every transport
+	// handler this wiring builds (agent.max_concurrent_turns).
+	turnLimiter *transport.TurnLimiter
 	// otelShutdown flushes the tracer; set by StartBackgroundServers,
 	// called by Cleanup.
 	otelShutdown func(context.Context) error
@@ -589,6 +595,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		SCIMAddr:     scimAddr,
 		MetricsAddr:  cfg.Observability.MetricsAddr,
 		OTLPEndpoint: cfg.Observability.OTLPEndpoint,
+		TurnTimeout:  cfg.Agent.TurnTimeout,
+		turnLimiter:  transport.NewTurnLimiter(cfg.Agent.MaxConcurrentTurns, opts.Logger),
 		A2A:          a2aRt,
 		A2AClients:   a2aClients,
 	}, nil
@@ -844,6 +852,10 @@ func transportMappingsFromConfig(in []config.SSOTransportMapping) []sso.Transpor
 func (w *daemonWiring) TransportHandler(name string, logger *slog.Logger) transport.Handler {
 	sup := w.supervisorFor(name, logger)
 	h := transport.Handler(w.routerFor(name))
+	// Inside the Supervisor so the deadline covers the agent turn
+	// only; control verbs (/cancel, /status) stay instant.
+	h = transport.WithTurnTimeout(h, w.TurnTimeout, logger)
+	h = w.turnLimiter.Wrap(h)
 	h = sup.Wrap(h)
 	h = resilience.Recover(h, name, logger)
 	if lim, ok := w.RateLimiters[name]; ok {

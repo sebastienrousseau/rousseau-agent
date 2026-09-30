@@ -138,3 +138,17 @@ func TestLoad_SessionIdleTimeout(t *testing.T) {
 		assert.Equal(t, want, cfg.Agent.SessionIdleTimeout, yaml)
 	}
 }
+
+func TestLoad_TurnTimeout(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, 30*time.Minute, cfg.Agent.TurnTimeout, "default")
+	assert.Equal(t, 4, cfg.Agent.MaxConcurrentTurns, "default")
+
+	path := filepath.Join(t.TempDir(), "cfg.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("agent:\n  turn_timeout: 0\n"), 0o600))
+	cfg, err = Load(path)
+	require.NoError(t, err)
+	assert.Zero(t, cfg.Agent.TurnTimeout, "explicit opt-out")
+}

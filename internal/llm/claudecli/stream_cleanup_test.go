@@ -112,3 +112,45 @@ printf '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}\n'
 	assert.True(t, os.IsNotExist(statErr),
 		"image temp file %s should be removed once the stream completes", string(raw))
 }
+
+// TestStream_CancelSendsSIGTERMFirst pins graceful cancellation: on a
+// turn timeout or /cancel the claude child gets SIGTERM (so it can
+// stop its own tool subprocesses and flush its transcript) before any
+// SIGKILL. exec.CommandContext's default is an immediate SIGKILL.
+func TestStream_CancelSendsSIGTERMFirst(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-claude")
+	marker := filepath.Join(dir, "got-term")
+	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
+cat >/dev/null
+trap 'echo term > "`+marker+`"; exit 143' TERM
+sleep 30 &
+wait
+`), 0o755))
+
+	old := killGrace
+	killGrace = 2 * time.Second
+	t.Cleanup(func() { killGrace = old })
+
+	p := &Provider{cfg: Config{Binary: script}}
+	ctx, cancel := context.WithCancel(context.Background())
+	start := time.Now()
+	events, report, err := p.Stream(ctx, agent.Request{
+		Messages: []agent.Message{agent.NewUserText("long job")},
+	})
+	require.NoError(t, err)
+	time.Sleep(300 * time.Millisecond) // let the trap install
+	cancel()
+	for range events {
+	}
+	select {
+	case <-report:
+	case <-time.After(15 * time.Second):
+		t.Fatal("stream did not finish after cancel")
+	}
+	_, statErr := os.Stat(marker)
+	assert.NoError(t, statErr, "child should have received SIGTERM before being killed")
+	// The grandchild (sleep 30) must not hold the turn open: the whole
+	// group is signalled, so the stream ends well inside the grace.
+	assert.Less(t, time.Since(start), 10*time.Second)
+}

@@ -836,6 +836,14 @@ type AgentConfig struct {
 	// reply names the previous session for /resume. Default 12h;
 	// set to 0 to always continue the existing session.
 	SessionIdleTimeout time.Duration `mapstructure:"session_idle_timeout"`
+	// TurnTimeout bounds one chat turn end to end. On expiry the
+	// provider subprocess is stopped and the sender is told the turn
+	// was cut short. Default 30m; 0 disables the limit.
+	TurnTimeout time.Duration `mapstructure:"turn_timeout"`
+	// MaxConcurrentTurns caps agent turns running at once in this
+	// daemon; further turns queue. Each claudecli turn is a separate
+	// claude process. Default 4; 0 means unlimited.
+	MaxConcurrentTurns int `mapstructure:"max_concurrent_turns"`
 }
 
 // SkillBundlesConfig is the operator-facing view of the
@@ -1024,6 +1032,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log.format", "text")
 	v.SetDefault("agent.max_iterations", 32)
 	v.SetDefault("agent.session_idle_timeout", "12h")
+	v.SetDefault("agent.turn_timeout", "30m")
+	v.SetDefault("agent.max_concurrent_turns", 4)
 	home, err := os.UserHomeDir()
 	if err == nil {
 		v.SetDefault("state.path", filepath.Join(home, ".local", "share", "rousseau", "sessions.db"))

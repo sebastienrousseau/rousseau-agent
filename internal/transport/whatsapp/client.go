@@ -84,6 +84,10 @@ type Client struct {
 	// process exits non-zero and the supervisor restarts it into a
 	// fresh pairing flow. Buffered 1; later sends are dropped.
 	fatal chan error
+	// baseCtx is Start's context. In-flight turns derive from it so
+	// shutdown cancels them (stopping their claude processes) instead
+	// of leaving them running on context.Background().
+	baseCtx context.Context
 }
 
 // Start-path test seams. Start's whatsmeow touchpoints — opening the
@@ -193,6 +197,7 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("whatsapp: already started")
 	}
 	c.handler = handler
+	c.baseCtx = ctx
 	c.mu.Unlock()
 
 	wm, err := newWMClient(ctx, c.cfg)
@@ -453,7 +458,13 @@ func (c *Client) handleMessage(evt *events.Message) {
 // dispatchOne runs one inbound message through Dispatch. Split out so
 // handleMessage's goroutine seam stays a one-liner.
 func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Downloader, ownID *types.JID) {
-	Dispatch(context.Background(), DispatchInput{
+	c.mu.Lock()
+	ctx := c.baseCtx
+	c.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	Dispatch(ctx, DispatchInput{
 		Event:       evt,
 		OwnID:       ownID,
 		Sender:      sender,

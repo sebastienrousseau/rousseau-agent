@@ -334,3 +334,34 @@ func TestOnEvent_ConnectedGaugeTracksLink(t *testing.T) {
 	c.onEvent(&events.LoggedOut{Reason: 401})
 	assert.Equal(t, 0.0, testutil.ToFloat64(g))
 }
+
+// TestDispatchOne_TurnsInheritStartContext pins that shutdown reaches
+// in-flight turns: the handler's context is derived from Start's, not
+// context.Background(), so cancelling the daemon cancels the turn
+// (and with it the claude subprocess).
+func TestDispatchOne_TurnsInheritStartContext(t *testing.T) {
+	send := &fakeSender{}
+	c := newClientWithLog(t, silentLogger(), send)
+	base, cancel := context.WithCancel(context.Background())
+	c.baseCtx = base
+	cancelled := make(chan struct{})
+	c.handler = transport.HandlerFunc(func(ctx context.Context, _ transport.IncomingMessage) (string, error) {
+		cancel() // daemon shutdown while the turn runs
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+		case <-time.After(2 * time.Second):
+		}
+		return "", ctx.Err()
+	})
+	from := types.JID{User: "15551234567", Server: "s.whatsapp.net"}
+	c.onEvent(&events.Message{
+		Info:    types.MessageInfo{MessageSource: types.MessageSource{Sender: from, Chat: from.ToNonAD()}},
+		Message: &waProto.Message{Conversation: proto.String("long job")},
+	})
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("turn context was not cancelled by the Start context")
+	}
+}
