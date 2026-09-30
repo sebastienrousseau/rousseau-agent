@@ -225,11 +225,10 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 			last = evt.Event
 			switch evt.Event {
 			case "code":
-				// Log the raw pair code alongside the ASCII render.
-				// Lets operators pipe it into an alternative renderer
-				// (e.g. `qrencode -o pair.png <code>`) when the
-				// terminal display is too small or wrapped to scan.
-				c.logger.Info("whatsapp.qr_ready", slog.String("code", evt.Code))
+				// The raw code is deliberately not a log field: with
+				// it, anyone who can read the journal during the
+				// window can link a device to the account.
+				c.logger.Info("whatsapp.qr_ready")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, qrOut)
 			case "success":
 				paired = true
@@ -245,7 +244,7 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		// the supervisor restarts into a fresh QR window.
 		if !paired && ctx.Err() == nil {
 			_ = c.Stop() //nolint:errcheck // Stop never fails; primary error is the pairing outcome
-			return fmt.Errorf("whatsapp: pairing did not complete (last qr event %q); restart to get a new QR", last)
+			return fmt.Errorf("%w: pairing did not complete (last qr event %q); restart to get a new QR", ErrNeedsOperator, last)
 		}
 		// Store.ID was nil when captured above; adopt the JID the
 		// pairing just wrote so self-chat attribution works without
@@ -323,14 +322,32 @@ func (c *Client) onEvent(raw any) {
 		// whatsmeow has already deleted the device; the socket will
 		// never deliver another message. Surface it as a process exit
 		// rather than a silently deaf daemon.
-		select {
-		case c.fatal <- fmt.Errorf("whatsapp: logged out by server (reason %d); re-pair required", int(evt.Reason)):
-		default:
-		}
+		c.endSession(fmt.Errorf("%w: logged out by server (reason %d); re-pair required", ErrNeedsOperator, int(evt.Reason)))
+	case *events.StreamReplaced:
+		c.logger.Error("whatsapp.stream_replaced")
+		// Another client took this session. Reconnecting would just
+		// displace it back and forth.
+		c.endSession(fmt.Errorf("%w: session taken over by another client (stream replaced)", ErrNeedsOperator))
+	case *events.ClientOutdated:
+		c.logger.Error("whatsapp.client_outdated")
+		c.endSession(fmt.Errorf("%w: WhatsApp rejected this client version; update go.mau.fi/whatsmeow and rebuild", ErrNeedsOperator))
+	case *events.TemporaryBan:
+		c.logger.Error("whatsapp.temporary_ban", slog.String("detail", evt.String()))
+		c.endSession(fmt.Errorf("%w: %s", ErrNeedsOperator, evt.String()))
 	case *events.KeepAliveTimeout:
 		c.handleKeepAliveTimeout()
 	case *events.KeepAliveRestored:
 		c.handleKeepAliveRestored()
+	}
+}
+
+// endSession hands a session-ending error to Start. Non-blocking: the
+// first one wins and later ones are dropped, so the whatsmeow event
+// goroutine never stalls.
+func (c *Client) endSession(err error) {
+	select {
+	case c.fatal <- err:
+	default:
 	}
 }
 

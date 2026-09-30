@@ -5,9 +5,17 @@ package whatsapp
 
 import (
 	"context"
+	"errors"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
+
+// ErrNeedsOperator marks a Start error that restarting cannot fix: the
+// device is unpaired or logged out, another client took the session,
+// the client is outdated, or the number is temporarily banned. The CLI
+// maps it to exit status 78 so the supervisor stops restarting and the
+// unit shows as failed instead of looping (or idling deaf).
+var ErrNeedsOperator = errors.New("whatsapp: operator action required")
 
 // Transcriber converts an audio payload into text. Implementations are
 // free to shell out (whisper.cpp), call a remote service, or return

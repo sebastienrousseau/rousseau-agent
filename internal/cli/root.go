@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -90,11 +91,44 @@ func NewRoot(opts *Options) *cobra.Command {
 func Execute(ctx context.Context) int {
 	opts := &Options{}
 	root := NewRoot(opts)
-	if err := root.ExecuteContext(ctx); err != nil {
+	err := root.ExecuteContext(ctx)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
 	}
-	return 0
+	return exitCodeFor(err)
+}
+
+// ExitNeedsOperator (EX_CONFIG) is the exit status for failures a
+// restart cannot fix. Service units pair it with
+// RestartPreventExitStatus=78 so the unit stops and shows as failed
+// rather than looping.
+const ExitNeedsOperator = 78
+
+type exitCodeError struct {
+	err  error
+	code int
+}
+
+func (e *exitCodeError) Error() string { return e.err.Error() }
+func (e *exitCodeError) Unwrap() error { return e.err }
+
+// withExitCode tags err so Execute exits with code instead of 1.
+func withExitCode(err error, code int) error {
+	if err == nil {
+		return nil
+	}
+	return &exitCodeError{err: err, code: code}
+}
+
+func exitCodeFor(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ec *exitCodeError
+	if errors.As(err, &ec) {
+		return ec.code
+	}
+	return 1
 }
 
 func newLogger(level, format string, w io.Writer) *slog.Logger {

@@ -218,6 +218,7 @@ func TestStart_PairingLoopRendersQRThenPairs(t *testing.T) {
 	}
 
 	assert.True(t, logs.has("whatsapp.qr_ready"))
+	assert.False(t, logs.has("pair-me"), "the pairing code must not reach the structured log")
 	assert.True(t, logs.has("whatsapp.paired"))
 	assert.True(t, logs.has("whatsapp.qr_event"))
 	assert.True(t, c.stopped, "Start must Stop the client on context cancellation")
@@ -340,6 +341,7 @@ func TestStart_PairingTimeoutReturnsError(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "pairing did not complete")
 		assert.Contains(t, err.Error(), `"timeout"`)
+		assert.ErrorIs(t, err, ErrNeedsOperator)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start hung after the QR window timed out")
 	}
@@ -412,8 +414,45 @@ func TestStart_LoggedOutEndsStartWithError(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "logged out")
 		assert.Contains(t, err.Error(), "401")
+		assert.ErrorIs(t, err, ErrNeedsOperator)
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not return after LoggedOut")
 	}
 	assert.True(t, c.stopped)
+}
+
+// TestStart_SessionEndingEventsEndStart pins that every event after
+// which whatsmeow will not deliver messages again ends Start with an
+// operator-action error, instead of leaving a deaf daemon that looks
+// healthy.
+func TestStart_SessionEndingEventsEndStart(t *testing.T) {
+	for name, evt := range map[string]any{
+		"stream_replaced": &events.StreamReplaced{},
+		"client_outdated": &events.ClientOutdated{},
+		"temporary_ban":   &events.TemporaryBan{Expire: time.Hour},
+	} {
+		t.Run(name, func(t *testing.T) {
+			wm := pairedClient(t)
+			connected := make(chan struct{})
+			stubSeams(t,
+				func(context.Context, Config) (*whatsmeow.Client, error) { return wm, nil },
+				nil,
+				func(*whatsmeow.Client) error { close(connected); return nil }, nil)
+
+			c, err := New(Config{StoreDSN: "x"}, silentLogger())
+			require.NoError(t, err)
+			done := make(chan error, 1)
+			go func() { done <- c.Start(context.Background(), noopHandler()) }()
+			<-connected
+
+			c.onEvent(evt)
+			select {
+			case err := <-done:
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrNeedsOperator)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Start did not return after a session-ending event")
+			}
+		})
+	}
 }

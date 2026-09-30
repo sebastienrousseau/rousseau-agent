@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -61,4 +63,14 @@ func runWithArgs(t *testing.T, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// TestExitCodeFor pins the process exit status contract the Quadlet
+// relies on: operator-action failures exit 78 (EX_CONFIG), which
+// RestartPreventExitStatus=78 stops systemd from restarting in a loop.
+func TestExitCodeFor(t *testing.T) {
+	assert.Equal(t, 0, exitCodeFor(nil))
+	assert.Equal(t, 1, exitCodeFor(errors.New("boom")))
+	wrapped := fmt.Errorf("whatsapp: %w", withExitCode(errors.New("logged out"), ExitNeedsOperator))
+	assert.Equal(t, 78, exitCodeFor(wrapped))
 }

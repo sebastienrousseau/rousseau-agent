@@ -98,13 +98,18 @@ Environment=ROUSSEAU_WHATSAPP_ALLOW=15551234567@s.whatsapp.net
 Exec=whatsapp
 
 [Service]
-# Restart=always (not on-failure) because whatsmeow exits cleanly
-# (status=0) when the WhatsApp session is displaced (StreamReplaced,
-# stream-end frame, etc). A clean exit here still means we lost the
-# bridge, so we always want systemd to bring it back. Rate-limited by
-# the [Unit] StartLimit* above so a bad image can't spin forever.
+# Restart=always brings the bridge back after crashes and transient
+# failures, rate-limited by the [Unit] StartLimit* above.
+#
+# Exit status 78 (EX_CONFIG) means a restart cannot help: the device
+# is unpaired or logged out, another client took the session, the
+# client is outdated, or the number is temporarily banned. Stop there
+# so the unit shows as failed (and OnFailure= can alert) instead of
+# looping through QR windows. After fixing the cause:
+#     systemctl --user restart rousseau-agent
 Restart=always
 RestartSec=10s
+RestartPreventExitStatus=78
 TimeoutStartSec=90s
 
 # Refresh the host-side key staging area before every container
