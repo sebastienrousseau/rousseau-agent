@@ -69,9 +69,9 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 	// error return below, and otherwise by the reader goroutine once
 	// cmd.Wait has returned.
 
-	args := p.buildStreamArgs(req, imagePaths, prompt)
+	args := p.buildStreamArgs(req)
 
-	cmd, stdout, stderr, err := p.startStream(ctx, args)
+	cmd, stdout, stderr, err := p.startStream(ctx, args, promptText(prompt, imagePaths))
 	if err != nil {
 		cleanup()
 		return nil, nil, err
@@ -88,7 +88,7 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 // buildStreamArgs constructs the argv rousseau hands to `claude`.
 // Extracted so the recover path can rebuild it after rotating a
 // poisoned session file without duplicating the assembly.
-func (p *Provider) buildStreamArgs(req agent.Request, imagePaths []string, prompt string) []string {
+func (p *Provider) buildStreamArgs(req agent.Request) []string {
 	sessionFlag := "--session-id"
 	if req.SessionID != "" && p.knowsSession(req.SessionID) {
 		sessionFlag = "--resume"
@@ -111,17 +111,14 @@ func (p *Provider) buildStreamArgs(req agent.Request, imagePaths []string, promp
 		args = append(args, "--permission-mode", p.cfg.PermissionMode)
 	}
 	args = append(args, p.cfg.ExtraArgs...)
-	for _, path := range imagePaths {
-		args = append(args, "--image", path)
-	}
-	args = append(args, prompt)
 	return args
 }
 
 // startStream launches claude and wires stdout/stderr. Extracted to
 // let the recover path re-spawn identically after a rotate.
-func (p *Provider) startStream(ctx context.Context, args []string) (*exec.Cmd, io.Reader, *bytes.Buffer, error) {
+func (p *Provider) startStream(ctx context.Context, args []string, input string) (*exec.Cmd, io.Reader, *bytes.Buffer, error) {
 	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
+	cmd.Stdin = strings.NewReader(input) // see promptText
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("claudecli: stdout pipe: %w", err)
@@ -198,8 +195,8 @@ func (p *Provider) drainStream(
 			// file with the same id. Rebuild args after clearing the
 			// cache entry so buildStreamArgs picks --session-id.
 			p.cache.Forget(req.SessionID)
-			args := p.buildStreamArgs(req, imagePaths, prompt)
-			cmd2, stdout2, stderr2, serr := p.startStream(ctx, args)
+			args := p.buildStreamArgs(req)
+			cmd2, stdout2, stderr2, serr := p.startStream(ctx, args, promptText(prompt, imagePaths))
 			if serr != nil {
 				perr = fmt.Errorf("claudecli: session recover: restart: %w", serr)
 			} else {

@@ -16,32 +16,31 @@ import (
 // TestStream_ImageFilesOutliveTheChild is a regression test for a
 // use-after-free.
 //
-// Stream hands image files to the CLI *by path* via --image, and
+// Stream hands image files to the CLI *by path* (named in the stdin
+// prompt), and
 // returns as soon as the child is started. cleanup() used to be
 // deferred inside Stream, so the temp directory was removed at that
 // return -- before the child had necessarily opened the files. Whether
 // it broke depended on scheduling, which is the worst kind of bug.
 //
 // The stand-in CLI below asserts the condition directly: it stats every
-// --image path it was given and refuses to emit a result line if any is
-// missing. A regression makes this test fail rather than flake.
+// image path named on stdin and refuses to emit a result line if any is
+// missing (or if none was named, so the test cannot pass vacuously). A regression makes this test fail rather than flake.
 func TestStream_ImageFilesOutliveTheChild(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-claude")
 
-	// Walk argv; for each --image VALUE, fail loudly if VALUE is gone.
-	// Sleep first so a premature cleanup has time to land.
+	// Read the prompt; for each attached image path, fail loudly if it
+	// is gone. Sleep first so a premature cleanup has time to land.
 	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
+paths=$(sed -n 's/^\[Attached image: \(.*\)\. Open it.*/\1/p')
 sleep 0.3
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "--image" ]; then
-    if [ ! -f "$a" ]; then
-      echo "IMAGE MISSING: $a" >&2
-      exit 3
-    fi
+[ -n "$paths" ] || { echo "NO IMAGE PATH IN PROMPT" >&2; exit 4; }
+for a in $paths; do
+  if [ ! -f "$a" ]; then
+    echo "IMAGE MISSING: $a" >&2
+    exit 3
   fi
-  prev="$a"
 done
 printf '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}\n'
 `), 0o755))
@@ -68,7 +67,7 @@ printf '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}\n'
 	select {
 	case rep := <-report:
 		require.NoError(t, rep.Err,
-			"the CLI reported a missing --image file: cleanup ran before the child finished")
+			"the CLI reported a missing image file: cleanup ran before the child finished")
 		require.NotEmpty(t, rep.Response.Message.Content)
 		assert.Equal(t, "ok", rep.Response.Message.Content[0].Text)
 	case <-time.After(10 * time.Second):
@@ -84,11 +83,7 @@ func TestStream_CleanupRunsAfterCompletion(t *testing.T) {
 	seen := filepath.Join(dir, "seen-path")
 
 	require.NoError(t, os.WriteFile(script, []byte(`#!/bin/sh
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "--image" ]; then printf '%s' "$a" > "`+seen+`"; fi
-  prev="$a"
-done
+sed -n 's/^\[Attached image: \(.*\)\. Open it.*/\1/p' | tr -d '\n' > "`+seen+`"
 printf '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}\n'
 `), 0o755))
 
@@ -112,7 +107,7 @@ printf '{"type":"result","subtype":"success","result":"ok","session_id":"s1"}\n'
 	require.NoError(t, rep.Err)
 
 	raw, err := os.ReadFile(seen)
-	require.NoError(t, err, "the stand-in CLI should have recorded the --image path")
+	require.NoError(t, err, "the stand-in CLI should have recorded the image path")
 	_, statErr := os.Stat(string(raw))
 	assert.True(t, os.IsNotExist(statErr),
 		"image temp file %s should be removed once the stream completes", string(raw))

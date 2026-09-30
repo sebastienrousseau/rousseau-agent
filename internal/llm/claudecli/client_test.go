@@ -3,6 +3,7 @@ package claudecli
 import (
 	"context"
 	"errors"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
@@ -173,7 +174,10 @@ func TestComplete_HappyPath(t *testing.T) {
 	assert.Contains(t, args, "--model sonnet")
 	assert.Contains(t, args, "--permission-mode acceptEdits")
 	assert.Contains(t, args, "--extra")
-	assert.Contains(t, args, "hello")
+	assert.NotContains(t, args, "hello", "prompt goes on stdin, never argv")
+	in, err := io.ReadAll(captured.Stdin)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(in))
 }
 
 func TestComplete_NoUserMessage(t *testing.T) {
