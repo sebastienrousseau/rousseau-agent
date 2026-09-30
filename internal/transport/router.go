@@ -119,6 +119,14 @@ type RouterOptions struct {
 	// makes /version reply "unknown build" rather than error, so
 	// dev builds without ldflags still answer instead of hanging.
 	BuildStamp string
+	// SessionIdleTimeout starts a fresh session for a sender whose
+	// mapped session has not been updated for longer than this.
+	// Without it every inbound resumes the same thread forever, so a
+	// terse message days later ("yes") is read as an answer to
+	// whatever the agent last asked — with tool permissions that may
+	// be bypassed. The old session is kept and named in the reply so
+	// /resume can return to it. Zero disables rotation.
+	SessionIdleTimeout time.Duration
 }
 
 // Router binds an inbound Handler to an agent + persistent session state.
@@ -138,6 +146,8 @@ type Router struct {
 	auditSink  audit_egress.Sink
 	approvals  *approval.PendingManager
 	buildStamp string
+	idleAfter  time.Duration
+	now        func() time.Time
 	mu         sync.Mutex
 }
 
@@ -173,6 +183,8 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		auditSink:  opts.AuditSink,
 		approvals:  opts.Approvals,
 		buildStamp: opts.BuildStamp,
+		idleAfter:  opts.SessionIdleTimeout,
+		now:        time.Now,
 	}
 }
 
@@ -350,7 +362,7 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		}
 	}
 
-	sess, err := r.sessionFor(ctx, msg.From)
+	sess, rotatedFrom, err := r.turnSessionFor(ctx, msg.From)
 	if err != nil {
 		return "", fmt.Errorf("router: session: %w", err)
 	}
@@ -365,7 +377,12 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 	if err := r.store.Save(ctx, sess); err != nil {
 		r.logger.Warn("router.save_failed", slog.String("err", err.Error()))
 	}
-	return firstText(final), nil
+	reply := firstText(final)
+	if rotatedFrom != "" {
+		reply = fmt.Sprintf("(new session: previous one idle > %s. /resume %s to continue it.)\n\n%s",
+			r.idleAfter, shortSessionID(rotatedFrom), reply)
+	}
+	return reply, nil
 }
 
 // syncCommands lists every leading token the router answers
@@ -1259,6 +1276,54 @@ func (r *Router) sessionFor(ctx context.Context, jid string) (*agent.Session, er
 		// Fall through: mapping is stale; create a new session.
 		r.logger.Warn("router.stale_mapping", slog.String("jid", jid), slog.String("err", err.Error()))
 	}
+	return r.newSessionLocked(ctx, jid)
+}
+
+// turnSessionFor is sessionFor for the conversational path: when
+// idle rotation is enabled and the mapped session was last updated
+// more than idleAfter ago, it binds the sender to a fresh session
+// and reports the previous ID so the reply can point at /resume.
+// Verbs that act on "the current session" (/name, /save) keep using
+// sessionFor so they never rotate as a side effect.
+func (r *Router) turnSessionFor(ctx context.Context, jid string) (*agent.Session, string, error) {
+	if r.idleAfter <= 0 {
+		sess, err := r.sessionFor(ctx, jid)
+		return sess, "", err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	id, ok, err := r.jidMap.Get(ctx, jid)
+	if err != nil {
+		return nil, "", err
+	}
+	if ok {
+		sess, err := r.store.Load(ctx, id)
+		if err == nil {
+			idle := r.now().Sub(sess.UpdatedAt)
+			if idle <= r.idleAfter {
+				return sess, "", nil
+			}
+			fresh, err := r.newSessionLocked(ctx, jid)
+			if err != nil {
+				return nil, "", err
+			}
+			r.logger.Info("router.session_idle_rotated",
+				slog.String("from", jid),
+				slog.String("previous_session_id", sess.ID),
+				slog.String("new_session_id", fresh.ID),
+				slog.Duration("idle", idle.Round(time.Second)))
+			return fresh, sess.ID, nil
+		}
+		r.logger.Warn("router.stale_mapping", slog.String("jid", jid), slog.String("err", err.Error()))
+	}
+	sess, err := r.newSessionLocked(ctx, jid)
+	return sess, "", err
+}
+
+// newSessionLocked creates, persists and binds a fresh session for
+// jid. Caller holds r.mu.
+func (r *Router) newSessionLocked(ctx context.Context, jid string) (*agent.Session, error) {
 	sess := agent.NewSession("chat: " + jid)
 	sess.Sender = jid // enables /sessions to list this session for the sender later
 	if err := r.store.Save(ctx, sess); err != nil {

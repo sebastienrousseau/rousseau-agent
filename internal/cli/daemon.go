@@ -505,6 +505,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		AuditSink:     auditSink,
 		Approvals:     pendingApprovals,
 		BuildStamp:    fmt.Sprintf("%s (commit %s, built %s)", version, commit, buildDate),
+
+		SessionIdleTimeout: cfg.Agent.SessionIdleTimeout,
 	}
 	router := transport.NewRouter(ag, concrete, jidMap, opts.Logger, routerOpts)
 

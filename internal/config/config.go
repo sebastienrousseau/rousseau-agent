@@ -830,6 +830,12 @@ type AgentConfig struct {
 	// live Predictability numbers in `rousseau reliability`;
 	// leave off for token-sensitive deployments.
 	EnableConfidenceElicitation bool `mapstructure:"enable_confidence_elicitation"`
+	// SessionIdleTimeout starts a fresh chat session when a sender's
+	// current one has been idle longer than this, so a short reply
+	// days later is not taken as an answer to a stale question. The
+	// reply names the previous session for /resume. Default 12h;
+	// set to 0 to always continue the existing session.
+	SessionIdleTimeout time.Duration `mapstructure:"session_idle_timeout"`
 }
 
 // SkillBundlesConfig is the operator-facing view of the
@@ -1017,6 +1023,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
 	v.SetDefault("agent.max_iterations", 32)
+	v.SetDefault("agent.session_idle_timeout", "12h")
 	home, err := os.UserHomeDir()
 	if err == nil {
 		v.SetDefault("state.path", filepath.Join(home, ".local", "share", "rousseau", "sessions.db"))

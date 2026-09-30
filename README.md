@@ -456,7 +456,7 @@ then default**. The file lives at `~/.config/rousseau/config.yaml`;
 | `provider` | Which backend to use: `claudecli`, `anthropic`, `openai`, `openrouter`, `ollama`, `bedrock`, `vertex`, `router` |
 | `anthropic`, `openai`, `openrouter`, `ollama`, `bedrock`, `vertex`, `claudecli` | Per-provider credentials, model, endpoint |
 | `router` | `default`, `rules`, and the named `providers` the rules select |
-| `agent` | System prompt, `max_iterations`, skills directory and signature policy, compression, approver |
+| `agent` | System prompt, `max_iterations`, `session_idle_timeout`, skills directory and signature policy, compression, approver |
 | `log` | `level` and `format` |
 | `state` | Path to the SQLite database |
 | `recall` | Embedder, chunking, retrieval breadth, hybrid weight, purge window |
@@ -494,6 +494,7 @@ state:
 agent:
   system_prompt: ""            # empty falls back to the built-in default
   max_iterations: 32
+  session_idle_timeout: 12h      # fresh chat session after this much idle; 0 = never
   skills_dir: ~/.config/rousseau/skills
   compression:
     enabled: true

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -118,4 +119,22 @@ func TestIsNotExist_Variants(t *testing.T) {
 	assert.True(t, isNotExist(&os.PathError{Err: os.ErrNotExist}, &out))
 	assert.True(t, isNotExist(errors.New(`Config File "foo" Not Found in "."`), &out))
 	assert.False(t, isNotExist(errors.New("some other error"), &out))
+}
+
+func TestLoad_SessionIdleTimeout(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, 12*time.Hour, cfg.Agent.SessionIdleTimeout, "default")
+
+	for yaml, want := range map[string]time.Duration{
+		"agent:\n  session_idle_timeout: 30m\n": 30 * time.Minute,
+		"agent:\n  session_idle_timeout: 0\n":   0, // explicit opt-out
+	} {
+		path := filepath.Join(t.TempDir(), "cfg.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(yaml), 0o600))
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		assert.Equal(t, want, cfg.Agent.SessionIdleTimeout, yaml)
+	}
 }

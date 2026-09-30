@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -360,4 +361,58 @@ func TestRouter_HandleImageAttachmentReachesRunner(t *testing.T) {
 	assert.Equal(t, agent.ContentImage, runner.seen[1].Kind)
 	require.NotNil(t, runner.seen[1].Image)
 	assert.Equal(t, "whatsapp", runner.seen[1].Image.Source, "transport name must attribute the image")
+}
+
+// TestRouter_IdleSessionRotates pins the stale-thread guard: a message
+// arriving after SessionIdleTimeout lands in a fresh session (so "yes"
+// cannot approve a days-old question), the reply names the previous
+// session, and /resume can still reach it.
+func TestRouter_IdleSessionRotates(t *testing.T) {
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{SessionIdleTimeout: time.Hour})
+	ctx := context.Background()
+
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "want the rating?"})
+	require.NoError(t, err)
+	oldID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // asserted below via store
+	require.NotEmpty(t, oldID)
+
+	// Within the window: same session, no notice.
+	r.now = func() time.Time { return time.Now().Add(59 * time.Minute) }
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "still here"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply)
+	sameID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // equality is the assertion
+	assert.Equal(t, oldID, sameID)
+
+	// Past the window: fresh session, notice names the old one.
+	r.now = func() time.Time { return time.Now().Add(3 * time.Hour) }
+	reply, err = r.Handle(ctx, IncomingMessage{From: "x", Body: "yes"})
+	require.NoError(t, err)
+	newID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // inequality is the assertion
+	assert.NotEqual(t, oldID, newID)
+	assert.Contains(t, reply, "/resume "+shortSessionID(oldID))
+	assert.True(t, strings.HasSuffix(reply, "ok"), reply)
+	fresh := store.sessions[newID].Messages
+	require.NotEmpty(t, fresh)
+	assert.Equal(t, "yes", fresh[0].Content[0].Text, "fresh session starts at the new message, not the stale thread")
+	assert.Contains(t, store.sessions, oldID, "previous session is kept for /resume")
+}
+
+func TestRouter_IdleRotationDisabledByZero(t *testing.T) {
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{})
+	ctx := context.Background()
+
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "a"})
+	require.NoError(t, err)
+	r.now = func() time.Time { return time.Now().Add(30 * 24 * time.Hour) }
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "b"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply)
+	assert.Len(t, store.sessions, 1)
 }
