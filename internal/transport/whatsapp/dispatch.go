@@ -107,6 +107,16 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 		return
 	}
 
+	// Media recovery below downloads, and may transcribe, before the
+	// text path's allowlist gate would run. Gate here first so a
+	// stranger cannot cost bandwidth, CPU or transcription spend.
+	if res.Skip == SkipEmptyText && hasMedia(in.Event) && in.IsAllowed != nil {
+		if from := resolveFrom(in.Event, in.OwnID).String(); !in.IsAllowed(from) {
+			log.Info("whatsapp.dropped_pre_download", slog.String("from", from))
+			return
+		}
+	}
+
 	// Voice notes are the only skip-reason we deliberately try to
 	// recover: an audio-only message with no text still deserves a
 	// reply if we can transcribe it.
@@ -179,6 +189,13 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 	if res.Skip != SkipEmptyText {
 		log.Debug("whatsapp.skipped", slog.String("reason", string(res.Skip)))
 	}
+}
+
+// hasMedia reports whether evt carries a message kind Dispatch would
+// download (voice note or image).
+func hasMedia(evt *events.Message) bool {
+	m := evt.Message
+	return m.GetAudioMessage() != nil || m.GetImageMessage() != nil
 }
 
 // resolveFrom mirrors the sender-normalisation in ResolveInbound. It

@@ -50,9 +50,11 @@ type fakeDownloader struct {
 	audio    []byte
 	mimetype string
 	err      error
+	calls    int
 }
 
 func (f *fakeDownloader) Download(_ context.Context, _ Downloadable) ([]byte, string, error) {
+	f.calls++
 	return f.audio, f.mimetype, f.err
 }
 
