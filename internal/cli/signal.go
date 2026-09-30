@@ -30,7 +30,9 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			if acct == "" {
 				return errors.New("--account or signal.account is required")
 			}
-			setUnattendedPermissionDefault(opts, "signal")
+			if err := requirePermissionMode(opts, "signal"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -38,6 +40,9 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("signal", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err

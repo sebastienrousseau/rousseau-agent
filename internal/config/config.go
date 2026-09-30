@@ -602,6 +602,9 @@ type IMessageConfig struct {
 	ChatGUID     string `mapstructure:"chat_guid"`     // outbound target
 	PollInterval string `mapstructure:"poll_interval"` // duration string, e.g. "2s"
 	ReplyHeader  string `mapstructure:"reply_header"`
+	// Allowlist holds iMessage handles (phone numbers or Apple ID
+	// addresses, as BlueBubbles reports them) allowed to reach the agent.
+	Allowlist []string `mapstructure:"allowlist"`
 }
 
 // EmailConfig configures the IMAP+SMTP email transport.
@@ -618,6 +621,11 @@ type EmailConfig struct {
 
 	From        string `mapstructure:"from"`
 	ReplyHeader string `mapstructure:"reply_header"`
+	// Allowlist holds sender addresses allowed to reach the agent,
+	// matched case-insensitively. Note that a From header is easy to
+	// forge; pair this with a mailbox that only accepts mail passing
+	// your provider's SPF/DKIM/DMARC checks.
+	Allowlist []string `mapstructure:"allowlist"`
 }
 
 // SlackConfig configures the Slack Socket Mode transport.
@@ -1025,6 +1033,9 @@ func setDefaults(v *viper.Viper) {
 	// Explicit default so viper.AutomaticEnv picks up ROUSSEAU_CLAUDECLI_BARE
 	// (viper only checks env for keys it knows about via SetDefault/BindEnv).
 	v.SetDefault("claudecli.bare", false)
+	// Bound explicitly (no default) so ROUSSEAU_CLAUDECLI_PERMISSION_MODE
+	// works; unattended transports refuse to start without a mode.
+	_ = v.BindEnv("claudecli.permission_mode") //nolint:errcheck // BindEnv only errors on zero args
 	v.SetDefault("openrouter.base_url", "https://openrouter.ai/api/v1")
 	v.SetDefault("ollama.base_url", "http://localhost:11434/v1")
 	v.SetDefault("ollama.api_key", "not-required")

@@ -33,7 +33,9 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 				return errors.New("matrix.homeserver_url and matrix.access_token are required")
 			}
 			uid := firstNonEmpty(userID, cfg.Matrix.UserID)
-			setUnattendedPermissionDefault(opts, "matrix")
+			if err := requirePermissionMode(opts, "matrix"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -41,6 +43,9 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("matrix", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err

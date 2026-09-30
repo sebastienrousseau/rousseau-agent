@@ -35,7 +35,9 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			"numbers using unofficial clients — do not run this on a number you rely on.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			setUnattendedPermissionDefault(opts, "whatsapp")
+			if err := requirePermissionMode(opts, "whatsapp"); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 
 			if len(allowlist) == 0 {
@@ -48,6 +50,9 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				}
 			}
 
+			if err := requireSenderPolicy("whatsapp", allowlist, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allowlist)
 			if err != nil {
 				return err

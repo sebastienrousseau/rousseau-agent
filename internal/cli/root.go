@@ -38,6 +38,9 @@ type Options struct {
 	ConfigPath string
 	Config     *config.Config
 	Logger     *slog.Logger
+	// AllowAnyone is --allow-anyone: the explicit opt-in to run a chat
+	// transport with an empty sender allowlist.
+	AllowAnyone bool
 }
 
 // NewRoot constructs the root Cobra command.
@@ -60,6 +63,7 @@ func NewRoot(opts *Options) *cobra.Command {
 		},
 	}
 
+	root.PersistentFlags().BoolVar(&opts.AllowAnyone, "allow-anyone", false, "run a chat transport with no sender allowlist (anyone who can message the account reaches the agent)")
 	root.PersistentFlags().StringVar(&opts.ConfigPath, "config", "", "path to a config file (default: $XDG_CONFIG_HOME/rousseau/config.yaml)")
 
 	root.AddCommand(newChatCmd(opts))

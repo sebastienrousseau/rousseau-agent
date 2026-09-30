@@ -33,7 +33,9 @@ func newSlackCmd(opts *Options) *cobra.Command {
 			if app == "" || bot == "" {
 				return errors.New("slack.app_token and slack.bot_token are required")
 			}
-			setUnattendedPermissionDefault(opts, "slack")
+			if err := requirePermissionMode(opts, "slack"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -41,6 +43,9 @@ func newSlackCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("slack", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err

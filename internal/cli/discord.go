@@ -28,7 +28,9 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			if tok == "" {
 				return errors.New("discord.token is required")
 			}
-			setUnattendedPermissionDefault(opts, "discord")
+			if err := requirePermissionMode(opts, "discord"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -36,6 +38,9 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("discord", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err

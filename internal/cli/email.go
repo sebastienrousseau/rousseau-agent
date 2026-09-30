@@ -22,6 +22,7 @@ func newEmailCmd(opts *Options) *cobra.Command {
 		from         string
 		mailbox      string
 		pollInterval string
+		allow        []string
 	)
 	cmd := &cobra.Command{
 		Use:   "email",
@@ -48,10 +49,20 @@ func newEmailCmd(opts *Options) *cobra.Command {
 			if fromAddr == "" {
 				return errors.New("email.from is required")
 			}
-			setUnattendedPermissionDefault(opts, "email")
+			if err := requirePermissionMode(opts, "email"); err != nil {
+				return err
+			}
+
+			if len(allow) == 0 {
+				allow = cfg.Email.Allowlist
+			}
+			allow = normalizeEmailAllowlist(allow)
+			if err := requireSenderPolicy("email", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 
 			ctx := cmd.Context()
-			wiring, err := assembleDaemon(ctx, opts, nil)
+			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err
 			}
@@ -106,5 +117,6 @@ func newEmailCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&from, "from", "", "From: address")
 	cmd.Flags().StringVar(&mailbox, "mailbox", "", "IMAP mailbox (defaults to INBOX)")
 	cmd.Flags().StringVar(&pollInterval, "poll-interval", "", "polling cadence, e.g. 30s")
+	cmd.Flags().StringSliceVar(&allow, "allow", nil, "sender addresses allowed to reach the agent (repeatable, case-insensitive); falls back to email.allowlist")
 	return cmd
 }

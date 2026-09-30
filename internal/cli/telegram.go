@@ -29,7 +29,9 @@ func newTelegramCmd(opts *Options) *cobra.Command {
 			if tok == "" {
 				return errors.New("--token or telegram.token is required")
 			}
-			setUnattendedPermissionDefault(opts, "telegram")
+			if err := requirePermissionMode(opts, "telegram"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -37,6 +39,9 @@ func newTelegramCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("telegram", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err

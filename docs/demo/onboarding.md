@@ -151,7 +151,8 @@ rousseau cron add \
 |---|---|
 | `podman >= 5 required` | Update podman via your distro's package manager. |
 | `claude CLI not on $PATH` | Install Claude Code; or switch to `provider: anthropic` in the config. |
-| Silent hang after `whatsapp.incoming` | Missing `claudecli.permission_mode: bypassPermissions` in config. |
+| Daemon exits: `claudecli.permission_mode is not set` | Set `claudecli.permission_mode` (e.g. `bypassPermissions`) in config or `ROUSSEAU_CLAUDECLI_PERMISSION_MODE`. |
+| Daemon exits: `no sender allowlist configured` | Set `ROUSSEAU_WHATSAPP_ALLOW` / `--allow`, or pass `--allow-anyone`. |
 | `SQLITE_BUSY` during first pairing | Fixed in `55fdee3` — pull latest. |
 
 ---

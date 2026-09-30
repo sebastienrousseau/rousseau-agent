@@ -25,43 +25,6 @@ func makeDaemonOpts(t *testing.T) *Options {
 	}
 }
 
-func TestSetUnattendedPermissionDefault_SetsBypassForClaudeCLI(t *testing.T) {
-	opts := &Options{
-		Config: &config.Config{Provider: "claudecli"},
-		Logger: silentLogger(),
-	}
-	setUnattendedPermissionDefault(opts, "test")
-	assert.Equal(t, "bypassPermissions", opts.Config.ClaudeCLI.PermissionMode)
-}
-
-func TestSetUnattendedPermissionDefault_DefaultProvider(t *testing.T) {
-	// Empty provider is treated as claudecli — must still set bypass.
-	opts := &Options{Config: &config.Config{}, Logger: silentLogger()}
-	setUnattendedPermissionDefault(opts, "signal")
-	assert.Equal(t, "bypassPermissions", opts.Config.ClaudeCLI.PermissionMode)
-}
-
-func TestSetUnattendedPermissionDefault_LeavesExplicitValue(t *testing.T) {
-	opts := &Options{
-		Config: &config.Config{
-			Provider:  "claudecli",
-			ClaudeCLI: config.ClaudeCLIConfig{PermissionMode: "acceptEdits"},
-		},
-		Logger: silentLogger(),
-	}
-	setUnattendedPermissionDefault(opts, "whatsapp")
-	assert.Equal(t, "acceptEdits", opts.Config.ClaudeCLI.PermissionMode)
-}
-
-func TestSetUnattendedPermissionDefault_LeavesNonClaudeCLI(t *testing.T) {
-	opts := &Options{
-		Config: &config.Config{Provider: "anthropic"},
-		Logger: silentLogger(),
-	}
-	setUnattendedPermissionDefault(opts, "signal")
-	assert.Empty(t, opts.Config.ClaudeCLI.PermissionMode)
-}
-
 func TestAssembleDaemon_WhenProviderBuildFails(t *testing.T) {
 	opts := makeDaemonOpts(t)
 	opts.Config.Provider = "unknown"

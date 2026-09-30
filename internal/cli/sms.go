@@ -33,7 +33,9 @@ func newSMSCmd(opts *Options) *cobra.Command {
 			if prov == "" || fromNum == "" {
 				return errors.New("sms.provider and sms.from are required")
 			}
-			setUnattendedPermissionDefault(opts, "sms")
+			if err := requirePermissionMode(opts, "sms"); err != nil {
+				return err
+			}
 
 			ctx := cmd.Context()
 			wiring, err := assembleDaemon(ctx, opts, nil)

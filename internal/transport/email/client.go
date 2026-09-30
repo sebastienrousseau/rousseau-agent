@@ -241,10 +241,11 @@ func envelopeFrom(m *imapclient.FetchMessageBuffer) string {
 		return ""
 	}
 	a := m.Envelope.From[0]
+	// Lower-cased so allowlist matching is case-insensitive.
 	if a.Host == "" {
-		return a.Mailbox
+		return strings.ToLower(a.Mailbox)
 	}
-	return a.Mailbox + "@" + a.Host
+	return strings.ToLower(a.Mailbox + "@" + a.Host)
 }
 
 // extractBody pulls plain-text out of a fetched IMAP message. Full

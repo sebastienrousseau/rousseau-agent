@@ -73,6 +73,9 @@ func daemonOptsCancellingOn(t *testing.T, msg string) (*Options, context.Context
 			msg:    msg,
 			cancel: cancel,
 		}),
+		// These tests drive startup past the sender-policy gate to
+		// reach later failure branches; the gate has its own tests.
+		AllowAnyone: true,
 	}, ctx
 }
 
@@ -279,7 +282,8 @@ func TestTransportCmds_AssembleFailureSurfaces(t *testing.T) {
 					Provider: "not-a-real-provider",
 					State:    config.StateConfig{Path: filepath.Join(t.TempDir(), "s.db")},
 				},
-				Logger: silentLogger(),
+				Logger:      silentLogger(),
+				AllowAnyone: true, // reach the assembly failure past the sender-policy gate
 			}
 			tc.configs(opts.Config)
 			err := runCmd(t, tc.build(opts), context.Background(), nil)
@@ -570,6 +574,37 @@ func TestTransportCmds_CronStartFailureSurfaces(t *testing.T) {
 			err := runCmd(t, cmd, ctx, nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "cron:")
+		})
+	}
+}
+
+// TestTransportCmds_RefuseEmptyAllowlist pins the fail-closed gate
+// end to end: every inbound chat transport refuses to start with no
+// allowlist unless --allow-anyone was passed.
+func TestTransportCmds_RefuseEmptyAllowlist(t *testing.T) {
+	for name, build := range map[string]func(*Options) *cobra.Command{
+		"whatsapp": newWhatsAppCmd, "telegram": newTelegramCmd, "slack": newSlackCmd,
+		"discord": newDiscordCmd, "signal": newSignalCmd, "matrix": newMatrixCmd,
+		"imessage": newIMessageCmd, "email": newEmailCmd,
+	} {
+		t.Run(name, func(t *testing.T) {
+			opts, ctx := daemonOptsCancellingOn(t, "never-logged")
+			opts.AllowAnyone = false
+			t.Setenv(envWhatsAppAllow, "")
+			c := opts.Config
+			c.Telegram.Token = "t"
+			c.Slack.AppToken, c.Slack.BotToken = "a", "b"
+			c.Discord.Token = "t"
+			c.Signal.Account = "+15550100"
+			c.Matrix.HomeserverURL, c.Matrix.AccessToken = "http://x", "t"
+			c.IMessage.BaseURL, c.IMessage.Password = "http://x", "p"
+			c.Email = config.EmailConfig{
+				IMAPAddr: "i:993", IMAPUsername: "u", IMAPPassword: "p",
+				SMTPAddr: "s:587", SMTPUsername: "u", SMTPPassword: "p", From: "a@b.c",
+			}
+			err := runCmd(t, build(opts), ctx, nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--allow-anyone")
 		})
 	}
 }

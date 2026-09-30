@@ -981,9 +981,19 @@ exposure. Three controls narrow it:
    workspace, the state directory, and `~/.claude`. Nothing else on the
    host is visible from inside.
 
-Operators running unattended chat-transport daemons must either enforce
-`pattern` mode with a deny default or accept `bypassPermissions` with an
-explicit understanding of the exposure.
+Unattended chat-transport daemons fail closed on two points:
+
+- **Sender allowlist.** Each chat transport refuses to start with an empty
+  allowlist (`--allow` or `<transport>.allowlist`) unless `--allow-anyone`
+  is passed.
+- **Permission mode.** With the `claudecli` provider, `claude` runs its own
+  tools, so rousseau's `pattern` approver does not see those calls. The
+  daemon refuses to start until `claudecli.permission_mode` (or
+  `ROUSSEAU_CLAUDECLI_PERMISSION_MODE`) is set explicitly:
+  `bypassPermissions` lets claude run any tool for allowlisted senders;
+  `dontAsk` plus `claudecli.extra_args: ["--allowedTools", "..."]` limits
+  it to the listed tools. API providers (`anthropic`, `openai`, …) run
+  the `pattern` approver on every call.
 
 ### Credential handling
 

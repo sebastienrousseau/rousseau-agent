@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -240,20 +241,46 @@ func (w *daemonWiring) Cleanup() error {
 	return nil
 }
 
-// setUnattendedPermissionDefault forces the claudecli provider into a
-// permission mode that lets tool calls complete when the caller has no
-// interactive terminal. Emits a WARN so operators see the tradeoff.
-func setUnattendedPermissionDefault(opts *Options, transportName string) {
+// requirePermissionMode refuses to run an unattended claudecli daemon
+// whose permission mode was never chosen. It used to default silently
+// to bypassPermissions, letting any allowlisted chat message run any
+// tool, with only a WARN line to show for it. The operator now picks
+// the trade-off explicitly (config or ROUSSEAU_CLAUDECLI_PERMISSION_MODE).
+// Other providers run rousseau's own approver and are unaffected.
+func requirePermissionMode(opts *Options, transportName string) error {
 	cfg := opts.Config
 	if (cfg.Provider != "" && cfg.Provider != "claudecli") || cfg.ClaudeCLI.PermissionMode != "" {
-		return
+		return nil
 	}
-	cfg.ClaudeCLI.PermissionMode = "bypassPermissions"
-	opts.Logger.Warn(transportName+".permission_mode_default",
-		"mode", "bypassPermissions",
-		"why", "no claudecli.permission_mode set; unattended daemon cannot approve prompts",
-		"how_to_override", "set claudecli.permission_mode in ~/.config/rousseau/config.yaml (acceptEdits is a narrower alternative)",
-	)
+	return fmt.Errorf("%s: claudecli.permission_mode is not set. An unattended daemon cannot answer "+
+		"permission prompts, so choose explicitly in config.yaml or via ROUSSEAU_CLAUDECLI_PERMISSION_MODE: "+
+		"\"bypassPermissions\" lets claude run any tool for allowlisted senders (the previous implicit default); "+
+		"\"dontAsk\" denies anything not pre-approved, e.g. claudecli.extra_args: [\"--allowedTools\", \"Read,Grep,Glob\"]",
+		transportName)
+}
+
+// requireSenderPolicy refuses to start a chat transport with an empty
+// allowlist unless the operator passed --allow-anyone. An empty
+// allowlist means every sender reaches the agent (and its tools).
+func requireSenderPolicy(transportName string, allowlist []string, allowAnyone bool) error {
+	if len(allowlist) > 0 || allowAnyone {
+		return nil
+	}
+	return fmt.Errorf("%s: no sender allowlist configured, so anyone who can reach this %s account "+
+		"could drive the agent. Set --allow / %s.allowlist, or pass --allow-anyone to accept that explicitly",
+		transportName, transportName, transportName)
+}
+
+// normalizeEmailAllowlist trims and lower-cases addresses so matching
+// is case-insensitive (the email transport lower-cases senders too).
+func normalizeEmailAllowlist(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, a := range in {
+		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // assembleDaemon opens the shared state, wires every agent option, and

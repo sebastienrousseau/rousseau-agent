@@ -16,6 +16,7 @@ func newIMessageCmd(opts *Options) *cobra.Command {
 		baseURL      string
 		password     string
 		pollInterval string
+		allow        []string
 	)
 	cmd := &cobra.Command{
 		Use:   "imessage",
@@ -31,10 +32,19 @@ func newIMessageCmd(opts *Options) *cobra.Command {
 			if base == "" || pass == "" {
 				return errors.New("imessage.base_url and imessage.password are required")
 			}
-			setUnattendedPermissionDefault(opts, "imessage")
+			if err := requirePermissionMode(opts, "imessage"); err != nil {
+				return err
+			}
+
+			if len(allow) == 0 {
+				allow = cfg.IMessage.Allowlist
+			}
+			if err := requireSenderPolicy("imessage", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 
 			ctx := cmd.Context()
-			wiring, err := assembleDaemon(ctx, opts, nil)
+			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err
 			}
@@ -87,5 +97,6 @@ func newIMessageCmd(opts *Options) *cobra.Command {
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "BlueBubbles server URL, e.g. http://localhost:1234")
 	cmd.Flags().StringVar(&password, "password", "", "BlueBubbles server password")
 	cmd.Flags().StringVar(&pollInterval, "poll-interval", "", "polling cadence, e.g. 5s")
+	cmd.Flags().StringSliceVar(&allow, "allow", nil, "iMessage handles (phone numbers or Apple ID addresses) allowed to reach the agent (repeatable); falls back to imessage.allowlist")
 	return cmd
 }
