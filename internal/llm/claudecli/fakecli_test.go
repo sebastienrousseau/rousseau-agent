@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -682,4 +683,38 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestStream_OversizedLineDoesNotDeadlock pins that a stream line over
+// the per-line cap is skipped while the pipe keeps draining. The old
+// scanner stopped reading on bufio.ErrTooLong, the child blocked on a
+// full pipe, and cmd.Wait never returned.
+func TestStream_OversizedLineDoesNotDeadlock(t *testing.T) {
+	old := maxStreamLine
+	maxStreamLine = 256 * 1024
+	t.Cleanup(func() { maxStreamLine = old })
+
+	huge := `{"type":"user","message":{"content":[{"type":"tool_result","content":"` +
+		strings.Repeat("x", 1024*1024) + `"}]}}`
+	cli := newFakeCLI(t, ndjson(huge, resultLine), "", 0)
+	p := New(Config{Binary: cli.path})
+
+	evs, rep, err := p.Stream(context.Background(), agent.Request{
+		Messages: []agent.Message{agent.NewUserText("go")},
+	})
+	require.NoError(t, err)
+
+	done := make(chan agent.StreamReport, 1)
+	go func() {
+		for range evs {
+		}
+		done <- <-rep
+	}()
+	select {
+	case r := <-done:
+		require.NoError(t, r.Err)
+		assert.Equal(t, "final answer", r.Response.Message.Content[0].Text)
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream deadlocked on an oversized line")
+	}
 }

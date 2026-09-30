@@ -229,8 +229,7 @@ var _ agent.StreamingProvider = (*Provider)(nil)
 // once the terminal "result" line arrives. The events channel is NOT
 // closed by parseStream; the caller owns its lifetime.
 func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, error) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	br := bufio.NewReaderSize(r, 64*1024)
 	var final agent.Response
 	var haveResult bool
 	// lastResultErr captures a `type:"result"` line whose parseResult
@@ -241,9 +240,20 @@ func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, 
 	// haveResult so the happy path stays untouched.
 	var lastResultErr error
 
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
+	for {
+		line, oversized, err := readStreamLine(br)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return agent.Response{}, fmt.Errorf("claudecli: read stream: %w", err)
+		}
+		if oversized {
+			slog.Default().Warn("claudecli.stream_line_skipped",
+				slog.Int("max_bytes", maxStreamLine))
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 || line[0] != '{' {
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			continue
 		}
 		raw := append(json.RawMessage(nil), line...)
@@ -256,9 +266,9 @@ func parseStream(r io.Reader, events chan<- agent.StreamEvent) (agent.Response, 
 		} else if resultErr != nil {
 			lastResultErr = resultErr
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return agent.Response{}, fmt.Errorf("claudecli: read stream: %w", err)
+		if errors.Is(err, io.EOF) {
+			break
+		}
 	}
 	if !haveResult {
 		if lastResultErr != nil {
@@ -366,4 +376,39 @@ func hasToolUse(msg json.RawMessage) bool {
 		}
 	}
 	return false
+}
+
+// maxStreamLine caps one stream-json line held in memory. A larger line
+// (typically a huge tool result echoed back) is skipped, never fatal:
+// the reader keeps draining stdout so the child can finish writing.
+// Stopping on the first oversized line used to leave the child blocked
+// on a full pipe and cmd.Wait hung for the rest of the turn. A var so
+// tests can lower it.
+var maxStreamLine = 16 << 20
+
+// readStreamLine returns the next newline-terminated line. Lines longer
+// than maxStreamLine are consumed to their end and reported as
+// oversized with no content. The error is io.EOF at the end of input,
+// possibly alongside a final unterminated line.
+func readStreamLine(br *bufio.Reader) ([]byte, bool, error) {
+	var line []byte
+	oversized := false
+	for {
+		frag, err := br.ReadSlice('\n')
+		if !oversized {
+			if len(line)+len(frag) > maxStreamLine {
+				oversized, line = true, nil
+			} else {
+				line = append(line, frag...)
+			}
+		}
+		switch {
+		case err == nil:
+			return line, oversized, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		default:
+			return line, oversized, err
+		}
+	}
 }
