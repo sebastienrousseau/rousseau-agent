@@ -416,3 +416,33 @@ func TestRouter_IdleRotationDisabledByZero(t *testing.T) {
 	assert.Equal(t, "ok", reply)
 	assert.Len(t, store.sessions, 1)
 }
+
+// TestRouter_ResumeOfIdleSessionSticks pins that /resume counts as
+// activity: resuming a session older than SessionIdleTimeout must not
+// rotate away on the very next message (the notice would otherwise
+// point at a /resume that can never stick).
+func TestRouter_ResumeOfIdleSessionSticks(t *testing.T) {
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{SessionIdleTimeout: time.Hour})
+	ctx := context.Background()
+
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "old thread"})
+	require.NoError(t, err)
+	oldID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // asserted via equality below
+
+	r.now = func() time.Time { return time.Now().Add(3 * time.Hour) }
+	_, err = r.Handle(ctx, IncomingMessage{From: "x", Body: "new topic"}) // rotates
+	require.NoError(t, err)
+
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "/resume " + shortSessionID(oldID)})
+	require.NoError(t, err)
+	require.Contains(t, reply, "resumed session")
+
+	reply, err = r.Handle(ctx, IncomingMessage{From: "x", Body: "continue"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply, "no rotation notice right after /resume")
+	gotID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // equality is the assertion
+	assert.Equal(t, oldID, gotID)
+}

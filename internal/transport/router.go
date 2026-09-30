@@ -746,7 +746,22 @@ func (r *Router) cmdResume(ctx context.Context, from, arg string) (string, error
 	}
 	target, err := r.findSessionForSender(ctx, from, arg)
 	if err != nil {
-		return err.Error(), nil //nolint:nilerr // legible chat text; the actual error is user-facing
+		return err.Error(), nil // legible chat text; the lookup error is user-facing
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Resuming is activity: without touching UpdatedAt, idle rotation
+	// would move the sender off a resumed old session on the very
+	// next message.
+	if r.idleAfter > 0 {
+		sess, err := r.store.Load(ctx, target.ID)
+		if err != nil {
+			return "", fmt.Errorf("load resumed session: %w", err)
+		}
+		sess.UpdatedAt = r.now().UTC()
+		if err := r.store.Save(ctx, sess); err != nil {
+			return "", fmt.Errorf("touch resumed session: %w", err)
+		}
 	}
 	if err := r.jidMap.Put(ctx, from, target.ID); err != nil {
 		return "", fmt.Errorf("rebind jid: %w", err)
