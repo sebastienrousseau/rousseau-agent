@@ -6,19 +6,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type stubCompProvider struct {
-	reply string
-	err   error
-	calls int
+	reply    string
+	err      error
+	calls    int
+	sessions []string
 }
 
 func (p *stubCompProvider) Name() string { return "stub" }
-func (p *stubCompProvider) Complete(_ context.Context, _ Request) (Response, error) {
+func (p *stubCompProvider) Complete(_ context.Context, req Request) (Response, error) {
 	p.calls++
+	p.sessions = append(p.sessions, req.SessionID)
 	if p.err != nil {
 		return Response{}, p.err
 	}
@@ -152,4 +155,30 @@ func TestItoa(t *testing.T) {
 	assert.Equal(t, "0", itoa(0))
 	assert.Equal(t, "12", itoa(12))
 	assert.Equal(t, "-45", itoa(-45))
+}
+
+// TestLLMCompressor_UsesAFreshUUIDSession pins the compressor's
+// provider session id: the claude CLI rejects anything but a UUID
+// ("Invalid session ID. Must be a valid UUID."), so "compress-<id>"
+// made every compression fail on the default provider. Each call gets
+// its own UUID so the summary never lands in, or reuses, another
+// conversation's transcript.
+func TestLLMCompressor_UsesAFreshUUIDSession(t *testing.T) {
+	prov := &stubCompProvider{reply: "summary"}
+	c := &LLMCompressor{Provider: prov, TriggerMessages: 4, KeepRecent: 1}
+	for i := 0; i < 2; i++ {
+		s := NewSession("x")
+		for j := 0; j < 6; j++ {
+			s.Append(NewUserText("msg"))
+		}
+		changed, err := c.Compress(context.Background(), s)
+		require.NoError(t, err)
+		require.True(t, changed)
+	}
+	require.Len(t, prov.sessions, 2)
+	for _, id := range prov.sessions {
+		_, err := uuid.Parse(id)
+		assert.NoError(t, err, "session id %q must be a UUID", id)
+	}
+	assert.NotEqual(t, prov.sessions[0], prov.sessions[1])
 }

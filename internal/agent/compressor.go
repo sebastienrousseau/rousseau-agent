@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Compressor rewrites a Session in place so its message count fits
@@ -91,7 +93,7 @@ func (c *LLMCompressor) Compress(ctx context.Context, s *Session) (bool, error) 
 	old := s.Messages[:len(s.Messages)-keep]
 	recent := s.Messages[len(s.Messages)-keep:]
 
-	summary, err := c.summarise(ctx, s.ID, old)
+	summary, err := c.summarise(ctx, old)
 	if err != nil {
 		return false, err
 	}
@@ -131,7 +133,7 @@ func (c *LLMCompressor) headAlreadyCompressed(s *Session) bool {
 }
 
 // summarise renders the summarisation prompt and asks the Provider.
-func (c *LLMCompressor) summarise(ctx context.Context, sessionID string, msgs []Message) (string, error) {
+func (c *LLMCompressor) summarise(ctx context.Context, msgs []Message) (string, error) {
 	prompt := c.SummaryPrompt
 	if prompt == "" {
 		prompt = defaultSummaryPrompt
@@ -162,10 +164,12 @@ func (c *LLMCompressor) summarise(ctx context.Context, sessionID string, msgs []
 		b.WriteString("\n")
 	}
 
-	// The Provider is called with a fresh session id so it does not
-	// pollute the source session's history.
+	// A fresh UUID per call keeps the summary out of the source
+	// session's history (and out of any other transcript). It must be
+	// a bare UUID: the claude CLI rejects anything else, which made
+	// the old "compress-<id>" fail every compression on claudecli.
 	req := Request{
-		SessionID: "compress-" + sessionID,
+		SessionID: uuid.NewString(),
 		Messages:  []Message{NewUserText(b.String())},
 	}
 	resp, err := c.Provider.Complete(ctx, req)
