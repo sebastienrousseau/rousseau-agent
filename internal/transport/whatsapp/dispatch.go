@@ -227,7 +227,8 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 	// senders because the daemon-side Router silently returns ("", nil)
 	// for rejected messages, which dispatch treated as an ordinary
 	// empty reply and acked with ✅.
-	if in.IsAllowed != nil && !in.IsAllowed(res.Msg.From) && !(in.SSOCommands && isSSOCommand(res.Msg.Body)) {
+	ssoBootstrap := in.SSOCommands && isSSOCommand(res.Msg.Body)
+	if in.IsAllowed != nil && !in.IsAllowed(res.Msg.From) && !ssoBootstrap {
 		log.Info("whatsapp.dropped_pre_reaction", slog.String("from", res.Msg.From))
 		return
 	}
