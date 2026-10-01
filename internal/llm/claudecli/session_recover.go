@@ -186,3 +186,48 @@ func rotateSessionFile(path string, now func() time.Time) (bool, error) {
 	}
 	return true, nil
 }
+
+// claudeConfigDir is where claude keeps its state: $CLAUDE_CONFIG_DIR,
+// else $HOME/.claude.
+func claudeConfigDir() (string, error) {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".claude"), nil
+}
+
+// EraseTranscripts deletes claude's transcripts for the given session
+// ids, in every project directory and including rotated copies
+// (<id>.jsonl.rotated-*), and returns how many files it removed. GDPR
+// erasure needs this: claude keeps its own copy of each conversation
+// outside rousseau's store. Ids that are not plain file names are
+// skipped.
+func EraseTranscripts(ids []string) (int, error) {
+	dir, err := claudeConfigDir()
+	if err != nil {
+		return 0, fmt.Errorf("claudecli: erase: %w", err)
+	}
+	n := 0
+	for _, id := range ids {
+		if id == "" || id != filepath.Base(id) || strings.ContainsAny(id, `*?[\`) {
+			continue
+		}
+		for _, pattern := range []string{id + ".jsonl", id + ".jsonl.*"} {
+			matches, err := filepath.Glob(filepath.Join(dir, "projects", "*", pattern))
+			if err != nil {
+				return n, fmt.Errorf("claudecli: erase: %w", err)
+			}
+			for _, m := range matches {
+				if err := os.Remove(m); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return n, fmt.Errorf("claudecli: erase %s: %w", m, err)
+				}
+				n++
+			}
+		}
+	}
+	return n, nil
+}
