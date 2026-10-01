@@ -7,7 +7,7 @@
   <em>A self-hosted AI agent daemon for teams that cannot use SaaS.
   Single static Go binary, rootless container, offline-verified
   license — deployable inside your perimeter with enforced SSO,
-  OPA policy, and signed audit egress to your SIEM. Reachable from
+  OPA policy, and tamper-evident audit egress to your SIEM. Reachable from
   the chat transports your organisation already runs.</em>
 </p>
 

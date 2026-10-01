@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -496,7 +497,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		}
 		chainStore = cs
 	}
-	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, chainStore, opts.Logger)
+	auditSink, err := buildAuditSink(cfg.Observability.AuditEgress, checker, chainStore, opts.Logger)
+	if err != nil {
+		closeMCPClients(mcpClients, opts.Logger)
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
 
 	// Snapshot the licence state into the audit trail so the
 	// SIEM has a boot-time record of "what tier is this daemon
@@ -725,7 +731,7 @@ func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Check
 // A "daemon.start" record is stamped as the first Emit so
 // operators can verify their pipeline works end-to-end without
 // waiting for real activity.
-func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chainStore audit_egress.ChainStore, logger *slog.Logger) audit_egress.Sink {
+func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chainStore audit_egress.ChainStore, logger *slog.Logger) (audit_egress.Sink, error) {
 	inner := audit_egress.New(audit_egress.Config{
 		Kind:          audit_egress.Kind(cfg.Kind),
 		Endpoint:      cfg.Endpoint,
@@ -738,13 +744,20 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chain
 	// Nop → no chain wrap. Wrapping a Nop would waste hash
 	// computation on records that never leave the process.
 	if _, isNop := inner.(audit_egress.Nop); isNop {
-		return inner
+		return inner, nil
 	}
 	sink := inner
 	if cfg.Chained {
 		opts := []audit_egress.ChainOption{audit_egress.WithChainLogger(logger)}
 		if chainStore != nil {
 			opts = append(opts, audit_egress.WithChainStore(chainStore))
+		}
+		if cfg.ChainHMACKeyFile != "" {
+			key, err := readChainKey(cfg.ChainHMACKeyFile)
+			if err != nil {
+				return nil, err
+			}
+			opts = append(opts, audit_egress.WithChainHMACKey(key))
 		}
 		sink = audit_egress.NewChainedSink(inner, opts...)
 	}
@@ -758,7 +771,7 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chain
 		Object:   "daemon",
 		Result:   "success",
 	})
-	return sink
+	return sink, nil
 }
 
 // emitLicenseSnapshot writes one Category=license record to sink
@@ -1066,4 +1079,18 @@ func startPolicyBridge(ctx context.Context, provider agent.Provider, ag *agent.A
 // commands with.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// readChainKey loads the audit chain HMAC key. Surrounding whitespace
+// is trimmed (keys are often written with a trailing newline).
+func readChainKey(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // operator-configured path
+	if err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+	key := bytes.TrimSpace(raw)
+	if len(key) < 32 {
+		return nil, fmt.Errorf("audit chain key %s: %d bytes, need at least 32", path, len(key))
+	}
+	return key, nil
 }

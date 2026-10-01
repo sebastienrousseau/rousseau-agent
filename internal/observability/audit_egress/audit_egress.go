@@ -188,6 +188,12 @@ type ChainInfo struct {
 	// or the empty string for the first record. A verifier
 	// reads PrevHash to detect insertion / deletion / reorder.
 	PrevHash string
+	// MAC is a hex HMAC-SHA256 of Hash under the operator's chain
+	// key, set only when a key is configured. Hash alone is
+	// tamper-evident only against someone who cannot recompute it;
+	// the MAC also holds against someone who can rewrite records
+	// but does not hold the key. See VerifyChainMAC.
+	MAC string
 }
 
 // Sink is the egress surface every enterprise-only backend

@@ -582,6 +582,13 @@ type AuditEgressConfig struct {
 	// Compliance-officer visible feature; recommended for SOC 2 /
 	// ISO 27001 / HIPAA audit-trail requirements.
 	Chained bool `mapstructure:"chained"`
+	// ChainHMACKeyFile, with Chained, adds a keyed MAC to every
+	// record (rousseau.audit.chain.mac) so an edited and re-hashed
+	// chain is detectable by a verifier holding the key. The file
+	// holds at least 32 bytes; mount it from a podman secret the
+	// agent's tools cannot read. A configured file that cannot be
+	// read stops startup.
+	ChainHMACKeyFile string `mapstructure:"chain_hmac_key_file"`
 }
 
 // SMSConfig configures the Twilio/Vonage SMS transport.
