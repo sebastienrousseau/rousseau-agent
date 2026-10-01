@@ -113,6 +113,9 @@ type daemonWiring struct {
 	// otelShutdown flushes the tracer; set by StartBackgroundServers,
 	// called by Cleanup.
 	otelShutdown func(context.Context) error
+	// stopBackground cancels and waits for goroutines assembleDaemon
+	// started (the reliability pruner). Called first by Cleanup.
+	stopBackground func()
 	// toolgate answers claude's PreToolUse hook with this daemon's
 	// approver (nil when the provider is not claudecli or the bridge
 	// is disabled). Closed by Cleanup.
@@ -222,6 +225,10 @@ func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
 // wiring.Sessions.Close() instead leaks MCP subprocesses and never
 // emits or flushes the daemon.stop audit record.
 func (w *daemonWiring) Cleanup() error {
+	if w.stopBackground != nil {
+		w.stopBackground()
+		w.stopBackground = nil
+	}
 	if w.toolgate != nil {
 		_ = w.toolgate.Close() //nolint:errcheck // best-effort; removes the socket dir
 		w.toolgate = nil
@@ -388,10 +395,19 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// daemon's ctx is alive; a nil store (postgres deployment
 	// today) disables the loop cleanly via the Pruner interface
 	// check inside RunPruner.
+	// Background work owned by the wiring: Cleanup cancels and waits
+	// for it, so nothing touches the store after it is closed.
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	var bgWG sync.WaitGroup
+	stopBackground := func() { bgCancel(); bgWG.Wait() }
 	if pr, ok := reliabilityStore.(reliability.Pruner); ok {
-		go reliability.RunPruner(ctx, pr, reliability.PruneConfig{
-			Logger: opts.Logger,
-		})
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			reliability.RunPruner(bgCtx, pr, reliability.PruneConfig{
+				Logger: opts.Logger,
+			})
+		}()
 	}
 
 	registry := tools.NewRegistry()
@@ -639,34 +655,35 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 
 	return &daemonWiring{
-		toolgate:     gate,
-		Provider:     provider,
-		Agent:        ag,
-		Registry:     registry,
-		Router:       router,
-		CronStore:    cronStore,
-		Sessions:     sessions,
-		Concrete:     concrete,
-		JIDMap:       jidMap,
-		ClaudeCache:  claudeCache,
-		CostStore:    costStore,
-		Identities:   identities,
-		routerOpts:   routerOpts,
-		MCPClients:   mcpClients,
-		RateLimiters: rateLimiters,
-		Logger:       opts.Logger,
-		Progress:     progressBus,
-		Licence:      checker,
-		SSOBindings:  ssoStore,
-		AuditSink:    auditSink,
-		SCIMServer:   scimServer,
-		SCIMAddr:     scimAddr,
-		MetricsAddr:  cfg.Observability.MetricsAddr,
-		OTLPEndpoint: cfg.Observability.OTLPEndpoint,
-		TurnTimeout:  cfg.Agent.TurnTimeout,
-		turnLimiter:  transport.NewTurnLimiter(cfg.Agent.MaxConcurrentTurns, opts.Logger),
-		A2A:          a2aRt,
-		A2AClients:   a2aClients,
+		stopBackground: stopBackground,
+		toolgate:       gate,
+		Provider:       provider,
+		Agent:          ag,
+		Registry:       registry,
+		Router:         router,
+		CronStore:      cronStore,
+		Sessions:       sessions,
+		Concrete:       concrete,
+		JIDMap:         jidMap,
+		ClaudeCache:    claudeCache,
+		CostStore:      costStore,
+		Identities:     identities,
+		routerOpts:     routerOpts,
+		MCPClients:     mcpClients,
+		RateLimiters:   rateLimiters,
+		Logger:         opts.Logger,
+		Progress:       progressBus,
+		Licence:        checker,
+		SSOBindings:    ssoStore,
+		AuditSink:      auditSink,
+		SCIMServer:     scimServer,
+		SCIMAddr:       scimAddr,
+		MetricsAddr:    cfg.Observability.MetricsAddr,
+		OTLPEndpoint:   cfg.Observability.OTLPEndpoint,
+		TurnTimeout:    cfg.Agent.TurnTimeout,
+		turnLimiter:    transport.NewTurnLimiter(cfg.Agent.MaxConcurrentTurns, opts.Logger),
+		A2A:            a2aRt,
+		A2AClients:     a2aClients,
 	}, nil
 }
 

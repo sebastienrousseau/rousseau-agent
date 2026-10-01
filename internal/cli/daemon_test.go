@@ -39,7 +39,7 @@ func TestAssembleDaemon_HappyPath(t *testing.T) {
 
 	wiring, err := assembleDaemon(context.Background(), opts, []string{"1@s.whatsapp.net"})
 	require.NoError(t, err)
-	defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup: closes everything assembleDaemon started
 
 	assert.NotNil(t, wiring.Provider)
 	assert.NotNil(t, wiring.Agent)
@@ -64,7 +64,7 @@ func TestTransportHandler_RouterCarriesIdentity(t *testing.T) {
 
 	wiring, err := assembleDaemon(context.Background(), opts, nil)
 	require.NoError(t, err)
-	defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup: closes everything assembleDaemon started
 
 	// TransportHandler triggers routerFor("whatsapp"). Repeated
 	// calls must return the cached router, not build fresh ones.
@@ -83,7 +83,7 @@ func TestStartCron_StartsAndShutsDownCleanly(t *testing.T) {
 
 	wiring, err := assembleDaemon(context.Background(), opts, nil)
 	require.NoError(t, err)
-	defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // test cleanup
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup: closes everything assembleDaemon started
 
 	delivery := func(context.Context, string, string) error { return nil }
 	shutdown, err := wiring.startCron(context.Background(), delivery, silentLogger())
