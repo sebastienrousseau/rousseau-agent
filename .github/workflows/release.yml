@@ -19,10 +19,10 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
           cache: true
@@ -32,16 +32,17 @@ jobs:
       # goreleaser — the alternative is dropping SBOMs, which would
       # regress the supply-chain story (README claims SBOM-per-release).
       - name: install syft (SBOM generator)
-        uses: anchore/sbom-action/download-syft@v0
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
       # cosign for goreleaser's `signs:` block. Keyless mode signs
       # via the Actions OIDC identity — no long-lived key or
       # password, transparent Sigstore log entry per artifact.
       - name: install cosign (keyless artifact signing)
-        uses: sigstore/cosign-installer@v3
-      - uses: goreleaser/goreleaser-action@v7
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser
-          version: latest
+          # Pinned: the release path must not change under us between tags.
+          version: v2.18.2
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
