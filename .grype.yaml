@@ -7,12 +7,14 @@
 # The gate itself lives in .github/workflows/agent-images.yml and
 # .github/workflows/container-release.yml at severity-cutoff: high.
 #
-# SCOPE: these exceptions exist for the BUILDER image, which is a
+# SCOPE: most exceptions exist for the BUILDER image, which is a
 # development environment. It holds no credentials, exposes no network
 # service, and is not what runs in production. The runtime images
-# (docker/Dockerfile, .distroless, .lite) are gated with no exceptions
-# at all -- those hold a WhatsApp session and Claude OAuth tokens, and
-# anything found in them is a real finding to act on.
+# (docker/Dockerfile, .distroless, .lite) hold a WhatsApp session and
+# Claude OAuth tokens; anything found in them is a real finding to act
+# on. The only runtime exceptions (last section) are vulnerabilities
+# with NO fixed version anywhere upstream, and verified false
+# positives; the no-fix rules expire by themselves the day a fix ships.
 
 ignore:
   # ---------------------------------------------------------------
@@ -65,3 +67,70 @@ ignore:
   - package:
       name: "openjdk"
       version: "1.10.0"
+
+  # ---------------------------------------------------------------
+  # Runtime image (docker/Dockerfile): no fix exists upstream.
+  #
+  # binutils (pulled in by build-base, which the agent needs to compile
+  # code) and zlib: Alpine has published no fixed package for these
+  # CVEs (grype reports fix-state "unknown"). The rule matches only that
+# state: once
+  # Alpine ships a fix, the rule stops matching, the gate fails, and the
+  # image rebuild (which runs `apk upgrade`) picks the fix up.
+  #
+  # REMOVE WHEN: Alpine publishes fixed binutils / zlib packages.
+  - package:
+      name: "binutils"
+      type: "apk"
+    fix-state: "unknown"
+  - package:
+      name: "zlib"
+      type: "apk"
+    fix-state: "unknown"
+  - package:
+      name: "zlib-dev"
+      type: "apk"
+    fix-state: "unknown"
+
+  # False positive: CVE-2015-8768 is for "click", the Ubuntu Touch
+  # package-build tool, matched to the Python Click library (py3-click)
+  # by CPE name alone. The Python library is not affected.
+  #
+  # REMOVE WHEN: grype stops matching click_project:click to py3-click.
+  - vulnerability: "CVE-2015-8768"
+    package:
+      name: "py3-click"
+
+  # CVE-2026-82049 in CPython: the only published fix is 3.14.0b1; no
+  # 3.12.x release carries it yet. The affected interpreter is the
+  # mise-managed python@3.12 the agent's coding tools use, not part of
+  # the daemon. Scoped to that install path.
+  #
+  # REMOVE WHEN: a fixed 3.12.x ships (then bump the Dockerfile's
+  # `mise use -g python@3.12` rebuild), or the image moves to 3.14.
+  - vulnerability: "CVE-2026-82049"
+    package:
+      name: "python"
+      location: "/home/rousseau/.local/share/mise/installs/python/**"
+
+  # npm 12.2.0 (the latest release, pinned in docker/Dockerfile) bundles
+  # undici 6.28.0 and brace-expansion 5.0.9 inside its own
+  # node_modules; fixed versions exist upstream but no npm release
+  # carries them yet, and bundled dependencies cannot be updated in
+  # place. npm stays in the image because the agent uses it for
+  # JavaScript projects. Scoped to npm's bundled copies only.
+  #
+  # REMOVE WHEN: an npm release bundles undici >= 6.28.1 and
+  # brace-expansion >= 5.0.11 (bump NPM_VERSION in docker/Dockerfile).
+  - vulnerability: "GHSA-rfgv-xxqx-mfg5"
+    package:
+      name: "undici"
+      location: "/usr/local/lib/node_modules/npm/node_modules/undici/**"
+  - vulnerability: "GHSA-6j4f-fj2g-mc7p"
+    package:
+      name: "brace-expansion"
+      location: "/usr/local/lib/node_modules/npm/node_modules/brace-expansion/**"
+  - vulnerability: "GHSA-qhr7-859c-m2p7"
+    package:
+      name: "brace-expansion"
+      location: "/usr/local/lib/node_modules/npm/node_modules/brace-expansion/**"

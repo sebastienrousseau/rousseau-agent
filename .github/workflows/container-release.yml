@@ -90,7 +90,7 @@ jobs:
         include:
           - flavour: full
             dockerfile: docker/Dockerfile
-            gate: false
+            gate: true
           - flavour: distroless
             dockerfile: docker/Dockerfile.distroless
             gate: true
@@ -129,8 +129,8 @@ jobs:
           format: spdx-json
           artifact-name: rousseau-agent-${{ matrix.flavour }}.spdx.json
 
-      # BLOCKING for distroless, report-only for full — same
-      # rationale as before the refactor. See flavour comments above.
+      # BLOCKING for both flavours at high and above. Exceptions live
+      # in .grype.yaml, each with its reason and removal condition.
       - name: Scan for vulnerabilities
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
@@ -237,7 +237,7 @@ jobs:
         include:
           - flavour: full
             tag_prefix: ""
-            gate: false
+            gate: true
           - flavour: distroless
             tag_prefix: "distroless-"
             gate: true
@@ -331,8 +331,8 @@ jobs:
           format: spdx-json
           artifact-name: rousseau-agent-${{ matrix.flavour }}.spdx.json
 
-      # BLOCKING for distroless, report-only for full — same rationale
-      # as pre-refactor. Grype scans one arch of the multi-arch
+      # BLOCKING for both flavours at high and above (exceptions in
+      # .grype.yaml). Grype scans one arch of the multi-arch
       # manifest by default; the amd64 image is what most operators
       # will pull first.
       - name: Scan for vulnerabilities

@@ -71,7 +71,6 @@ RUN apk upgrade --no-cache \
  && apk add --no-cache \
       bash \
       git \
-      github-cli \
       openssh-client \
       gnupg \
       curl \
@@ -111,11 +110,46 @@ RUN apk upgrade --no-cache \
 
 # Global npm additions the agent's flow relies on. pnpm covers repos
 # with pnpm-lock.yaml; yarn already ships with the node base image.
+# npm itself is upgraded first: the copy bundled with the node base
+# image carries vulnerable dependencies (brace-expansion, pacote,
+# sigstore, ip-address, picomatch) that fail the image's CVE gate.
+ARG NPM_VERSION=12.2.0
+RUN npm install -g npm@${NPM_VERSION} && npm --version
 RUN npm install -g pnpm
 
-# chezmoi (dotfiles manager) comes from Alpine's signed package rather
-# than a `curl | sh` installer, fixed by the pinned base image.
-RUN apk add --no-cache chezmoi && chezmoi --version
+# chezmoi (dotfiles manager) and gh (GitHub CLI) are pinned release
+# archives checked against SHA-256 sums recorded here. Alpine's
+# packages lag upstream and were built with Go modules (x/crypto,
+# x/net, grpc, go-git) that have published high-severity fixes. Bump a
+# version together with both of its sums (from the release's
+# checksums file, cross-checked against the downloaded archive).
+ARG CHEZMOI_VERSION=2.73.0
+# amd64 uses the musl archive (the plain amd64 build is glibc-linked
+# and cannot run on Alpine); the arm64 archive is statically linked.
+ARG CHEZMOI_SHA256_AMD64=09559524c5c724df9d452f1e78cfeca063d68c18a38b3bebb8bf48e9b13249b7
+ARG CHEZMOI_SHA256_ARM64=abcb840401d3c1f2356e0f53f5d52aa10d10f572654d9626db9ad0ca4dc03355
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256_AMD64=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+ARG GH_SHA256_ARM64=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64)  arch=amd64; czarch=linux-musl_amd64; cz="$CHEZMOI_SHA256_AMD64"; ghs="$GH_SHA256_AMD64" ;; \
+      aarch64) arch=arm64; czarch=linux_arm64;      cz="$CHEZMOI_SHA256_ARM64"; ghs="$GH_SHA256_ARM64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    tmp=$(mktemp -d); \
+    curl -fsSL -o "$tmp/chezmoi.tgz" \
+      "https://github.com/twpayne/chezmoi/releases/download/v${CHEZMOI_VERSION}/chezmoi_${CHEZMOI_VERSION}_${czarch}.tar.gz"; \
+    echo "${cz}  $tmp/chezmoi.tgz" | sha256sum -c -; \
+    tar -xzf "$tmp/chezmoi.tgz" -C "$tmp" chezmoi; \
+    install -m 0755 "$tmp/chezmoi" /usr/local/bin/chezmoi; \
+    curl -fsSL -o "$tmp/gh.tgz" \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz"; \
+    echo "${ghs}  $tmp/gh.tgz" | sha256sum -c -; \
+    tar -xzf "$tmp/gh.tgz" -C "$tmp" "gh_${GH_VERSION}_linux_${arch}/bin/gh"; \
+    install -m 0755 "$tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf "$tmp"; \
+    chezmoi --version; gh --version
 
 # mise (version manager) is a pinned release binary checked against a
 # SHA-256 recorded here, not `curl https://mise.run | sh`. Alpine's
@@ -144,7 +178,9 @@ RUN set -eu; \
 # (PreToolUse hook via --settings) was verified against. Bump only
 # after re-checking that a denied tool call is blocked.
 ARG CLAUDE_VERSION=2.1.285
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} \
+# npm 12 blocks install scripts unless allowlisted; claude-code's
+# postinstall fetches its native binary, so allow exactly that package.
+RUN npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code@${CLAUDE_VERSION} \
  && node --version && claude --version
 
 # Non-root user. UID/GID 1000 lines up with the typical single-user
