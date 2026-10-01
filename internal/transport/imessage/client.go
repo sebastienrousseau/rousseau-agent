@@ -72,6 +72,10 @@ type Client struct {
 
 	mu     sync.Mutex
 	lastID string // guid of the newest message we've already handled
+
+	// inflight runs each message's turn off the poll loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client. BaseURL + Password are required.
@@ -107,6 +111,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("imessage: handler is required")
 	}
 	c.logger.Info("imessage.started", slog.String("server", c.cfg.BaseURL))
+	c.inflight = new(transport.Inflight)
+	defer c.inflight.Wait()
 
 	// Prime the last-seen cursor so we don't spam the handler with
 	// everything in the user's message history on first launch.
@@ -199,19 +205,18 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 
 	// Newest-first from BlueBubbles; walk backwards so we forward
 	// oldest-new-first to the handler.
-	newestBoundary := 0
+	// Everything before the cursor is new. A cursor at index 0 means
+	// nothing is new; a cursor not on the page (or never primed) means
+	// it drifted off, so the whole page is treated as fresh
+	// (BlueBubbles caps by page size on its side). Index 0 used to be
+	// conflated with "not found", re-handling the whole page on every
+	// poll once the newest message was one we had handled.
+	fresh := msgs
 	for i, m := range msgs {
-		if m.GUID == lastSeen {
-			newestBoundary = i
+		if lastSeen != "" && m.GUID == lastSeen {
+			fresh = msgs[:i]
 			break
 		}
-	}
-	// When newestBoundary is 0 and lastSeen is set, the cursor drifted off
-	// the page — treat everything returned as fresh (BlueBubbles caps by
-	// page size on its side).
-	fresh := msgs
-	if newestBoundary > 0 {
-		fresh = msgs[:newestBoundary]
 	}
 
 	// Reverse to oldest-first.
@@ -220,34 +225,14 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 		if m.IsFromMe {
 			continue
 		}
-		body := extractText(m)
-		if body == "" {
-			body = c.transcribeAudio(ctx, m.Attachments)
-		}
-		attachments := c.collectImageAttachments(ctx, m.Attachments)
-		if body == "" && len(attachments) == 0 {
+		if len(m.Chats) == 0 {
+			// Nowhere to reply; indexing Chats[0] used to panic here.
+			c.logger.Warn("imessage.skipped_no_chat", slog.String("guid", m.GUID))
 			continue
 		}
-		msg := transport.IncomingMessage{
-			From:        m.Handle.Address,
-			Body:        body,
-			At:          time.UnixMilli(m.DateCreated).UTC(),
-			Attachments: attachments,
-		}
-		c.logger.Info("imessage.incoming",
-			slog.String("from", msg.From),
-			slog.Int("attachments", len(attachments)))
-		reply, err := handler.Handle(ctx, msg)
-		if err != nil {
-			c.logger.Error("imessage.handler_failed", slog.String("err", err.Error()))
-			continue
-		}
-		if reply == "" {
-			continue
-		}
-		if err := c.Deliver(ctx, m.Chats[0].GUID, reply); err != nil {
-			c.logger.Error("imessage.send_failed", slog.String("err", err.Error()))
-		}
+		// The turn runs off the poll loop so one long turn does not hold
+		// up other senders.
+		c.inflight.Do(func() { c.handleMessage(ctx, m, handler) })
 	}
 
 	if len(msgs) > 0 {
@@ -256,6 +241,39 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 		c.mu.Unlock()
 	}
 	return nil
+}
+
+// handleMessage turns one record into an IncomingMessage, runs the
+// handler, and replies into the record's first chat.
+func (c *Client) handleMessage(ctx context.Context, m messageRecord, handler transport.Handler) {
+	body := extractText(m)
+	if body == "" {
+		body = c.transcribeAudio(ctx, m.Attachments)
+	}
+	attachments := c.collectImageAttachments(ctx, m.Attachments)
+	if body == "" && len(attachments) == 0 {
+		return
+	}
+	msg := transport.IncomingMessage{
+		From:        m.Handle.Address,
+		Body:        body,
+		At:          time.UnixMilli(m.DateCreated).UTC(),
+		Attachments: attachments,
+	}
+	c.logger.Info("imessage.incoming",
+		slog.String("from", msg.From),
+		slog.Int("attachments", len(attachments)))
+	reply, err := handler.Handle(ctx, msg)
+	if err != nil {
+		c.logger.Error("imessage.handler_failed", slog.String("err", err.Error()))
+		return
+	}
+	if reply == "" {
+		return
+	}
+	if err := c.Deliver(ctx, m.Chats[0].GUID, reply); err != nil {
+		c.logger.Error("imessage.send_failed", slog.String("err", err.Error()))
+	}
 }
 
 // fetchMessages calls BlueBubbles's message endpoint. limit caps the

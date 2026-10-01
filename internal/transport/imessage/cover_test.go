@@ -163,3 +163,43 @@ func TestFetchMessages_ErrorPaths(t *testing.T) {
 		})
 	}
 }
+
+// TestPollOnce_NoNewMessagesHandlesNothing pins the cursor boundary:
+// when the newest message on the page is the one already handled,
+// nothing is fresh. The old code treated "found at index 0" like "not
+// found" and re-handled the whole page on every poll, so the agent
+// answered the same old messages again and again.
+func TestPollOnce_NoNewMessagesHandlesNothing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		//nolint:errcheck // test setup
+		_, _ = w.Write([]byte(`{"data":[
+			{"guid":"g2","text":"second","dateCreated":2,"handle":{"address":"+1"},"chats":[{"guid":"c1"}]},
+			{"guid":"g1","text":"first","dateCreated":1,"handle":{"address":"+1"},"chats":[{"guid":"c1"}]}
+		]}`))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, Config{BaseURL: srv.URL, HTTPClient: srv.Client()})
+	c.lastID = "g2" // already handled the newest message
+	var calls atomic.Int32
+	require.NoError(t, c.pollOnce(context.Background(), transport.HandlerFunc(
+		func(context.Context, transport.IncomingMessage) (string, error) {
+			calls.Add(1)
+			return "", nil
+		})))
+	assert.Zero(t, calls.Load(), "nothing is newer than the cursor")
+}
+
+// TestPollOnce_MessageWithoutChatIsSkipped pins that a record with no
+// chats (nowhere to reply) is skipped instead of panicking on Chats[0].
+func TestPollOnce_MessageWithoutChatIsSkipped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"guid":"g1","text":"orphan","dateCreated":1,"handle":{"address":"+1"}}]}`)) //nolint:errcheck // test setup
+	}))
+	defer srv.Close()
+	c := newTestClient(t, Config{BaseURL: srv.URL, HTTPClient: srv.Client()})
+	assert.NotPanics(t, func() {
+		_ = c.pollOnce(context.Background(), transport.HandlerFunc( //nolint:errcheck // panic-freedom is the assertion
+			func(context.Context, transport.IncomingMessage) (string, error) { return "reply", nil }))
+	})
+}
