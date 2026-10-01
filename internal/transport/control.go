@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/control"
 )
@@ -49,6 +50,42 @@ func (s *Supervisor) Registry() *control.Registry { return s.reg }
 // Kept as a var (not const) so a test can lower it to exercise the
 // exhaustion warn path without staging a real race.
 var beginRetryBudget = 8
+
+// maxFollowUps bounds how many follow-up turns one claimed turn runs
+// for steered text the provider did not consume.
+const maxFollowUps = 4
+
+// followUps answers text that was steered into the turn but never
+// consumed (claudecli runs a whole turn itself, so the agent's steering
+// checkpoint never sees it). Each batch runs as another turn under the
+// same claim, so more messages can keep steering in, and its reply is
+// appended. Without this the sender was told "Noted — folding that
+// in…" and the message was dropped.
+func (s *Supervisor) followUps(ctx context.Context, next Handler, turn *control.Turn, msg IncomingMessage, reply string, err error) (string, error) {
+	for i := 0; err == nil && i < maxFollowUps; i++ {
+		left := turn.DrainOrFinish()
+		if len(left) == 0 {
+			return reply, nil
+		}
+		s.logger.Info("transport.steer_followup",
+			slog.String("from", msg.From),
+			slog.Int("messages", len(left)))
+		fu := msg
+		fu.Body = strings.Join(left, "\n\n")
+		fu.Attachments = nil
+		more, ferr := next.Handle(ctx, fu)
+		if ferr != nil {
+			return reply, ferr
+		}
+		switch {
+		case reply == "":
+			reply = more
+		case more != "":
+			reply += "\n\n" + more
+		}
+	}
+	return reply, err
+}
 
 // SyncPeeker is the optional capability a downstream Handler
 // implements to opt into "answer this synchronously, do not
@@ -112,7 +149,8 @@ func (s *Supervisor) Wrap(next Handler) Handler {
 			if claimed {
 				defer turn.End()
 				msg.Body = d.Prompt
-				return next.Handle(tctx, msg)
+				reply, err := next.Handle(tctx, msg)
+				return s.followUps(tctx, next, turn, msg, reply, err)
 			}
 			// A concurrent inbound claimed the key first. Loop back to
 			// steer into their turn.
