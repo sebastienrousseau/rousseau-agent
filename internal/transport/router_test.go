@@ -454,3 +454,34 @@ func TestRouter_AllowedAndSSOEnabled(t *testing.T) {
 	assert.False(t, r.Allowed(context.Background(), "b"))
 	assert.False(t, r.SSOEnabled(), "no SSO directory configured")
 }
+
+// TestRouter_SaveForksProviderHistory pins that /save hands the
+// provider the (source, snapshot) ids so providers that keep their own
+// history (claudecli) can copy it; a failure is reported, not hidden.
+func TestRouter_SaveForksProviderHistory(t *testing.T) {
+	var gotFrom, gotTo string
+	r := NewRouter(&stubRunner{reply: agent.NewAssistantText("ok")}, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{ForkSession: func(_ context.Context, from, to string) error {
+			gotFrom, gotTo = from, to
+			return nil
+		}})
+	ctx := context.Background()
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "hello"})
+	require.NoError(t, err)
+	current, _, _ := r.jidMap.Get(ctx, "x") //nolint:errcheck // equality is the assertion
+
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "/save mine"})
+	require.NoError(t, err)
+	assert.Equal(t, current, gotFrom)
+	assert.NotEmpty(t, gotTo)
+	assert.NotEqual(t, gotFrom, gotTo)
+	assert.Contains(t, reply, shortSessionID(gotTo))
+
+	r2 := NewRouter(&stubRunner{reply: agent.NewAssistantText("ok")}, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{ForkSession: func(context.Context, string, string) error { return errors.New("disk full") }})
+	_, err = r2.Handle(ctx, IncomingMessage{From: "x", Body: "hello"})
+	require.NoError(t, err)
+	reply, err = r2.Handle(ctx, IncomingMessage{From: "x", Body: "/save"})
+	require.NoError(t, err)
+	assert.Contains(t, reply, "without the model's history")
+}

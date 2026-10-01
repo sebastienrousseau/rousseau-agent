@@ -591,6 +591,13 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 		SessionIdleTimeout: cfg.Agent.SessionIdleTimeout,
 	}
+	// claude keeps the conversation in its own transcript; /save must
+	// copy it for the snapshot to resume with history.
+	if cp, ok := provider.(*claudecli.Provider); ok {
+		routerOpts.ForkSession = func(_ context.Context, fromID, toID string) error {
+			return cp.ForkSession(fromID, toID)
+		}
+	}
 	router := transport.NewRouter(ag, concrete, jidMap, opts.Logger, routerOpts)
 
 	cronStore, err := openCronStore(ctx, concrete)

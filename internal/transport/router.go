@@ -126,6 +126,12 @@ type RouterOptions struct {
 	// be bypassed. The old session is kept and named in the reply so
 	// /resume can return to it. Zero disables rotation.
 	SessionIdleTimeout time.Duration
+	// ForkSession, when set, is called by /save with the source and
+	// snapshot session ids so a provider that keeps its own copy of
+	// the conversation (claudecli's transcript) can duplicate it.
+	// Without it, resuming a snapshot on such a provider starts with
+	// no history.
+	ForkSession func(ctx context.Context, fromID, toID string) error
 }
 
 // Router binds an inbound Handler to an agent + persistent session state.
@@ -146,6 +152,7 @@ type Router struct {
 	approvals  *approval.PendingManager
 	buildStamp string
 	idleAfter  time.Duration
+	forkSess   func(ctx context.Context, fromID, toID string) error
 	now        func() time.Time
 	// senders serialises session lookup and rebinding per sender; a
 	// router-wide mutex used to make every sender wait on one slow
@@ -186,6 +193,7 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		approvals:  opts.Approvals,
 		buildStamp: opts.BuildStamp,
 		idleAfter:  opts.SessionIdleTimeout,
+		forkSess:   opts.ForkSession,
 		now:        time.Now,
 	}
 }
@@ -818,6 +826,14 @@ func (r *Router) cmdSave(ctx context.Context, from, name string) (string, error)
 	if err := r.store.Save(ctx, snapshot); err != nil {
 		return "", fmt.Errorf("save snapshot: %w", err)
 	}
+	note := ""
+	if r.forkSess != nil {
+		if err := r.forkSess(ctx, sess.ID, snapshot.ID); err != nil {
+			r.logger.Warn("router.snapshot_fork_failed",
+				slog.String("from", from), slog.String("err", err.Error()))
+			note = "\n(note: saved without the model's history; resuming this snapshot starts a fresh conversation.)"
+		}
+	}
 	// jidMap intentionally NOT touched — the user stays in the
 	// original session and continues there. The snapshot is a
 	// separate row addressable via /sessions.
@@ -827,8 +843,8 @@ func (r *Router) cmdSave(ctx context.Context, from, name string) (string, error)
 		slog.String("snapshot_session_id", snapshot.ID),
 		slog.String("name", name),
 	)
-	return fmt.Sprintf("saved snapshot %q (%d msg). you're still in the current session — /r %s to revisit the snapshot later.",
-		name, len(snapshot.Messages), shortSessionID(snapshot.ID)), nil
+	return fmt.Sprintf("saved snapshot %q (%d msg). you're still in the current session — /r %s to revisit the snapshot later.%s",
+		name, len(snapshot.Messages), shortSessionID(snapshot.ID), note), nil
 }
 
 // cmdDelete removes a session by short-id. Refuses to delete

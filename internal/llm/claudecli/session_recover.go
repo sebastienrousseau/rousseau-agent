@@ -1,6 +1,8 @@
 package claudecli
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,7 +73,16 @@ func isSessionInUseError(err error) bool {
 // homeDir and cwd are threaded in for tests; production callers use
 // sessionFilePathDefault which supplies os.UserHomeDir + os.Getwd.
 func sessionFilePath(homeDir, cwd, sessionID string) string {
-	if homeDir == "" || sessionID == "" {
+	if homeDir == "" {
+		return ""
+	}
+	return sessionFilePathIn(filepath.Join(homeDir, ".claude"), cwd, sessionID)
+}
+
+// sessionFilePathIn is sessionFilePath for an explicit claude config
+// directory ($CLAUDE_CONFIG_DIR when set, else $HOME/.claude).
+func sessionFilePathIn(configDir, cwd, sessionID string) string {
+	if configDir == "" || sessionID == "" {
 		return ""
 	}
 	if cwd == "" {
@@ -79,7 +90,7 @@ func sessionFilePath(homeDir, cwd, sessionID string) string {
 	}
 	// Match claude's project-directory naming exactly.
 	hashed := "-" + strings.ReplaceAll(strings.TrimPrefix(cwd, "/"), "/", "-")
-	return filepath.Join(homeDir, ".claude", "projects", hashed, sessionID+".jsonl")
+	return filepath.Join(configDir, "projects", hashed, sessionID+".jsonl")
 }
 
 // sessionFilePathDefault resolves the transcript path via the real
@@ -95,15 +106,46 @@ func sessionFilePathDefault(sessionID string) string {
 // the error branches would otherwise be untestable without process-
 // wide env manipulation (fragile and unfriendly to parallel tests).
 func sessionFilePathFrom(sessionID string, homeFn func() (string, error), cwdFn func() (string, error)) string {
-	home, err := homeFn()
-	if err != nil {
-		return ""
-	}
 	cwd, err := cwdFn()
 	if err != nil {
 		return ""
 	}
+	// claude keeps everything under CLAUDE_CONFIG_DIR when it is set
+	// (the container template sets it); only then fall back to HOME.
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return sessionFilePathIn(dir, cwd, sessionID)
+	}
+	home, err := homeFn()
+	if err != nil {
+		return ""
+	}
 	return sessionFilePath(home, cwd, sessionID)
+}
+
+// ForkSession copies claude's transcript for fromID to toID, rewriting
+// the session id it records, so a rousseau snapshot (/save) resumes
+// with its history. claude keeps the conversation in this file, not in
+// rousseau's store, so without the copy /resume of a snapshot started
+// from nothing. A source with no transcript yet (claude never ran on
+// it) is not an error: there is nothing to carry over.
+func (p *Provider) ForkSession(fromID, toID string) error {
+	src, dst := sessionFilePathDefault(fromID), sessionFilePathDefault(toID)
+	if src == "" || dst == "" {
+		return errors.New("claudecli: fork: cannot resolve transcript path")
+	}
+	data, err := os.ReadFile(src) //nolint:gosec // path built from claude's own layout and a session id
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("claudecli: fork: read: %w", err)
+	}
+	data = bytes.ReplaceAll(data, []byte(`"sessionId":"`+fromID+`"`), []byte(`"sessionId":"`+toID+`"`))
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return fmt.Errorf("claudecli: fork: write: %w", err)
+	}
+	p.rememberSession(toID)
+	return nil
 }
 
 // sessionFilePathResolver is the seam Stream calls to locate the
