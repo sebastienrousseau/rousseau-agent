@@ -93,6 +93,10 @@ type Client struct {
 	conn   WSConn
 	selfID string
 	seq    int64
+
+	// inflight runs each message off the gateway loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client. Token is required.
@@ -128,6 +132,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("discord: handler is required")
 	}
 	c.logger.Info("discord.started")
+	c.inflight = new(transport.Inflight)
+	defer c.inflight.Wait()
 	for {
 		if c.stopped.Load() || ctx.Err() != nil {
 			return ctx.Err()
@@ -266,36 +272,49 @@ func (c *Client) dispatch(ctx context.Context, frame gatewayFrame, handler trans
 		if selfID != "" && m.Author.ID == selfID {
 			return nil // shouldn't happen (bot=true above) but belt+braces
 		}
-		body := m.Content
-		if body == "" {
-			body = c.transcribeAudio(ctx, &m)
-		}
-		attachments := c.collectImageAttachments(ctx, m.Attachments)
-		if body == "" && len(attachments) == 0 {
-			return nil
-		}
-		msg := transport.IncomingMessage{
-			From:        m.Author.ID,
-			Body:        body,
-			At:          time.Now().UTC(),
-			Attachments: attachments,
-		}
-		c.logger.Info("discord.incoming",
-			slog.String("from", msg.From),
-			slog.String("channel", m.ChannelID),
-			slog.Int("attachments", len(attachments)))
-		reply, err := handler.Handle(ctx, msg)
-		if err != nil {
-			c.logger.Error("discord.handler_failed", slog.String("err", err.Error()))
-			return nil
-		}
-		if reply == "" {
-			return nil
-		}
-		return c.postMessage(ctx, m.ChannelID, reply)
+		// The turn runs off the gateway loop so other senders (and
+		// their /cancel) keep being read and heartbeats keep flowing.
+		c.inflight.Do(func() {
+			if err := c.handleMessage(ctx, m, handler); err != nil {
+				c.logger.Error("discord.send_failed", slog.String("err", err.Error()))
+			}
+		})
+		return nil
 	default:
 		return nil
 	}
+}
+
+// handleMessage turns one MESSAGE_CREATE into an IncomingMessage, runs
+// the handler, and posts the reply to the channel.
+func (c *Client) handleMessage(ctx context.Context, m discordMessage, handler transport.Handler) error {
+	body := m.Content
+	if body == "" {
+		body = c.transcribeAudio(ctx, &m)
+	}
+	attachments := c.collectImageAttachments(ctx, m.Attachments)
+	if body == "" && len(attachments) == 0 {
+		return nil
+	}
+	msg := transport.IncomingMessage{
+		From:        m.Author.ID,
+		Body:        body,
+		At:          time.Now().UTC(),
+		Attachments: attachments,
+	}
+	c.logger.Info("discord.incoming",
+		slog.String("from", msg.From),
+		slog.String("channel", m.ChannelID),
+		slog.Int("attachments", len(attachments)))
+	reply, err := handler.Handle(ctx, msg)
+	if err != nil {
+		c.logger.Error("discord.handler_failed", slog.String("err", err.Error()))
+		return nil
+	}
+	if reply == "" {
+		return nil
+	}
+	return c.postMessage(ctx, m.ChannelID, reply)
 }
 
 // Deliver posts to a channel id. Suitable as a cron.Delivery target.
