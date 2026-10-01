@@ -373,26 +373,25 @@ Skills are Markdown files with YAML frontmatter in the
 daemon actually loaded. Four skills are bundled — see
 [`skills/README.md`](./skills/README.md).
 
-Because a skill is prompt text that the model will follow, skill loading
-can require a signature. `internal/skills/verify.go` shells out to
-`ssh-keygen -Y verify` against an OpenSSH allowed-signers file, which is
-the same mechanism Git uses for SSH-signed commits.
+Because a skill is prompt text that the model will follow, signed skill
+bundles are supported (Enterprise, `governance_advanced`): `*.skill.json`
+bundles in `agent.skill_bundles.dir` load only when signed by an Ed25519
+key listed in `trusted_publisher_keys`; a bundle that fails verification
+is not loaded.
 
 ```yaml
 agent:
   skills_dir: ~/.local/share/rousseau/skills
-  skills_require_signature: true
-  skills_allowed_signers_file: /etc/rousseau/allowed_signers.pub
-  skills_signature_namespace: rousseau-skills
+  skill_bundles:
+    dir: /etc/rousseau/skill-bundles
+    trusted_publisher_keys:
+      - "<base64 Ed25519 public key>"
+    strict: true            # log verification failures at ERROR
 ```
 
-```bash
-ssh-keygen -Y sign -f ~/.ssh/rousseau-skills -n rousseau-skills git-rebase.md
-# produces git-rebase.md.sig
-```
-
-With `skills_require_signature: true` an unsigned or badly signed skill
-is dropped rather than loaded.
+Plain Markdown skills in `skills_dir` are not signature-checked. The
+OpenSSH verifier in `internal/skills/verify.go` (`ssh-keygen -Y verify`)
+is a library API and is not yet configurable from `config.yaml`.
 
 ---
 

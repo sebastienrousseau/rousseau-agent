@@ -1025,11 +1025,26 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{}
-	if err := v.Unmarshal(cfg); err != nil {
-		return nil, fmt.Errorf("config: unmarshal: %w", err)
+	// Strict by default: a key that matches no field is an error. A
+	// misspelt "aprover:" used to be ignored silently, leaving the
+	// default allow-all policy in force with nothing in the logs.
+	// ROUSSEAU_CONFIG_ALLOW_UNKNOWN=1 restores the lenient decode for
+	// running an older binary against a newer config file.
+	if os.Getenv(envAllowUnknownKeys) == "1" {
+		if err := v.Unmarshal(cfg); err != nil {
+			return nil, fmt.Errorf("config: %s: %w", path, err)
+		}
+		return cfg, nil
+	}
+	if err := v.UnmarshalExact(cfg); err != nil {
+		return nil, fmt.Errorf("config: %s: %w (fix or remove the key; set %s=1 to ignore unknown keys)",
+			path, err, envAllowUnknownKeys)
 	}
 	return cfg, nil
 }
+
+// envAllowUnknownKeys opts out of strict config decoding.
+const envAllowUnknownKeys = "ROUSSEAU_CONFIG_ALLOW_UNKNOWN"
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("provider", "claudecli")
