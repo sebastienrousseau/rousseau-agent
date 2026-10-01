@@ -475,6 +475,7 @@ func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Down
 		Logger:      c.logger,
 		Progress:    c.bus,
 		IsAllowed:   c.isAllowed,
+		SSOCommands: c.cfg.SSOCommands,
 	})
 }
 
@@ -484,6 +485,9 @@ func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Down
 // placeholder messages) so a stranger messaging the number sees
 // nothing back — no signal that a bot is watching.
 func (c *Client) isAllowed(from string) bool {
+	if c.cfg.IsAllowed != nil {
+		return c.cfg.IsAllowed(from)
+	}
 	if c.openAll {
 		return true
 	}

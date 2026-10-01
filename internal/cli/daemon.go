@@ -919,6 +919,14 @@ func (w *daemonWiring) TransportHandler(name string, logger *slog.Logger) transp
 	return h
 }
 
+// SenderAllowed returns the pre-processing gate for transport name: the
+// same static-allowlist-or-SSO check the router applies, for transports
+// to consult before downloading or transcribing media.
+func (w *daemonWiring) SenderAllowed(name string) func(from string) bool {
+	r := w.routerFor(name)
+	return func(from string) bool { return r.Allowed(context.Background(), from) }
+}
+
 // routerFor returns the transport.Router for transport name,
 // building it on first call and caching it thereafter. The
 // per-transport router carries the correct Transport name so

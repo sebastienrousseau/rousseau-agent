@@ -63,6 +63,15 @@ type Config struct {
 	// Empty means "no restriction" (the transport reacts to everyone
 	// it hears from — sensible for unit tests, dangerous in prod).
 	Allowlist []string
+	// IsAllowed, when set, replaces the Allowlist check with the
+	// router's own decision (static allowlist or a valid SSO binding),
+	// so SSO-bound senders are not dropped by this pre-filter.
+	IsAllowed func(from string) bool
+	// SSOCommands lets /login and /logout from senders the pre-filter
+	// would drop reach the router, which handles them before its
+	// allowlist. Set only when SSO is configured, so strangers still
+	// see no sign that a bot is listening.
+	SSOCommands bool
 }
 
 // DefaultReplyHeader is the string prepended to every outbound reply

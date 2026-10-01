@@ -82,6 +82,10 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				// number receive 👀 + ✅ reactions revealing that a
 				// bot watches this line.
 				Allowlist: allowlist,
+				// The router's decision (static list or SSO binding)
+				// replaces the static check, and /login can reach it.
+				IsAllowed:   wiring.SenderAllowed("whatsapp"),
+				SSOCommands: wiring.routerFor("whatsapp").SSOEnabled(),
 			}, opts.Logger)
 			if err != nil {
 				return err

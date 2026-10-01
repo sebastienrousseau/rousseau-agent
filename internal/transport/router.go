@@ -1238,6 +1238,17 @@ func (r *Router) cmdLogout(ctx context.Context, from string) string {
 	return "signed out"
 }
 
+// Allowed reports whether from may use the agent: on the static
+// allowlist, or holding a valid SSO binding. Transports call it before
+// costly pre-processing (media download, transcription) so a stranger
+// cannot spend bandwidth, CPU or API budget; the full decision still
+// happens in Handle.
+func (r *Router) Allowed(ctx context.Context, from string) bool { return r.allowed(ctx, from) }
+
+// SSOEnabled reports whether this router answers /login and /logout
+// from senders it does not yet allow (SSO is configured).
+func (r *Router) SSOEnabled() bool { return r.ssoDir != nil }
+
 func (r *Router) allowed(ctx context.Context, from string) bool {
 	if r.openAll {
 		return true

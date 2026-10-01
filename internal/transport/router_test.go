@@ -446,3 +446,11 @@ func TestRouter_ResumeOfIdleSessionSticks(t *testing.T) {
 	gotID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // equality is the assertion
 	assert.Equal(t, oldID, gotID)
 }
+
+func TestRouter_AllowedAndSSOEnabled(t *testing.T) {
+	r := NewRouter(&stubRunner{}, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{Allowlist: []string{"a"}})
+	assert.True(t, r.Allowed(context.Background(), "a"))
+	assert.False(t, r.Allowed(context.Background(), "b"))
+	assert.False(t, r.SSOEnabled(), "no SSO directory configured")
+}

@@ -263,3 +263,51 @@ func TestDispatch_SendFailureIsLoggedNotPanicked(t *testing.T) {
 		})
 	})
 }
+
+// TestDispatch_LoginReachesRouterOnlyWithSSO pins the SSO bootstrap: an
+// unknown sender's /login must reach the router (which handles it
+// before its allowlist) when SSO is on, and stay invisible otherwise.
+func TestDispatch_LoginReachesRouterOnlyWithSSO(t *testing.T) {
+	own := jid("15551234567", 21)
+	stranger := jid("15559990000", 0)
+	deny := func(string) bool { return false }
+	for _, tc := range []struct {
+		name    string
+		sso     bool
+		body    string
+		reaches bool
+	}{
+		{"login with sso", true, "/login tok", true},
+		{"logout with sso", true, "/logout", true},
+		{"login without sso", false, "/login tok", false},
+		{"chat with sso", true, "hello", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &captureHandler{reply: "ok"}
+			Dispatch(context.Background(), DispatchInput{
+				Event:       msgEvent(stranger, stranger.ToNonAD(), false, false, tc.body),
+				OwnID:       &own,
+				Sender:      &fakeSender{},
+				Handler:     h,
+				Logger:      silentLogger(),
+				IsAllowed:   deny,
+				SSOCommands: tc.sso,
+			})
+			assert.Equal(t, tc.reaches, h.got.Body != "", "handler reached")
+		})
+	}
+}
+
+// TestClient_IsAllowedPrefersConfiguredGate pins that the transport's
+// pre-filter uses the router's decision (static list or SSO binding)
+// when wired, not only the static allowlist.
+func TestClient_IsAllowedPrefersConfiguredGate(t *testing.T) {
+	c, err := New(Config{
+		StoreDSN:  "x",
+		Allowlist: []string{"1@s.whatsapp.net"},
+		IsAllowed: func(from string) bool { return from == "sso-bound@s.whatsapp.net" },
+	}, silentLogger())
+	require.NoError(t, err)
+	assert.True(t, c.isAllowed("sso-bound@s.whatsapp.net"))
+	assert.False(t, c.isAllowed("1@s.whatsapp.net"), "the configured gate is authoritative")
+}
