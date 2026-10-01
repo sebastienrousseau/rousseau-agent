@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,4 +70,48 @@ func TestEraseSender(t *testing.T) {
 	rep, err = s.EraseSender(ctx, "alice")
 	require.NoError(t, err)
 	assert.Empty(t, rep.SessionIDs, "idempotent")
+}
+
+// TestEraseIdleSessions pins retention: sessions not updated since the
+// cutoff go (with their per-session rows and any jid mapping pointing
+// at them); recent ones stay.
+func TestEraseIdleSessions(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "s.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
+	require.NoError(t, s.EnsureSearch(ctx))
+	jm, err := NewJIDMap(ctx, s)
+	require.NoError(t, err)
+	_, err = NewSessionCostStore(ctx, s)
+	require.NoError(t, err)
+
+	now := time.Now().UTC()
+	mk := func(sender string, age time.Duration) string {
+		sess := agent.NewSession("chat")
+		sess.Sender = sender
+		sess.Append(agent.NewUserText("hello"))
+		sess.UpdatedAt = now.Add(-age)
+		require.NoError(t, s.Save(ctx, sess))
+		_, err := s.db.ExecContext(ctx, `INSERT INTO session_costs (session_id, at, provider, model) VALUES (?, '2026-01-01T00:00:00Z', 'p', 'm')`, sess.ID)
+		require.NoError(t, err)
+		return sess.ID
+	}
+	old := mk("a", 40*24*time.Hour)
+	recent := mk("a", time.Hour)
+	require.NoError(t, jm.Put(ctx, "a", old))
+
+	rep, err := s.EraseIdleSessions(ctx, now.Add(-30*24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, []string{old}, rep.SessionIDs)
+	_, err = s.Load(ctx, old)
+	assert.Error(t, err)
+	_, err = s.Load(ctx, recent)
+	assert.NoError(t, err)
+	_, ok, err := jm.Get(ctx, "a")
+	require.NoError(t, err)
+	assert.False(t, ok, "a mapping to an erased session is dropped (next message starts fresh)")
+	var costs int
+	require.NoError(t, s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_costs WHERE session_id = ?`, old).Scan(&costs))
+	assert.Zero(t, costs)
 }

@@ -410,6 +410,20 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		}()
 	}
 
+	if cfg.State.SessionTTL > 0 {
+		if eraser, ok := concrete.(idleSessionEraser); ok {
+			bgWG.Add(1)
+			go func() {
+				defer bgWG.Done()
+				runSessionRetention(bgCtx, eraser, cfg.State.SessionTTL, 6*time.Hour, opts.Logger)
+			}()
+		} else {
+			opts.Logger.Warn("state.session_ttl_unsupported",
+				slog.String("driver", driverName(cfg.State)),
+				slog.String("effect", "sessions are kept until deleted"))
+		}
+	}
+
 	registry := tools.NewRegistry()
 	registry.MustRegister(builtin.NewReadTool())
 	registry.MustRegister(builtin.NewWriteTool())
@@ -1110,4 +1124,44 @@ func readChainKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("audit chain key %s: %d bytes, need at least 32", path, len(key))
 	}
 	return key, nil
+}
+
+// idleSessionEraser is implemented by stores that support retention.
+type idleSessionEraser interface {
+	EraseIdleSessions(ctx context.Context, cutoff time.Time) (sqlitestore.EraseReport, error)
+}
+
+// runSessionRetention enforces state.session_ttl: once on start, then
+// every interval, it erases sessions idle for longer than ttl and
+// claude's transcripts of them, until ctx ends.
+func runSessionRetention(ctx context.Context, store idleSessionEraser, ttl, interval time.Duration, logger *slog.Logger) {
+	prune := func() {
+		rep, err := store.EraseIdleSessions(ctx, time.Now().Add(-ttl))
+		if err != nil {
+			logger.Error("state.session_retention_failed", slog.String("err", err.Error()))
+			return
+		}
+		if len(rep.SessionIDs) == 0 {
+			return
+		}
+		files, err := claudecli.EraseTranscripts(rep.SessionIDs)
+		if err != nil {
+			logger.Error("state.session_retention_transcripts_failed", slog.String("err", err.Error()))
+		}
+		logger.Info("state.session_retention",
+			slog.Int("sessions", len(rep.SessionIDs)),
+			slog.Int("transcripts", files),
+			slog.Duration("ttl", ttl))
+	}
+	prune()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
+		}
+	}
 }

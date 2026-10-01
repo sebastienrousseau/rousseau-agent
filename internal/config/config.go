@@ -802,6 +802,11 @@ type StateConfig struct {
 	// Ignored when driver is "sqlite". Required when driver is
 	// "postgres".
 	DSN string `mapstructure:"dsn"`
+	// SessionTTL erases sessions not updated for this long (with
+	// their per-session rows and claude transcripts), checked every
+	// 6 hours. Zero (the default) keeps sessions until deleted.
+	// SQLite only for now.
+	SessionTTL time.Duration `mapstructure:"session_ttl"`
 }
 
 // AgentConfig configures the agent loop.
