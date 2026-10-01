@@ -68,6 +68,9 @@ type Client struct {
 	stopped atomic.Bool
 	mu      sync.Mutex
 	offset  int64
+	// inflight runs each update off the poll loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client. Token is required.
@@ -99,6 +102,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("telegram: handler is required")
 	}
 	c.logger.Info("telegram.started")
+	c.inflight = new(transport.Inflight)
+	defer c.inflight.Wait()
 	for {
 		if c.stopped.Load() || ctx.Err() != nil {
 			return ctx.Err()
@@ -117,7 +122,7 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 			}
 		}
 		for _, u := range updates {
-			c.route(ctx, u, handler)
+			c.inflight.Do(func() { c.route(ctx, u, handler) })
 		}
 	}
 }

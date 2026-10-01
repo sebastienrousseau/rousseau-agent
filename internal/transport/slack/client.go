@@ -80,6 +80,10 @@ type Client struct {
 
 	mu   sync.Mutex
 	conn WSConn
+
+	// inflight runs each event off the read loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client. AppToken and BotToken are required.
@@ -115,6 +119,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("slack: handler is required")
 	}
 	c.logger.Info("slack.started")
+	c.inflight = new(transport.Inflight)
+	defer c.inflight.Wait()
 	for {
 		if c.stopped.Load() || ctx.Err() != nil {
 			return ctx.Err()
@@ -219,7 +225,18 @@ func (c *Client) handleFrame(ctx context.Context, conn WSConn, raw []byte, handl
 				_ = conn.Write(ctx, b) //nolint:errcheck // best-effort ack
 			}
 		}
-		return c.dispatchEvent(ctx, env, handler)
+		var payload eventsAPIPayload
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			return fmt.Errorf("parse payload: %w", err)
+		}
+		// Acked above; the agent turn runs off the read loop so other
+		// senders (and their /cancel) keep being read.
+		c.inflight.Do(func() {
+			if err := c.dispatchEvent(ctx, payload, handler); err != nil {
+				c.logger.Warn("slack.frame_failed", slog.String("err", err.Error()))
+			}
+		})
+		return nil
 	default:
 		// interactive / slash_commands ack silently; not the shape we
 		// route through the agent handler.
@@ -233,13 +250,9 @@ func (c *Client) handleFrame(ctx context.Context, conn WSConn, raw []byte, handl
 	}
 }
 
-// dispatchEvent extracts a message from an events_api envelope and
+// dispatchEvent extracts a message from a parsed events_api payload and
 // forwards it to the handler.
-func (c *Client) dispatchEvent(ctx context.Context, env socketEnvelope, handler transport.Handler) error {
-	var payload eventsAPIPayload
-	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return fmt.Errorf("parse payload: %w", err)
-	}
+func (c *Client) dispatchEvent(ctx context.Context, payload eventsAPIPayload, handler transport.Handler) error {
 	if payload.Event.Type != "message" {
 		return nil
 	}

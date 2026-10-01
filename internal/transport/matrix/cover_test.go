@@ -237,14 +237,19 @@ func TestStart_RoutesSyncedEventThenStopsCleanly(t *testing.T) {
 	c := newTestClient(t, Config{HomeserverURL: srv.URL, HTTPClient: srv.Client(), PollTimeout: 10 * time.Millisecond})
 
 	var got []string
+	var atStop int32
 	err := c.Start(context.Background(), transport.HandlerFunc(
 		func(_ context.Context, m transport.IncomingMessage) (string, error) {
 			got = append(got, m.From+": "+m.Body)
+			atStop = syncs.Load()
 			_ = c.Stop() //nolint:errcheck // end the loop on the next iteration
 			return "", nil
 		}))
 
 	assert.NoError(t, err, "Stop() is a clean shutdown, not a cancellation")
-	assert.Equal(t, []string{"@alice:example.org: hello there"}, got)
-	assert.EqualValues(t, 1, syncs.Load(), "the loop must not sync again after Stop")
+	assert.Equal(t, []string{"@alice:example.org: hello there"}, got,
+		"Start drains in-flight handlers before returning")
+	// Events are handled off the loop, so one sync may already be in
+	// flight when Stop lands; no further sync may start after it.
+	assert.LessOrEqual(t, syncs.Load(), atStop+1, "the loop must not keep syncing after Stop")
 }
