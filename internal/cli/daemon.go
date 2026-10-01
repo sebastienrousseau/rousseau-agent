@@ -497,6 +497,9 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// (pattern / TUI) approver. Same three-condition fail-safe
 	// gate as wrapWithRBAC.
 	approver = wrapWithOPA(ctx, approver, cfg.Agent.Approver.OPA, checker, opts.Logger)
+	// Risk scoring sits after the deterministic layers: it only
+	// judges calls they allow, and can only deny.
+	approver = wrapWithRisk(approver, cfg.Agent.Approver.Risk, provider, cfg.ClaudeCLI, checker, opts.Logger)
 
 	skillsProv, err := buildSkillsProvider(opts, checker)
 	if err != nil {

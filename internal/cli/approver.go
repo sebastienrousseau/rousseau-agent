@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
@@ -13,6 +14,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/rbac"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/license"
+	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 )
 
 // buildApprover translates the ApproverConfig into an agent.Approver.
@@ -284,4 +286,50 @@ func multiPartyTools(cfg config.MultiPartyConfig) []string {
 		out = append(out, r.Tool)
 	}
 	return out
+}
+
+// wrapWithRisk layers the risk-scored approver over inner when
+// agent.approver.risk.enabled is set and the licence unlocks
+// [license.FeatureGovernanceAdvanced]. Unlicensed, it fails closed on
+// the tools it would score, like the other governance layers.
+func wrapWithRisk(inner agent.Approver, cfg config.RiskConfig, provider agent.Provider, cliCfg config.ClaudeCLIConfig, checker license.Checker, logger *slog.Logger) agent.Approver {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if !cfg.Enabled {
+		return inner
+	}
+	var governed []string
+	if len(cfg.Tools) > 0 {
+		governed = cfg.Tools
+	}
+	if checker == nil || !checker.IsEnabled(license.FeatureGovernanceAdvanced) {
+		logger.Error("approver.risk.licence_required",
+			slog.String("feature", string(license.FeatureGovernanceAdvanced)),
+			slog.String("effect", "scored tools are denied until the licence unlocks the risk approver"),
+		)
+		return denyGoverned(inner, governed, "the risk approver is configured but not licensed")
+	}
+	judge := provider
+	if _, ok := provider.(*claudecli.Provider); ok && cfg.Model != "" {
+		judge = claudecli.New(claudecli.Config{Binary: cliCfg.Binary, Model: cfg.Model})
+	}
+	threshold := cfg.Threshold
+	if threshold <= 0 || threshold > 1 {
+		threshold = 0.8
+	}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	logger.Info("approver.risk.active",
+		slog.Any("tools", cfg.Tools), slog.Float64("threshold", threshold), slog.Bool("fail_open", cfg.FailOpen))
+	return &agent.RiskApprover{
+		Inner:      inner,
+		Provider:   judge,
+		Tools:      cfg.Tools,
+		Threshold:  threshold,
+		FailClosed: !cfg.FailOpen,
+		Timeout:    timeout,
+	}
 }

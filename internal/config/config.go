@@ -946,6 +946,30 @@ type ApproverConfig struct {
 	// so a request must pass all three before the mode-selected
 	// (pattern / TUI) approver has its final say.
 	MultiParty MultiPartyConfig `mapstructure:"multi_party"`
+	// Risk adds a model-scored check after the deterministic layers:
+	// for the listed tools, a call they allow is judged by the model
+	// and denied when it is confidently risky. Same licence gate.
+	Risk RiskConfig `mapstructure:"risk"`
+}
+
+// RiskConfig configures the risk-scored approver (agent.RiskApprover).
+type RiskConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Tools to score, e.g. [bash, write, edit]; empty scores every
+	// tool (one extra model call per tool call).
+	Tools []string `mapstructure:"tools"`
+	// Threshold is the confidence at or above which a "risky" verdict
+	// denies the call. Default 0.8.
+	Threshold float64 `mapstructure:"threshold"`
+	// Model overrides the judge model on the claudecli provider (a
+	// small fast model keeps the added latency low). Empty uses the
+	// provider's model.
+	Model string `mapstructure:"model"`
+	// FailOpen lets calls through when the judge cannot answer. Off by
+	// default: a judge failure blocks the scored call.
+	FailOpen bool `mapstructure:"fail_open"`
+	// Timeout bounds one judgement. Default 60s.
+	Timeout time.Duration `mapstructure:"timeout"`
 }
 
 // RBACConfig configures the group-based RBAC wrapper.
