@@ -10,17 +10,13 @@
 # typically invokes (git, openssh-client, curl, jq, ripgrep, less).
 # Kept intentionally minimal — enough to let the agent operate on the
 # mounted /workspace, no build toolchains beyond that.
-# The image is not pinned to a digest here because we rebuild locally;
-# add `--platform` and `--pull=always` to your build command if you
-# want a hermetic pin.
 
 ########################  BUILDER  ########################
-# Base images pinned by digest for reproducibility. When updating, bump
-# both the tag comment and the sha256 (docker inspect --format
-# '{{index .RepoDigests 0}}' <image>).
-ARG GO_VERSION=1.26
-# golang:1.26-alpine as of 2026-07-12
-FROM golang:${GO_VERSION}-alpine AS builder
+# Base images are pinned by digest: a re-pushed tag cannot change what
+# we build on. To update, pull the new tag and bump the digest
+# (podman image inspect --format '{{index .RepoDigests 0}}' <image>).
+# golang:1.26-alpine as of 2026-10-01
+FROM golang:1.26-alpine@sha256:66f9a494af2b76ecb3eab75ff47166df61caec6d200c59d556b77327493d83a8 AS builder
 
 WORKDIR /src
 
@@ -49,7 +45,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         -o /out/rousseau ./cmd/rousseau
 
 ########################  RUNTIME  ########################
-FROM node:22-alpine AS runtime
+# node:22-alpine as of 2026-10-01
+FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS runtime
 
 # Runtime shell + tools that Claude Code's Bash tool commonly invokes.
 # bash is the shell contract the CLI expects; git + openssh-client
@@ -116,21 +113,37 @@ RUN apk upgrade --no-cache \
 # with pnpm-lock.yaml; yarn already ships with the node base image.
 RUN npm install -g pnpm
 
-# chezmoi (dotfiles manager). Pinned to whatever the installer script
-# resolves at build; a rebuild refreshes both the binary and the
-# dotfiles state (see the chezmoi init/apply step later in this file).
-RUN curl -fsSL https://get.chezmoi.io | sh -s -- -b /usr/local/bin \
- && chezmoi --version
+# chezmoi (dotfiles manager) comes from Alpine's signed package rather
+# than a `curl | sh` installer, fixed by the pinned base image.
+RUN apk add --no-cache chezmoi && chezmoi --version
 
-# mise (version manager, replaces asdf/rtx/nvm) installed system-wide.
+# mise (version manager) is a pinned release binary checked against a
+# SHA-256 recorded here, not `curl https://mise.run | sh`. Alpine's
+# package is too old: it resolves the global python@3.12 below to the
+# dotfiles' version instead. Bump MISE_VERSION with both sums (from the
+# release's SHASUMS256.txt, cross-checked against the downloaded file).
 # Runtimes installed via `mise install <lang>@<ver>` end up under
 # /home/rousseau/.local/share/mise/, which is a bind-mounted volume
 # in the Quadlet unit so cached toolchains survive image rebuilds.
-RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+ARG MISE_VERSION=2026.9.18
+ARG MISE_SHA256_X64=2fd6b7eb9889f13e07dc3fdb6271c05815b81e03da86ff9f875de0b5c473afb8
+ARG MISE_SHA256_ARM64=c415e01150d53746334e38d96d284f4c86953644b83d648855568f8fb9cc1e0a
+RUN set -eu; \
+    case "$(uname -m)" in \
+      x86_64)  arch=x64;   sum="$MISE_SHA256_X64" ;; \
+      aarch64) arch=arm64; sum="$MISE_SHA256_ARM64" ;; \
+      *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/mise \
+      "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/mise-v${MISE_VERSION}-linux-${arch}-musl"; \
+    echo "${sum}  /usr/local/bin/mise" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/mise; \
+    mise --version
 
-# Install the claude CLI. Pinned to a known-good major; bump when we
-# validate a newer one.
-ARG CLAUDE_VERSION=latest
+# Install the claude CLI, pinned to the version the policy bridge
+# (PreToolUse hook via --settings) was verified against. Bump only
+# after re-checking that a denied tool call is blocked.
+ARG CLAUDE_VERSION=2.1.285
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} \
  && node --version && claude --version
 
@@ -184,17 +197,20 @@ ENV PATH=/home/rousseau/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 
 # Pre-warm mise with the toolchains the workspace uses most. Any
 # per-repo `.mise.toml` can still override these on a folder basis.
-# --yes accepts license prompts (rust); MISE_TRUSTED_CONFIG_PATHS is
-# set so mise doesn't prompt on discovered configs at runtime.
-ENV MISE_YES=1 \
-    MISE_TRUSTED_CONFIG_PATHS=/workspace
+#
+# MISE_YES (accept license prompts, e.g. rust) applies to this build
+# step only. Neither it nor MISE_TRUSTED_CONFIG_PATHS is set at
+# runtime: either would auto-trust any repo's .mise.toml, and a
+# trusted mise config can run arbitrary commands (hooks, tasks, env
+# templates). Trust a repo explicitly with `mise trust <path>`, or set
+# MISE_TRUSTED_CONFIG_PATHS in the Quadlet for paths you control.
 # Node is already provided by the base image (node:22-alpine) — no
 # need to have mise compile it from source (Alpine musl has no
 # precompiled node@22 for mise, so `mise install node@22` would
 # invoke a full V8 C++ compile that takes 30+ minutes). Per-repo
 # `.mise.toml` can still ask mise for a different node if needed;
 # it'll fetch on first use in the container's writable layer.
-RUN mise use -g python@3.12 go@1.26 rust@latest || true \
+RUN MISE_YES=1 mise use -g python@3.12 go@1.26 rust@latest || true \
  && mise ls \
  && rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true
 # Clean /tmp so the runtime Tmpfs size=64m overlay doesn't fail with
