@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
@@ -148,7 +147,10 @@ type Router struct {
 	buildStamp string
 	idleAfter  time.Duration
 	now        func() time.Time
-	mu         sync.Mutex
+	// senders serialises session lookup and rebinding per sender; a
+	// router-wide mutex used to make every sender wait on one slow
+	// store call.
+	senders keyedMutex
 }
 
 // NewRouter constructs a Router. The runner performs each Turn; store
@@ -580,6 +582,7 @@ func (r *Router) cmdVersion() string {
 // user's next message picks up the empty new session. Users
 // wanting to kill an in-flight turn should use /cancel first.
 func (r *Router) cmdClear(ctx context.Context, from string) (string, error) {
+	defer r.senders.Lock(from)() // same lock as the session lookup it rebinds
 	sess := agent.NewSession("chat: " + from)
 	sess.Sender = from // so it surfaces in /sessions later
 	if err := r.store.Save(ctx, sess); err != nil {
@@ -748,8 +751,7 @@ func (r *Router) cmdResume(ctx context.Context, from, arg string) (string, error
 	if err != nil {
 		return err.Error(), nil // legible chat text; the lookup error is user-facing
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer r.senders.Lock(from)()
 	// Resuming is activity: without touching UpdatedAt, idle rotation
 	// would move the sender off a resumed old session on the very
 	// next message.
@@ -1287,8 +1289,7 @@ func (r *Router) allowed(ctx context.Context, from string) bool {
 }
 
 func (r *Router) sessionFor(ctx context.Context, jid string) (*agent.Session, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer r.senders.Lock(jid)()
 
 	id, ok, err := r.jidMap.Get(ctx, jid)
 	if err != nil {
@@ -1316,8 +1317,7 @@ func (r *Router) turnSessionFor(ctx context.Context, jid string) (*agent.Session
 		sess, err := r.sessionFor(ctx, jid)
 		return sess, "", err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer r.senders.Lock(jid)()
 
 	id, ok, err := r.jidMap.Get(ctx, jid)
 	if err != nil {
@@ -1348,7 +1348,7 @@ func (r *Router) turnSessionFor(ctx context.Context, jid string) (*agent.Session
 }
 
 // newSessionLocked creates, persists and binds a fresh session for
-// jid. Caller holds r.mu.
+// jid. Caller holds jid's lock in r.senders.
 func (r *Router) newSessionLocked(ctx context.Context, jid string) (*agent.Session, error) {
 	sess := agent.NewSession("chat: " + jid)
 	sess.Sender = jid // enables /sessions to list this session for the sender later
