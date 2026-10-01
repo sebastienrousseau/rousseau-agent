@@ -1100,6 +1100,10 @@ Sentry and others.
 
 `SPDX-License-Identifier: FSL-1.1-Apache-2.0`
 
+Redistributions and derivative works must keep the attribution in
+[`NOTICE`](./NOTICE) (Apache-2.0 section 4(d) applies once a version
+has converted).
+
 **Versions v0.0.3 and earlier** were dual-licensed under [Apache
 License 2.0](./LICENSE-APACHE) or [MIT](./LICENSE-MIT), at your
 option. Those releases retain their original license terms — the
