@@ -126,3 +126,26 @@ func TestBuildChildProvider_ErrorMentionsChildName(t *testing.T) {
 	assert.True(t, strings.Contains(err.Error(), "weird-name-42"),
 		"error should include the child name for operator debugging")
 }
+
+func TestBuildRouter_IntentsNeedAKnownClassifier(t *testing.T) {
+	base := config.RouterConfig{
+		Default: "sonnet",
+		Providers: map[string]config.RouterChildConfig{
+			"sonnet": {Kind: "openai", APIKey: "sk", Model: "gpt-4"},
+			"haiku":  {Kind: "openai", APIKey: "sk", Model: "gpt-4o-mini"},
+		},
+		Rules: []config.RouterRuleConfig{{Name: "chat", Intents: []string{"smalltalk"}, Use: "haiku"}},
+	}
+	_, err := buildRouter(&config.Config{Router: base})
+	assert.ErrorContains(t, err, "classifier")
+
+	bad := base
+	bad.Classifier = "nope"
+	_, err = buildRouter(&config.Config{Router: bad})
+	assert.ErrorContains(t, err, "router.classifier")
+
+	ok := base
+	ok.Classifier = "haiku"
+	_, err = buildRouter(&config.Config{Router: ok})
+	assert.NoError(t, err)
+}

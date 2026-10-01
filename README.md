@@ -454,7 +454,7 @@ then default**. The file lives at `~/.config/rousseau/config.yaml`;
 |---|---|
 | `provider` | Which backend to use: `claudecli`, `anthropic`, `openai`, `openrouter`, `ollama`, `bedrock`, `vertex`, `router` |
 | `anthropic`, `openai`, `openrouter`, `ollama`, `bedrock`, `vertex`, `claudecli` | Per-provider credentials, model, endpoint |
-| `router` | `default`, `rules`, and the named `providers` the rules select |
+| `router` | `default`, `rules` (by message length, tool-use count, session prefix, or `intents` classified by the `classifier` provider), and the named `providers` the rules select |
 | `agent` | System prompt, `max_iterations`, `session_idle_timeout`, `turn_timeout`, `max_concurrent_turns`, skills directory and signature policy, compression, approver |
 | `log` | `level` and `format` |
 | `state` | Path to the SQLite database |

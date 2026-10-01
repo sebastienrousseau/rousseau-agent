@@ -334,6 +334,10 @@ type RouterConfig struct {
 	// Providers maps a key (referenced by Rules.Use and Default) to
 	// its concrete child-provider config.
 	Providers map[string]RouterChildConfig `mapstructure:"providers"`
+	// Classifier names the provider key (in Providers) that labels
+	// messages for rules with intents. Required when any rule sets
+	// intents; one extra small call per request.
+	Classifier string `mapstructure:"classifier"`
 }
 
 // RouterRuleConfig is one routing rule. Empty match fields disable the
@@ -345,7 +349,10 @@ type RouterRuleConfig struct {
 	ToolUseCountMax int    `mapstructure:"tool_use_count_max"`
 	ToolUseCountMin int    `mapstructure:"tool_use_count_min"`
 	SessionIDPrefix string `mapstructure:"session_id_prefix"`
-	Use             string `mapstructure:"use"`
+	// Intents routes by what the message is about, e.g.
+	// [smalltalk] to a cheap model; see router.classifier.
+	Intents []string `mapstructure:"intents"`
+	Use     string   `mapstructure:"use"`
 }
 
 // RouterChildConfig configures one child provider under
