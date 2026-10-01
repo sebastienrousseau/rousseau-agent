@@ -66,6 +66,12 @@ type Config struct {
 	// audio attachment (content_type starts with "audio/"). Nil means
 	// audio attachments are silently ignored.
 	Transcriber Transcriber
+	// IsAllowed, when set, gates media pre-processing: for a sender it
+	// rejects, voice notes are not transcribed and files are not
+	// downloaded, so a stranger cannot spend bandwidth, CPU or API
+	// budget. Text still reaches the router, which makes the final
+	// decision (and handles SSO /login). Wired to Router.Allowed.
+	IsAllowed func(from string) bool
 	// MaxAudioBytes caps per-attachment downloads to protect the
 	// process from a maliciously large file. Zero uses 32 MiB.
 	MaxAudioBytes int64
@@ -289,10 +295,14 @@ func (c *Client) dispatch(ctx context.Context, frame gatewayFrame, handler trans
 // the handler, and posts the reply to the channel.
 func (c *Client) handleMessage(ctx context.Context, m discordMessage, handler transport.Handler) error {
 	body := m.Content
-	if body == "" {
+	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(m.Author.ID)
+	if body == "" && mediaOK {
 		body = c.transcribeAudio(ctx, &m)
 	}
-	attachments := c.collectImageAttachments(ctx, m.Attachments)
+	var attachments []transport.Attachment
+	if mediaOK {
+		attachments = c.collectImageAttachments(ctx, m.Attachments)
+	}
 	if body == "" && len(attachments) == 0 {
 		return nil
 	}

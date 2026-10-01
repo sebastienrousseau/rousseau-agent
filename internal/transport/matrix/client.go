@@ -53,6 +53,12 @@ type Config struct {
 	// the `url` field (mxc://…) is resolved via the media-download
 	// endpoint and the bytes handed off with the info.mimetype.
 	Transcriber Transcriber
+	// IsAllowed, when set, gates media pre-processing: for a sender it
+	// rejects, voice notes are not transcribed and files are not
+	// downloaded, so a stranger cannot spend bandwidth, CPU or API
+	// budget. Text still reaches the router, which makes the final
+	// decision (and handles SSO /login). Wired to Router.Allowed.
+	IsAllowed func(from string) bool
 	// MaxAudioBytes caps a single mxc download. Zero uses 32 MiB.
 	MaxAudioBytes int64
 	// MediaPolicy governs which m.image events are accepted (MIME
@@ -195,10 +201,14 @@ func (c *Client) route(ctx context.Context, resp *syncResponse, handler transpor
 // runs the handler, and posts the reply to the room.
 func (c *Client) handleEvent(ctx context.Context, roomID string, evt timelineEvent, handler transport.Handler) {
 	body := extractBody(evt.Content)
-	if body == "" {
+	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(evt.Sender)
+	if body == "" && mediaOK {
 		body = c.transcribeAudio(ctx, evt.Content)
 	}
-	attachments := c.collectImageAttachments(ctx, evt.Content)
+	var attachments []transport.Attachment
+	if mediaOK {
+		attachments = c.collectImageAttachments(ctx, evt.Content)
+	}
 	if body == "" && len(attachments) == 0 {
 		return
 	}

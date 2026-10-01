@@ -54,6 +54,12 @@ type Config struct {
 	// Transcriber, when non-nil, is invoked when a received message
 	// has no text but carries an audio/* attachment.
 	Transcriber Transcriber
+	// IsAllowed, when set, gates media pre-processing: for a sender it
+	// rejects, voice notes are not transcribed and files are not
+	// downloaded, so a stranger cannot spend bandwidth, CPU or API
+	// budget. Text still reaches the router, which makes the final
+	// decision (and handles SSO /login). Wired to Router.Allowed.
+	IsAllowed func(from string) bool
 	// MaxAudioBytes caps a single attachment download to protect
 	// against a runaway file. Zero uses 32 MiB.
 	MaxAudioBytes int64
@@ -247,10 +253,14 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 // handler, and replies into the record's first chat.
 func (c *Client) handleMessage(ctx context.Context, m messageRecord, handler transport.Handler) {
 	body := extractText(m)
-	if body == "" {
+	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(m.Handle.Address)
+	if body == "" && mediaOK {
 		body = c.transcribeAudio(ctx, m.Attachments)
 	}
-	attachments := c.collectImageAttachments(ctx, m.Attachments)
+	var attachments []transport.Attachment
+	if mediaOK {
+		attachments = c.collectImageAttachments(ctx, m.Attachments)
+	}
 	if body == "" && len(attachments) == 0 {
 		return
 	}

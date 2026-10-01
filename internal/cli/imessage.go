@@ -72,6 +72,7 @@ func newIMessageCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := imessage.New(imessage.Config{
+				IsAllowed:    wiring.SenderAllowed("imessage"), // no media work for senders the router would reject
 				BaseURL:      base,
 				Password:     pass,
 				ReplyHeader:  cfg.IMessage.ReplyHeader,

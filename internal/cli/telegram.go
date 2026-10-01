@@ -61,6 +61,7 @@ func newTelegramCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := telegram.New(telegram.Config{
+				IsAllowed:   wiring.SenderAllowed("telegram"), // no media work for senders the router would reject
 				Token:       tok,
 				BaseURL:     cfg.Telegram.BaseURL,
 				ReplyHeader: cfg.Telegram.ReplyHeader,

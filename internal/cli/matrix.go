@@ -65,6 +65,7 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := matrix.New(matrix.Config{
+				IsAllowed:     wiring.SenderAllowed("matrix"), // no media work for senders the router would reject
 				HomeserverURL: hs,
 				AccessToken:   tok,
 				UserID:        uid,

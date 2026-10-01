@@ -60,6 +60,7 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := discord.New(discord.Config{
+				IsAllowed:   wiring.SenderAllowed("discord"), // no media work for senders the router would reject
 				Token:       tok,
 				ReplyHeader: cfg.Discord.ReplyHeader,
 				Transcriber: discTranscriber,

@@ -60,6 +60,12 @@ type Config struct {
 	// per-image and per-turn byte caps). Zero-value falls back to the
 	// media.Policy defaults documented on that package.
 	MediaPolicy media.Policy
+	// IsAllowed, when set, gates media pre-processing: for a sender it
+	// rejects, voice notes are not transcribed and files are not
+	// downloaded, so a stranger cannot spend bandwidth, CPU or API
+	// budget. Text still reaches the router, which makes the final
+	// decision (and handles SSO /login). Wired to Router.Allowed.
+	IsAllowed func(from string) bool
 }
 
 // WSConn is the narrow subset of *websocket.Conn the transport uses.
@@ -271,7 +277,10 @@ func (c *Client) dispatchEvent(ctx context.Context, payload eventsAPIPayload, ha
 		return nil
 	}
 	body := payload.Event.Text
-	attachments := c.collectFileAttachments(ctx, payload.Event.Files)
+	var attachments []transport.Attachment
+	if c.cfg.IsAllowed == nil || c.cfg.IsAllowed(payload.Event.User) {
+		attachments = c.collectFileAttachments(ctx, payload.Event.Files)
+	}
 	if body == "" && len(attachments) == 0 {
 		return nil
 	}

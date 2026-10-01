@@ -62,6 +62,7 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := signal.New(signal.Config{
+				IsAllowed:      wiring.SenderAllowed("signal"), // no media work for senders the router would reject
 				Binary:         firstNonEmpty(binary, cfg.Signal.Binary),
 				Account:        acct,
 				ExtraArgs:      cfg.Signal.ExtraArgs,

@@ -54,6 +54,7 @@ func newSlackCmd(opts *Options) *cobra.Command {
 			wiring.StartBackgroundServers(ctx)
 
 			client, err := slack.New(slack.Config{
+				IsAllowed:   wiring.SenderAllowed("slack"), // no media work for senders the router would reject
 				AppToken:    app,
 				BotToken:    bot,
 				BotUserID:   firstNonEmpty(botUserID, cfg.Slack.BotUserID),
