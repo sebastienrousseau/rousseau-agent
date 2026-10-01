@@ -59,16 +59,11 @@ func toRules(in []config.PatternEntry) []agent.PatternRule {
 // rbac.rules AND (b) the licence unlocks
 // [license.FeatureGovernanceAdvanced].
 //
-// The two-condition gate is deliberate:
-//   - Config without licence → INFO log + inner returned as-is
-//     (the operator sees "your rules are inert" rather than a
-//     silent no-op).
-//   - Licence without config → nothing to enforce, inner
-//     returned unchanged. No noise.
-//
-// Returns the inner approver on any construction error (fail-
-// safe: a broken RBAC config must not take the daemon offline;
-// the operator sees a WARN and their existing approver still runs).
+// Configured but unenforceable (no licence, or a rule that does not
+// build) fails closed on the governed tools: calls to the tools the
+// rules name are denied with the cause, every other tool still goes
+// to inner, and the daemon stays up. Licence without config →
+// nothing to enforce, inner returned unchanged.
 func wrapWithRBAC(inner agent.Approver, cfg config.RBACConfig, checker license.Checker, logger *slog.Logger) agent.Approver {
 	if logger == nil {
 		logger = slog.Default()
@@ -77,12 +72,13 @@ func wrapWithRBAC(inner agent.Approver, cfg config.RBACConfig, checker license.C
 		return inner
 	}
 	if checker == nil || !checker.IsEnabled(license.FeatureGovernanceAdvanced) {
-		logger.Info("approver.rbac.licence_required",
+		logger.Error("approver.rbac.licence_required",
 			slog.Int("rule_count", len(cfg.Rules)),
 			slog.String("feature", string(license.FeatureGovernanceAdvanced)),
+			slog.String("effect", "governed tools are denied until the licence unlocks the rules"),
 			slog.String("hint", "add ROUSSEAU_LICENSE_KEY with governance_advanced to activate; see docs/COMMERCIAL.md"),
 		)
-		return inner
+		return denyGoverned(inner, rbacTools(cfg), "RBAC rules are configured but not licensed")
 	}
 	rules := make([]rbac.Rule, len(cfg.Rules))
 	for i, r := range cfg.Rules {
@@ -90,11 +86,12 @@ func wrapWithRBAC(inner agent.Approver, cfg config.RBACConfig, checker license.C
 	}
 	wrapped, err := rbac.NewApprover(rules, inner)
 	if err != nil {
-		logger.Warn("approver.rbac.build_failed",
+		logger.Error("approver.rbac.build_failed",
 			slog.String("err", err.Error()),
+			slog.String("effect", "governed tools are denied until the rules build"),
 			slog.String("hint", "check agent.approver.rbac.rules for entries with an empty tool name"),
 		)
-		return inner
+		return denyGoverned(inner, rbacTools(cfg), "RBAC rules are configured but invalid: "+err.Error())
 	}
 	logger.Info("approver.rbac.active", slog.Int("rule_count", len(rules)))
 	return wrapped
@@ -106,15 +103,11 @@ func wrapWithRBAC(inner agent.Approver, cfg config.RBACConfig, checker license.C
 // Composition intent: OPA wraps AFTER RBAC so a request must
 // pass BOTH layers before reaching the mode-selected approver.
 //
-// Same three-condition gate as [wrapWithRBAC]:
-//
-//   - No policy_file → inner returned as-is (no noise).
-//   - Policy configured but licence doesn't unlock → INFO log
-//   - inner returned (operator sees "your Rego is inert").
-//   - Policy file missing / unreadable / uncompilable → WARN
-//     log + inner returned (fail-safe: a broken policy must
-//     never take the daemon offline; the OSS approver still
-//     runs).
+// No policy_file → inner returned as-is (no noise). A configured
+// policy that cannot be enforced (unlicensed, missing, unreadable or
+// uncompilable) fails closed: the policy governs every call, so every
+// tool call is denied with the cause until it is fixed. The daemon
+// stays up and still answers without tools.
 func wrapWithOPA(ctx context.Context, inner agent.Approver, cfg config.OPAConfig, checker license.Checker, logger *slog.Logger) agent.Approver {
 	if logger == nil {
 		logger = slog.Default()
@@ -123,21 +116,23 @@ func wrapWithOPA(ctx context.Context, inner agent.Approver, cfg config.OPAConfig
 		return inner
 	}
 	if checker == nil || !checker.IsEnabled(license.FeatureGovernanceAdvanced) {
-		logger.Info("approver.opa.licence_required",
+		logger.Error("approver.opa.licence_required",
 			slog.String("policy_file", cfg.PolicyFile),
 			slog.String("feature", string(license.FeatureGovernanceAdvanced)),
+			slog.String("effect", "all tool calls are denied until the licence unlocks the policy"),
 			slog.String("hint", "add ROUSSEAU_LICENSE_KEY with governance_advanced to activate; see docs/COMMERCIAL.md"),
 		)
-		return inner
+		return denyGoverned(inner, nil, "an OPA policy is configured but not licensed")
 	}
 	policy, err := os.ReadFile(cfg.PolicyFile) //nolint:gosec // path is operator-supplied config
 	if err != nil {
-		logger.Warn("approver.opa.policy_read_failed",
+		logger.Error("approver.opa.policy_read_failed",
 			slog.String("policy_file", cfg.PolicyFile),
 			slog.String("err", err.Error()),
+			slog.String("effect", "all tool calls are denied until the policy loads"),
 			slog.String("hint", "check the file exists and is readable by the daemon UID"),
 		)
-		return inner
+		return denyGoverned(inner, nil, "the OPA policy file cannot be read")
 	}
 	wrapped, err := opa.NewApprover(ctx, opa.Config{
 		Policy:     string(policy),
@@ -145,12 +140,13 @@ func wrapWithOPA(ctx context.Context, inner agent.Approver, cfg config.OPAConfig
 		ModuleName: cfg.PolicyFile,
 	}, inner)
 	if err != nil {
-		logger.Warn("approver.opa.compile_failed",
+		logger.Error("approver.opa.compile_failed",
 			slog.String("policy_file", cfg.PolicyFile),
 			slog.String("err", err.Error()),
+			slog.String("effect", "all tool calls are denied until the policy compiles"),
 			slog.String("hint", "run `opa parse` on the policy to see the syntax error location"),
 		)
-		return inner
+		return denyGoverned(inner, nil, "the OPA policy does not compile")
 	}
 	logger.Info("approver.opa.active",
 		slog.String("policy_file", cfg.PolicyFile),
@@ -162,7 +158,8 @@ func wrapWithOPA(ctx context.Context, inner agent.Approver, cfg config.OPAConfig
 // wrapWithMultiParty layers the multi-party approver on top of
 // inner when (a) the operator configured multi_party.rules AND
 // (b) the licence unlocks [license.FeatureGovernanceAdvanced].
-// Same three-condition gate as wrapWithRBAC / wrapWithOPA.
+// Configured but unenforceable fails closed on the rule tools, as for
+// wrapWithRBAC.
 //
 // The returned [*approval.PendingManager] is what the router
 // needs to service /approve /deny chat commands — nil when the
@@ -176,12 +173,13 @@ func wrapWithMultiParty(inner agent.Approver, cfg config.MultiPartyConfig, check
 		return inner, nil
 	}
 	if checker == nil || !checker.IsEnabled(license.FeatureGovernanceAdvanced) {
-		logger.Info("approver.multi_party.licence_required",
+		logger.Error("approver.multi_party.licence_required",
 			slog.Int("rule_count", len(cfg.Rules)),
 			slog.String("feature", string(license.FeatureGovernanceAdvanced)),
+			slog.String("effect", "governed tools are denied until the licence unlocks the rules"),
 			slog.String("hint", "add ROUSSEAU_LICENSE_KEY with governance_advanced to activate; see docs/COMMERCIAL.md"),
 		)
-		return inner, nil
+		return denyGoverned(inner, multiPartyTools(cfg), "multi-party approval is configured but not licensed"), nil
 	}
 	rules := make([]approval.Rule, len(cfg.Rules))
 	for i, r := range cfg.Rules {
@@ -194,11 +192,12 @@ func wrapWithMultiParty(inner agent.Approver, cfg config.MultiPartyConfig, check
 	pending := approval.NewPendingManager(emitter)
 	wrapped, err := approval.NewApprover(rules, inner, pending)
 	if err != nil {
-		logger.Warn("approver.multi_party.build_failed",
+		logger.Error("approver.multi_party.build_failed",
 			slog.String("err", err.Error()),
+			slog.String("effect", "governed tools are denied until the rules build"),
 			slog.String("hint", "check agent.approver.multi_party.rules for entries with an empty tool or NeededApprovals < 1"),
 		)
-		return inner, nil
+		return denyGoverned(inner, multiPartyTools(cfg), "multi-party rules are configured but invalid: "+err.Error()), nil
 	}
 	logger.Info("approver.multi_party.active", slog.Int("rule_count", len(rules)))
 	return wrapped, pending
@@ -238,4 +237,51 @@ func chainApprovers(first, second agent.Approver) agent.Approver {
 		}
 		return second.Approve(ctx, req)
 	})
+}
+
+// governedDenier fails closed for governance that is configured but
+// cannot be enforced: calls to the governed tools (every tool when
+// tools is nil) are denied with the cause; other calls go to inner.
+type governedDenier struct {
+	inner  agent.Approver
+	tools  map[string]struct{}
+	reason string
+}
+
+func denyGoverned(inner agent.Approver, tools []string, cause string) agent.Approver {
+	d := &governedDenier{inner: inner, reason: "tool disabled: " + cause + "; see the daemon log"}
+	if tools != nil {
+		d.tools = make(map[string]struct{}, len(tools))
+		for _, t := range tools {
+			d.tools[strings.ToLower(strings.TrimSpace(t))] = struct{}{}
+		}
+	}
+	return d
+}
+
+// Approve satisfies agent.Approver.
+func (d *governedDenier) Approve(ctx context.Context, req agent.ApprovalRequest) (agent.Decision, string) {
+	if d.tools == nil {
+		return agent.DecisionDeny, d.reason
+	}
+	if _, governed := d.tools[strings.ToLower(req.ToolName)]; governed {
+		return agent.DecisionDeny, d.reason
+	}
+	return d.inner.Approve(ctx, req)
+}
+
+func rbacTools(cfg config.RBACConfig) []string {
+	out := make([]string, 0, len(cfg.Rules))
+	for _, r := range cfg.Rules {
+		out = append(out, r.Tool)
+	}
+	return out
+}
+
+func multiPartyTools(cfg config.MultiPartyConfig) []string {
+	out := make([]string, 0, len(cfg.Rules))
+	for _, r := range cfg.Rules {
+		out = append(out, r.Tool)
+	}
+	return out
 }

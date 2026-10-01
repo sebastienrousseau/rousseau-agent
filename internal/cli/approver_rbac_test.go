@@ -23,22 +23,21 @@ func TestWrapWithRBAC_NoRulesReturnsInnerUnchanged(t *testing.T) {
 	assert.Equal(t, inner, got, "empty rules must return inner unchanged")
 }
 
-func TestWrapWithRBAC_UnlicensedFallsBackToInner(t *testing.T) {
-	// The most common misconfiguration: operator writes rules
-	// but hasn't attached a licence. Daemon must fall back to
-	// the inner approver, not silently start denying. INFO log
-	// is asserted elsewhere via the logger contract.
+func TestWrapWithRBAC_UnlicensedDeniesGovernedTools(t *testing.T) {
+	// Rules configured, no licence: the rules cannot run, so the
+	// tools they govern fail closed (used to fall through to the
+	// inner allow-all, i.e. ungoverned). Other tools still go to inner.
 	inner := agent.AllowAllApprover{}
 	cfg := config.RBACConfig{Rules: []config.RBACRule{
 		{Tool: "bash", AllowedGroups: []string{"eng"}},
 	}}
 	got := wrapWithRBAC(inner, cfg, license.Core(), silentLogger())
 
-	// If wrap DID take effect, an anonymous request to "bash"
-	// would be denied. With the fallback, it must succeed.
-	decision, _ := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
-	assert.Equal(t, agent.DecisionAllow, decision,
-		"unlicensed RBAC must fall through to inner allow-all, not start denying")
+	decision, reason := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "Bash"})
+	assert.Equal(t, agent.DecisionDeny, decision, "governed tool fails closed")
+	assert.Contains(t, reason, "not licensed")
+	decision, _ = got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "read"})
+	assert.Equal(t, agent.DecisionAllow, decision, "ungoverned tools still reach inner")
 }
 
 func TestWrapWithRBAC_LicensedRulesFilterAnonymous(t *testing.T) {
@@ -97,14 +96,14 @@ func TestWrapWithRBAC_BadRuleFallsBackToInner(t *testing.T) {
 }
 
 func TestWrapWithRBAC_NilCheckerActsLikeUnlicensed(t *testing.T) {
-	// Defensive: an upstream wiring bug passing nil must NOT
-	// activate the gate silently.
+	// Defensive: an upstream wiring bug passing nil must behave
+	// like no licence, i.e. fail closed on the governed tools.
 	cfg := config.RBACConfig{Rules: []config.RBACRule{
 		{Tool: "bash", AllowedGroups: []string{"eng"}},
 	}}
 	got := wrapWithRBAC(agent.AllowAllApprover{}, cfg, nil, silentLogger())
 	decision, _ := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
-	assert.Equal(t, agent.DecisionAllow, decision)
+	assert.Equal(t, agent.DecisionDeny, decision)
 }
 
 func TestCheckGovernance_UnconfiguredEmitsNothing(t *testing.T) {

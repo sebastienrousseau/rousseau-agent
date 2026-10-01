@@ -35,26 +35,23 @@ func TestWrapWithOPA_NoPolicyFileReturnsInner(t *testing.T) {
 	assert.Equal(t, inner, got)
 }
 
-func TestWrapWithOPA_UnlicensedFallsBackToInner(t *testing.T) {
-	// Configured policy but licence doesn't unlock → the
-	// original approver runs. Never silently start denying.
+func TestWrapWithOPA_UnlicensedDeniesAllTools(t *testing.T) {
+	// A policy governs every call; if it cannot run (no licence),
+	// every tool call fails closed instead of running ungoverned.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "policy.rego")
 	require.NoError(t, os.WriteFile(path, []byte(testDenyPolicy), 0o600))
 
-	inner := agent.AllowAllApprover{}
-	got := wrapWithOPA(context.Background(), inner, config.OPAConfig{PolicyFile: path},
+	got := wrapWithOPA(context.Background(), agent.AllowAllApprover{}, config.OPAConfig{PolicyFile: path},
 		license.Core(), silentLogger())
-
-	// If wrap DID take effect, "bash" would deny. Fallback →
-	// allow-all runs → decision is allow.
-	decision, _ := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
-	assert.Equal(t, agent.DecisionAllow, decision)
+	decision, reason := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "read"})
+	assert.Equal(t, agent.DecisionDeny, decision)
+	assert.Contains(t, reason, "not licensed")
 }
 
-func TestWrapWithOPA_MissingPolicyFileFallsBackToInner(t *testing.T) {
-	// Fail-safe: a missing file must NOT take the daemon
-	// offline. The operator sees a doctor fail row + WARN log.
+func TestWrapWithOPA_MissingPolicyFileDeniesAllTools(t *testing.T) {
+	// The daemon stays up (no error), but tools fail closed until
+	// the policy file exists.
 	chk := signAndLoadLicense(t, license.Claims{
 		Subject:   "cust-gov",
 		Tier:      license.TierEnterprise,
@@ -63,13 +60,12 @@ func TestWrapWithOPA_MissingPolicyFileFallsBackToInner(t *testing.T) {
 	got := wrapWithOPA(context.Background(), agent.AllowAllApprover{},
 		config.OPAConfig{PolicyFile: "/does/not/exist.rego"},
 		chk, silentLogger())
-	decision, _ := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
-	assert.Equal(t, agent.DecisionAllow, decision, "missing policy file must not silently start denying")
+	decision, reason := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
+	assert.Equal(t, agent.DecisionDeny, decision)
+	assert.Contains(t, reason, "cannot be read")
 }
 
-func TestWrapWithOPA_BadPolicyFallsBackToInner(t *testing.T) {
-	// Parse-time compile error → fall back to inner. Broken
-	// Rego must never take the daemon offline.
+func TestWrapWithOPA_BadPolicyDeniesAllTools(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.rego")
 	require.NoError(t, os.WriteFile(path, []byte("this is not valid rego {{{"), 0o600))
@@ -81,8 +77,9 @@ func TestWrapWithOPA_BadPolicyFallsBackToInner(t *testing.T) {
 	})
 	got := wrapWithOPA(context.Background(), agent.AllowAllApprover{},
 		config.OPAConfig{PolicyFile: path}, chk, silentLogger())
-	decision, _ := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
-	assert.Equal(t, agent.DecisionAllow, decision)
+	decision, reason := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
+	assert.Equal(t, agent.DecisionDeny, decision)
+	assert.Contains(t, reason, "does not compile")
 }
 
 func TestWrapWithOPA_LicensedAllowPolicyPassesThrough(t *testing.T) {
@@ -122,8 +119,6 @@ func TestWrapWithOPA_LicensedDenyPolicyBlocks(t *testing.T) {
 }
 
 func TestWrapWithOPA_NilCheckerActsLikeUnlicensed(t *testing.T) {
-	// Defensive: a nil checker (upstream wiring bug) MUST NOT
-	// activate the gate silently.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "deny.rego")
 	require.NoError(t, os.WriteFile(path, []byte(testDenyPolicy), 0o600))
@@ -131,7 +126,7 @@ func TestWrapWithOPA_NilCheckerActsLikeUnlicensed(t *testing.T) {
 	got := wrapWithOPA(context.Background(), agent.AllowAllApprover{},
 		config.OPAConfig{PolicyFile: path}, nil, silentLogger())
 	decision, _ := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
-	assert.Equal(t, agent.DecisionAllow, decision)
+	assert.Equal(t, agent.DecisionDeny, decision)
 }
 
 // -- checkGovernance covers OPA rows too --
