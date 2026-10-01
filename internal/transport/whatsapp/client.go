@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
@@ -84,6 +85,8 @@ type Client struct {
 	// process exits non-zero and the supervisor restarts it into a
 	// fresh pairing flow. Buffered 1; later sends are dropped.
 	fatal chan error
+	// linked mirrors the connected gauge for the health heartbeat.
+	linked atomic.Bool
 	// baseCtx is Start's context. In-flight turns derive from it so
 	// shutdown cancels them (stopping their claude processes) instead
 	// of leaving them running on context.Background().
@@ -309,7 +312,7 @@ func (c *Client) Stop() error {
 		return nil
 	}
 	c.stopped = true
-	connectedGauge().Set(0)
+	c.setLinked(false)
 	if c.wm != nil {
 		c.wm.Disconnect()
 	}
@@ -324,7 +327,7 @@ func (c *Client) onEvent(raw any) {
 	case *events.Connected:
 		c.handleConnected()
 	case *events.Disconnected:
-		connectedGauge().Set(0)
+		c.setLinked(false)
 		c.logger.Warn("whatsapp.disconnected")
 	case *events.LoggedOut:
 		c.logger.Error("whatsapp.logged_out", slog.Int("reason", int(evt.Reason)))
@@ -350,6 +353,19 @@ func (c *Client) onEvent(raw any) {
 	}
 }
 
+// Connected reports whether the WhatsApp session is currently linked
+// (between a Connected event and the next disconnect or session end).
+func (c *Client) Connected() bool { return c.linked.Load() }
+
+func (c *Client) setLinked(up bool) {
+	c.linked.Store(up)
+	if up {
+		connectedGauge().Set(1)
+	} else {
+		connectedGauge().Set(0)
+	}
+}
+
 func connectedGauge() prometheus.Gauge {
 	return observability.TransportConnected.WithLabelValues("whatsapp")
 }
@@ -358,7 +374,7 @@ func connectedGauge() prometheus.Gauge {
 // first one wins and later ones are dropped, so the whatsmeow event
 // goroutine never stalls.
 func (c *Client) endSession(err error) {
-	connectedGauge().Set(0)
+	c.setLinked(false)
 	select {
 	case c.fatal <- err:
 	default:
@@ -376,7 +392,7 @@ func (c *Client) handleConnected() {
 	c.keepaliveMisses = 0
 	c.mu.Unlock()
 	c.adoptOwnID()
-	connectedGauge().Set(1)
+	c.setLinked(true)
 	c.logger.Info("whatsapp.connected")
 }
 

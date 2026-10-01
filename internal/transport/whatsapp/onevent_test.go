@@ -328,8 +328,10 @@ func TestOnEvent_ConnectedGaugeTracksLink(t *testing.T) {
 
 	c.onEvent(&events.Connected{})
 	assert.Equal(t, 1.0, testutil.ToFloat64(g))
+	assert.True(t, c.Connected())
 	c.onEvent(&events.Disconnected{})
 	assert.Equal(t, 0.0, testutil.ToFloat64(g))
+	assert.False(t, c.Connected())
 	c.onEvent(&events.Connected{})
 	c.onEvent(&events.LoggedOut{Reason: 401})
 	assert.Equal(t, 0.0, testutil.ToFloat64(g))

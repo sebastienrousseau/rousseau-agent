@@ -99,6 +99,7 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			}
 			defer shutdown()
 
+			startHeartbeat(ctx, opts, "whatsapp", func() (bool, bool) { return client.Connected(), true })
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
 			err = client.Start(ctx, wiring.TransportHandler("whatsapp", opts.Logger))
 			if errors.Is(err, whatsapp.ErrNeedsOperator) {

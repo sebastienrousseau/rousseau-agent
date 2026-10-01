@@ -48,6 +48,7 @@ func newTelegramCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "telegram", nil)
 
 			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
 			if tErr != nil {

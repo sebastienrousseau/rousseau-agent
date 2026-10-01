@@ -67,6 +67,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.PersistentFlags().StringVar(&opts.ConfigPath, "config", "", "path to a config file (default: $XDG_CONFIG_HOME/rousseau/config.yaml)")
 
 	root.AddCommand(newHookCmd())
+	root.AddCommand(newHealthCmd())
 	root.AddCommand(newChatCmd(opts))
 	root.AddCommand(newWhatsAppCmd(opts))
 	root.AddCommand(newDoctorCmd(opts))

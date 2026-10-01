@@ -44,6 +44,7 @@ func newSMSCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "sms", nil)
 
 			client, err := sms.New(sms.Config{
 				Provider:    sms.Provider(prov),

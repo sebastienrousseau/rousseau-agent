@@ -68,6 +68,7 @@ func newEmailCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "email", nil)
 
 			poll := 0 * time.Second
 			if s := firstNonEmpty(pollInterval, cfg.Email.PollInterval); s != "" {

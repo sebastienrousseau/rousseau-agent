@@ -120,6 +120,17 @@ Environment=ROUSSEAU_CLAUDECLI_PERMISSION_MODE=bypassPermissions
 # contents read/write only, no workflow scope.
 #Secret=rousseau_gh_token,type=env,target=GH_TOKEN
 
+# Liveness, not just "process running": the daemon rewrites a
+# heartbeat every 15s with its WhatsApp link state, and this check
+# fails when it is missing, older than 90s, or reports disconnected.
+# After 3 failures podman kills the container and Restart=always brings
+# it back. The start period covers connect (and a pairing window).
+HealthCmd=/usr/local/bin/rousseau health whatsapp
+HealthInterval=60s
+HealthRetries=3
+HealthStartPeriod=180s
+HealthOnFailure=kill
+
 Exec=whatsapp
 
 [Service]

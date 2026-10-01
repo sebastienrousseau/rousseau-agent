@@ -45,3 +45,6 @@ func (*Client) Stop() error { return nil }
 
 // Name satisfies transport.Transport.
 func (*Client) Name() string { return "whatsapp" }
+
+// Connected is always false in the no_whatsmeow build.
+func (*Client) Connected() bool { return false }

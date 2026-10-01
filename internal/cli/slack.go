@@ -52,6 +52,7 @@ func newSlackCmd(opts *Options) *cobra.Command {
 			}
 			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "slack", nil)
 
 			client, err := slack.New(slack.Config{
 				IsAllowed:   wiring.SenderAllowed("slack"), // no media work for senders the router would reject
