@@ -164,7 +164,11 @@ func TestRunHook_DenyWithoutReason(t *testing.T) {
 }
 
 func TestRunHook_MalformedDecisionBlocks(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "g.sock")
+	// Not t.TempDir(): macOS's is too long for a unix socket path.
+	dir, err := os.MkdirTemp("", "tg-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) }) //nolint:errcheck // test cleanup
+	path := filepath.Join(dir, "g.sock")
 	ln, err := net.Listen("unix", path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = ln.Close() }) //nolint:errcheck // test cleanup
