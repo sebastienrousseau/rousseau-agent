@@ -1,12 +1,15 @@
 package toolgate
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -110,4 +113,71 @@ func TestHookSettings(t *testing.T) {
 	assert.Equal(t, "*", v.Hooks.PreToolUse[0].Matcher)
 	assert.Equal(t, "command", v.Hooks.PreToolUse[0].Hooks[0].Type)
 	assert.Equal(t, 600, v.Hooks.PreToolUse[0].Hooks[0].Timeout)
+}
+
+func TestListen_Errors(t *testing.T) {
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	_, err := Listen(nil, time.Second, nil)
+	assert.ErrorContains(t, err, "toolgate: socket dir")
+
+	// A socket path past the ~108-byte unix limit cannot be bound.
+	long := filepath.Join(t.TempDir(), strings.Repeat("d", 120))
+	require.NoError(t, os.MkdirAll(long, 0o700))
+	t.Setenv("TMPDIR", long)
+	_, err = Listen(nil, time.Second, nil)
+	assert.ErrorContains(t, err, "toolgate: listen")
+	entries, rerr := os.ReadDir(long)
+	require.NoError(t, rerr)
+	assert.Empty(t, entries, "a failed listen removes its socket dir")
+}
+
+func TestReadLine(t *testing.T) {
+	// Longer than the reader's buffer: fragments are joined.
+	big := strings.Repeat("a", 100) + "\n"
+	line, err := readLine(bufio.NewReaderSize(strings.NewReader(big), 16), 1024)
+	require.NoError(t, err)
+	assert.Equal(t, big, string(line))
+
+	line, err = readLine(bufio.NewReader(strings.NewReader("no newline")), 1024)
+	require.NoError(t, err)
+	assert.Equal(t, "no newline", string(line))
+
+	_, err = readLine(bufio.NewReaderSize(strings.NewReader(big), 16), 50)
+	assert.ErrorContains(t, err, "too large")
+
+	_, err = readLine(bufio.NewReader(strings.NewReader("")), 1024)
+	assert.ErrorIs(t, err, io.EOF)
+}
+
+func TestRunHook_OversizedInputBlocks(t *testing.T) {
+	var stderr bytes.Buffer
+	huge := strings.NewReader(strings.Repeat("x", maxRequestBytes+1))
+	assert.Equal(t, ExitBlock, RunHook(huge, &stderr, "/nonexistent/gate.sock", time.Second))
+	assert.Contains(t, stderr.String(), "unreadable tool call")
+}
+
+func TestRunHook_DenyWithoutReason(t *testing.T) {
+	s := startServer(t, func(context.Context, Request) Response { return Response{Allow: false} })
+	var stderr bytes.Buffer
+	assert.Equal(t, ExitBlock, RunHook(strings.NewReader(bashEvent), &stderr, s.Path(), time.Second))
+	assert.Contains(t, stderr.String(), "denied by policy")
+}
+
+func TestRunHook_MalformedDecisionBlocks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "g.sock")
+	ln, err := net.Listen("unix", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() }) //nolint:errcheck // test cleanup
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		defer conn.Close()                                         //nolint:errcheck // test server
+		_, _ = bufio.NewReader(conn).ReadBytes('\n')               //nolint:errcheck // request is irrelevant
+		_, _ = conn.Write([]byte("{\"allow\":true,\"reason\":\n")) //nolint:errcheck // deliberately truncated JSON
+	}()
+	var stderr bytes.Buffer
+	assert.Equal(t, ExitBlock, RunHook(strings.NewReader(bashEvent), &stderr, path, time.Second))
+	assert.Contains(t, stderr.String(), "malformed decision")
 }

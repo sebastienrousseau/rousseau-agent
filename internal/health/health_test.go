@@ -2,7 +2,9 @@ package health
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,4 +51,39 @@ func TestRun_WritesBeatsUntilCancelled(t *testing.T) {
 	}, time.Second, 5*time.Millisecond)
 	cancel()
 	<-done
+}
+
+func TestWrite_Errors(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "file")
+	require.NoError(t, os.WriteFile(blocker, nil, 0o600))
+	assert.ErrorContains(t, Write(filepath.Join(blocker, "x.json"), Beat{}), "health: dir")
+
+	p := filepath.Join(dir, "beat.json")
+	require.NoError(t, os.Mkdir(p+".tmp", 0o700))
+	assert.ErrorContains(t, Write(p, Beat{}), "health: write")
+}
+
+func TestCheck_UnreadableAndMalformed(t *testing.T) {
+	dir := t.TempDir()
+	assert.ErrorContains(t, Check(dir, time.Minute, time.Now()), "read heartbeat")
+
+	p := filepath.Join(dir, "bad.json")
+	require.NoError(t, os.WriteFile(p, []byte("{"), 0o600))
+	assert.ErrorContains(t, Check(p, time.Minute, time.Now()), "malformed heartbeat")
+}
+
+func TestRun_BeatsOnEachTick(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "beat.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		Run(ctx, p, "signal", func() (bool, bool) { calls.Add(1); return false, false }, 5*time.Millisecond)
+		close(done)
+	}()
+	assert.Eventually(t, func() bool { return calls.Load() >= 3 }, time.Second, 5*time.Millisecond)
+	cancel()
+	<-done
+	assert.NoError(t, Check(p, time.Minute, time.Now()), "no connection notion: a fresh beat is healthy")
 }
