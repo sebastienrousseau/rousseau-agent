@@ -79,6 +79,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, err
 	}
+	if err := ensureColumn(ctx, db, "search_text", `ALTER TABLE sessions ADD COLUMN search_text TEXT NOT NULL DEFAULT ''`); err != nil {
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
+		return nil, err
+	}
 	s := &Store{db: db}
 	if err := s.EnsureSearch(ctx); err != nil {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
@@ -97,20 +101,22 @@ func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
 	// Load's json.Unmarshal) and in a top-level column so
 	// ListBySender can index-scan without decoding every row.
 	const q = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender, search_text)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     title=excluded.title,
     payload=excluded.payload,
     message_count=excluded.message_count,
     updated_at=excluded.updated_at,
-    sender=excluded.sender
+    sender=excluded.sender,
+    search_text=excluded.search_text
 `
 	_, err = s.db.ExecContext(ctx, q,
 		sess.ID, sess.Title, string(payload), len(sess.Messages),
 		sess.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
 		sess.UpdatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
 		sess.Sender,
+		searchText(sess),
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: save session: %w", err)
@@ -279,3 +285,35 @@ func ensureSenderColumn(ctx context.Context, db *sql.DB) error {
 
 // Compile-time interface satisfaction check.
 var _ state.Store = (*Store)(nil)
+
+// ensureColumn adds a column to sessions when it is missing.
+func ensureColumn(ctx context.Context, db *sql.DB, name, ddl string) error {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?`, name).Scan(&n); err != nil {
+		return fmt.Errorf("sqlite: probe column %s: %w", name, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("sqlite: add column %s: %w", name, err)
+	}
+	return nil
+}
+
+// searchText is what the full-text index holds for a session: the
+// text of its messages, one per line. The JSON payload (keys, base64
+// image bytes, tool-call scaffolding) is deliberately left out.
+func searchText(sess *agent.Session) string {
+	var b strings.Builder
+	for _, m := range sess.Messages {
+		for _, c := range m.Content {
+			if c.Kind == agent.ContentText && c.Text != "" {
+				b.WriteString(c.Text)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return b.String()
+}
