@@ -345,7 +345,7 @@ func TestSupervisor_ConcurrentInboundsProduceOneTurn(t *testing.T) {
 		switch reply {
 		case "reply\n\nreply":
 			handlerReplies++
-			assert.NotContains(t, followUp, "message-"+strconv.Itoa(i), "the claimer's own text is not repeated")
+			assert.NotContains(t, strings.Split(followUp, "\n\n"), "message-"+strconv.Itoa(i), "the claimer's own text is not repeated")
 		case SteerAck:
 			steerReplies++
 		default:
