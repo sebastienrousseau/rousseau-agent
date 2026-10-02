@@ -115,6 +115,32 @@ systemctl --user enable --now rousseau-agent-claude-creds.path
 systemctl --user start rousseau-agent
 ```
 
+### Upgrading the session store
+
+A release that changes the session store's schema refuses to start on
+an older store: the container exits 78 (`RestartPreventExitStatus=78`
+stops the unit instead of looping) and logs the command to run. With
+the unit stopped:
+
+```bash
+systemctl --user stop rousseau-agent
+migrate() {
+  podman run --rm --userns=keep-id \
+    -v ~/.local/share/rousseau:/home/rousseau/.local/share/rousseau:Z \
+    localhost/rousseau-agent:local migrate "$@"
+}
+migrate --dry-run          # what changes; writes nothing
+migrate                    # backs up to sessions.db.pre-v2-<time>, then upgrades
+systemctl --user start rousseau-agent
+```
+
+A sender whose transport cannot be told from its form (a phone number
+may be Signal or iMessage) is listed by the dry run and needs
+`--map <sender>=<transport>`. `migrate --down` returns the store to the
+previous layout for an older image. To upgrade unattended instead, set
+`state.auto_migrate: true` (it takes the same backup and still stops on
+ambiguous senders).
+
 ## Claude Code config (container-owned)
 
 The container keeps its own Claude Code config in

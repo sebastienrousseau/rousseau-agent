@@ -84,12 +84,17 @@ Operator-side. Your privacy notice needs to disclose:
 
 Operator produces the data extract. Two commands:
 
+Senders are stored as `<transport>:<id>` (for example
+`signal:+15551234567`), so one person's Signal and iMessage
+conversations are separate records; extract each one they used.
+
 ```bash
-# All sessions where this JID / user was involved.
+# Every message of every session this sender owns, in order.
 sqlite3 sessions.db \
-  "SELECT id, title, created_at, updated_at, payload
-   FROM sessions
-   WHERE sender = ?" -- <e164-phone-number>
+  "SELECT s.id, s.title, m.seq, m.created_at, m.message
+   FROM sessions s JOIN session_messages m ON m.session_id = s.id
+   WHERE s.sender = ?
+   ORDER BY s.id, m.seq" -- signal:+15551234567
 
 # All reliability samples (metadata only — no message content).
 sqlite3 sessions.db \
@@ -98,8 +103,12 @@ sqlite3 sessions.db \
    WHERE session_id = ?" -- <session-uuid>
 ```
 
-The `payload` column is the JSON conversation history — hand it
-over as the "personal data extract."
+Each `message` is one message as JSON — hand them over as the
+"personal data extract." (Since schema version 2 the `payload`
+column holds only session metadata. A session's `head` column holds
+the summary left when older messages were compressed; the compressed
+messages themselves remain in `session_messages` and are included
+above.)
 
 ### Article 16 — Right to rectification
 
@@ -113,18 +122,24 @@ driver; Postgres is not implemented yet and the command says so). Stop
 the daemon first so it cannot recreate a session mid-erasure.
 
 ```bash
-rousseau session delete-by-sender 15551234567@s.whatsapp.net --yes
+rousseau session delete-by-sender whatsapp:15551234567@s.whatsapp.net --yes
 
 # Confirm no rows remain.
 sqlite3 sessions.db \
-  "SELECT count(*) FROM sessions WHERE sender = '15551234567@s.whatsapp.net'"
+  "SELECT count(*) FROM sessions WHERE sender = 'whatsapp:15551234567@s.whatsapp.net'"
 # Expect: 0
 ```
+
+The bare identifier (`15551234567@s.whatsapp.net`) also works when
+only one transport holds it; when several do (a phone number used on
+both Signal and iMessage) the command refuses and lists the keys, so
+each transport's data is erased deliberately.
 
 It removes, in one transaction with `secure_delete` on (freed pages
 are zeroed), followed by an FTS `optimize` and a `wal_checkpoint(TRUNCATE)`:
 
-- the sender's sessions and their full-text index rows;
+- the sender's sessions, every message row (including messages folded
+  away by compression) and their full-text index rows;
 - per-session rows in `session_costs`, `claude_sessions`,
   `recall_vectors` and `reliability_samples`;
 - the sender's `jid_sessions` mapping, `identity_handles`,
@@ -139,7 +154,10 @@ Not covered, so handle them separately:
   from history sync);
 - sessions saved before sender tracking (empty `sender`), which cannot
   be attributed;
-- backups and filesystem snapshots.
+- backups and filesystem snapshots, including the copies
+  `rousseau migrate` leaves next to the store
+  (`sessions.db.pre-v2-*`, `sessions.db.pre-down-*`): delete or
+  re-erase those too.
 
 For audit-egress records already forwarded to a SIEM: handled at
 the SIEM tier via the operator's own retention/redaction tooling.
