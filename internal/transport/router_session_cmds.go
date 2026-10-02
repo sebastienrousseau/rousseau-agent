@@ -80,14 +80,14 @@ func (r *Router) cmdVersion() string {
 func (r *Router) cmdClear(ctx context.Context, from string) (string, error) {
 	defer r.senders.Lock(from)() // same lock as the session lookup it rebinds
 	sess := agent.NewSession("chat: " + from)
-	sess.Sender = from // so it surfaces in /sessions later
+	sess.Sender = r.key(from) // so it surfaces in /sessions later
 	if err := r.store.Save(ctx, sess); err != nil {
 		return "", fmt.Errorf("save fresh session: %w", err)
 	}
 	// Overwrites the previous mapping via Put's upsert
 	// semantics. Both driver implementations expose this as
 	// ON CONFLICT DO UPDATE — no delete step needed.
-	if err := r.jidMap.Put(ctx, from, sess.ID); err != nil {
+	if err := r.jidMap.Put(ctx, r.key(from), sess.ID); err != nil {
 		return "", fmt.Errorf("rebind jid: %w", err)
 	}
 	r.logger.Info("router.session_cleared",
@@ -116,14 +116,14 @@ func (r *Router) cmdClear(ctx context.Context, from string) (string, error) {
 // a sender has hundreds of sessions.
 func (r *Router) cmdSessions(ctx context.Context, from string) (string, error) {
 	const listCap = 20
-	summaries, err := r.store.ListBySender(ctx, from, listCap)
+	summaries, err := r.store.ListBySender(ctx, r.key(from), listCap)
 	if err != nil {
 		return "", fmt.Errorf("list sessions: %w", err)
 	}
 	if len(summaries) == 0 {
 		return "no saved sessions yet. any message you send here starts one — use /name \"…\" to give it a memorable label.", nil
 	}
-	current, _, _ := r.jidMap.Get(ctx, from) //nolint:errcheck // "unknown" is a valid state → current == ""
+	current, _, _ := r.jidMap.Get(ctx, r.key(from)) //nolint:errcheck // "unknown" is a valid state → current == ""
 	var b strings.Builder
 	fmt.Fprintf(&b, "sessions (newest first, up to %d):\n", listCap)
 	for i, s := range summaries {
@@ -261,7 +261,7 @@ func (r *Router) cmdResume(ctx context.Context, from, arg string) (string, error
 			return "", fmt.Errorf("touch resumed session: %w", err)
 		}
 	}
-	if err := r.jidMap.Put(ctx, from, target.ID); err != nil {
+	if err := r.jidMap.Put(ctx, r.key(from), target.ID); err != nil {
 		return "", fmt.Errorf("rebind jid: %w", err)
 	}
 	r.logger.Info("router.session_resumed",
@@ -306,7 +306,7 @@ func (r *Router) cmdSave(ctx context.Context, from, name string) (string, error)
 	// the Messages slice so future appends to the live session
 	// never mutate the snapshot's history.
 	snapshot := agent.NewSession(name)
-	snapshot.Sender = from
+	snapshot.Sender = r.key(from)
 	if len(sess.Messages) > 0 {
 		snapshot.Messages = make([]agent.Message, len(sess.Messages))
 		copy(snapshot.Messages, sess.Messages)
@@ -355,14 +355,14 @@ func (r *Router) cmdFind(ctx context.Context, from, arg string) (string, error) 
 	if arg == "" {
 		return "usage: /find \"words to search for\"  (or /f — matches text in any of your saved sessions)", nil
 	}
-	hits, err := r.store.SearchBySender(ctx, from, arg, sqlitestore.SearchOptions{Limit: 10})
+	hits, err := r.store.SearchBySender(ctx, r.key(from), arg, sqlitestore.SearchOptions{Limit: 10})
 	if err != nil {
 		return "", fmt.Errorf("search by sender: %w", err)
 	}
 	if len(hits) == 0 {
 		return fmt.Sprintf("no matches for %q in your sessions.", arg), nil
 	}
-	current, _, _ := r.jidMap.Get(ctx, from) //nolint:errcheck // unknown-current is fine
+	current, _, _ := r.jidMap.Get(ctx, r.key(from)) //nolint:errcheck // unknown-current is fine
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "matches for %q (%d):\n", arg, len(hits))
@@ -395,7 +395,7 @@ func (r *Router) cmdDelete(ctx context.Context, from, arg string) (string, error
 	if err != nil {
 		return err.Error(), nil //nolint:nilerr // legible chat text
 	}
-	current, _, _ := r.jidMap.Get(ctx, from) //nolint:errcheck // unknown-current is fine
+	current, _, _ := r.jidMap.Get(ctx, r.key(from)) //nolint:errcheck // unknown-current is fine
 	if current == target.ID {
 		return "refusing to delete the current session — /clear first to move to a fresh one, then /delete this short-id.", nil
 	}
@@ -422,7 +422,7 @@ func (r *Router) cmdDelete(ctx context.Context, from, arg string) (string, error
 // /clear guarantees. Ambiguous short-id (matches >1 session)
 // returns a legible chat error; caller wraps as reply text.
 func (r *Router) findSessionForSender(ctx context.Context, from, needle string) (state.Summary, error) {
-	summaries, err := r.store.ListBySender(ctx, from, 0) // 0 = uncapped
+	summaries, err := r.store.ListBySender(ctx, r.key(from), 0) // 0 = uncapped
 	if err != nil {
 		return state.Summary{}, fmt.Errorf("list sessions: %w", err)
 	}
