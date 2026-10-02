@@ -71,6 +71,6 @@ func runWithArgs(t *testing.T, args []string) int {
 func TestExitCodeFor(t *testing.T) {
 	assert.Equal(t, 0, exitCodeFor(nil))
 	assert.Equal(t, 1, exitCodeFor(errors.New("boom")))
-	wrapped := fmt.Errorf("whatsapp: %w", withExitCode(errors.New("logged out"), ExitNeedsOperator))
+	wrapped := fmt.Errorf("whatsapp: %w", needsOperator(errors.New("logged out")))
 	assert.Equal(t, 78, exitCodeFor(wrapped))
 }
