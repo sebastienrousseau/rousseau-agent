@@ -2,7 +2,6 @@ package sqlite
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,32 +9,6 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 )
-
-// searchSchema installs an FTS5 virtual table plus triggers that keep
-// it in sync with the sessions table. Idempotent.
-const searchSchema = `
-CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
-    session_id UNINDEXED,
-    title,
-    body,
-    tokenize = 'porter unicode61'
-);
-
-CREATE TRIGGER IF NOT EXISTS sessions_fts_ai AFTER INSERT ON sessions BEGIN
-    INSERT INTO sessions_fts (session_id, title, body)
-    VALUES (NEW.id, NEW.title, NEW.search_text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS sessions_fts_au AFTER UPDATE ON sessions BEGIN
-    DELETE FROM sessions_fts WHERE session_id = OLD.id;
-    INSERT INTO sessions_fts (session_id, title, body)
-    VALUES (NEW.id, NEW.title, NEW.search_text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS sessions_fts_ad AFTER DELETE ON sessions BEGIN
-    DELETE FROM sessions_fts WHERE session_id = OLD.id;
-END;
-`
 
 // SearchHit is one row of a full-text search result.
 type SearchHit struct {
@@ -57,83 +30,21 @@ type SearchOptions struct {
 	SnippetChars int
 }
 
-// EnsureSearch backfills the FTS index for any sessions that predate
-// the search schema, then installs the schema + triggers if missing.
-// Safe to call every time the Store opens.
+// EnsureSearch installs the search index (per-message and title FTS
+// tables and their triggers). Open already does this; it is exported
+// for callers that hold a Store through an interface. Idempotent.
 func (s *Store) EnsureSearch(ctx context.Context) error {
-	if err := s.migrateSearchText(ctx); err != nil {
-		return err
-	}
-	if _, err := s.db.ExecContext(ctx, searchSchema); err != nil {
+	if _, err := s.db.ExecContext(ctx, v2Schema); err != nil {
 		return fmt.Errorf("sqlite: install search schema: %w", err)
-	}
-	const backfill = `
-INSERT INTO sessions_fts (session_id, title, body)
-SELECT s.id, s.title, s.search_text
-FROM sessions s
-LEFT JOIN sessions_fts f ON f.session_id = s.id
-WHERE f.session_id IS NULL
-`
-	if _, err := s.db.ExecContext(ctx, backfill); err != nil {
-		return fmt.Errorf("sqlite: backfill fts: %w", err)
 	}
 	return nil
 }
 
-// Search runs an FTS5 query and returns ranked hits.
-//
-// The query string is passed to FTS5 as-is; callers wanting phrase
-// searches or boolean operators can use FTS5's native syntax
-// (e.g. `"kubernetes" OR helm`).
+// Search runs an FTS5 MATCH over message text and session titles and
+// returns the best hit per session, ranked by bm25. query uses FTS5
+// syntax (bare words, "phrases", prefix*).
 func (s *Store) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchHit, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, errors.New("sqlite: empty search query")
-	}
-	if opts.Limit == 0 {
-		opts.Limit = 20
-	}
-	if opts.SnippetChars == 0 {
-		opts.SnippetChars = 200
-	}
-	q := fmt.Sprintf(`
-SELECT
-    f.session_id,
-    s.title,
-    snippet(sessions_fts, 2, '', '', '…', %d) AS snippet,
-    s.updated_at,
-    bm25(sessions_fts) AS rank
-FROM sessions_fts f
-JOIN sessions s ON s.id = f.session_id
-WHERE sessions_fts MATCH ?
-ORDER BY rank
-LIMIT %d
-`, opts.SnippetChars/16, opts.Limit)
-
-	rows, err := s.db.QueryContext(ctx, q, query)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: search: %w", err)
-	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup on iteration completion
-
-	var out []SearchHit
-	for rows.Next() {
-		var (
-			hit       SearchHit
-			updatedAt string
-		)
-		if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Snippet, &updatedAt, &hit.Rank); err != nil {
-			return nil, fmt.Errorf("sqlite: scan hit: %w", err)
-		}
-		if t, err := time.Parse("2006-01-02T15:04:05.000Z", updatedAt); err == nil {
-			hit.UpdatedAt = t
-		}
-		out = append(out, hit)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("sqlite: iterate hits: %w", err)
-	}
-	return out, nil
+	return s.search(ctx, "", query, opts, "sqlite: search")
 }
 
 // SearchBySender runs Search but restricts hits to sessions
@@ -146,6 +57,10 @@ func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts S
 	if sender == "" {
 		return nil, nil
 	}
+	return s.search(ctx, sender, query, opts, "sqlite: search by sender")
+}
+
+func (s *Store) search(ctx context.Context, sender, query string, opts SearchOptions, op string) ([]SearchHit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, errors.New("sqlite: empty search query")
@@ -156,25 +71,36 @@ func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts S
 	if opts.SnippetChars == 0 {
 		opts.SnippetChars = 200
 	}
-	q := fmt.Sprintf(`
-SELECT
-    f.session_id,
-    s.title,
-    snippet(sessions_fts, 2, '', '', '…', %d) AS snippet,
-    s.updated_at,
-    bm25(sessions_fts) AS rank
-FROM sessions_fts f
-JOIN sessions s ON s.id = f.session_id
-WHERE sessions_fts MATCH ? AND s.sender = ?
-ORDER BY rank
-LIMIT %d
-`, opts.SnippetChars/16, opts.Limit)
-
-	rows, err := s.db.QueryContext(ctx, q, query, sender)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: search by sender: %w", err)
+	where, args := "", []any{query, query}
+	if sender != "" {
+		where, args = "AND s.sender = ?", append(args, sender)
 	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
+	// One candidate per matching message or title; ROW_NUMBER keeps
+	// each session's best one.
+	q := fmt.Sprintf(`
+WITH hits AS (
+    SELECT session_id, snippet(messages_fts, 2, '', '', '…', %d) AS snip, bm25(messages_fts) AS rank
+    FROM messages_fts WHERE messages_fts MATCH ?
+    UNION ALL
+    SELECT session_id, title AS snip, bm25(titles_fts) AS rank
+    FROM titles_fts WHERE titles_fts MATCH ?
+), best AS (
+    SELECT session_id, snip, rank,
+           ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY rank) AS k
+    FROM hits
+)
+SELECT b.session_id, s.title, b.snip, s.updated_at, b.rank
+FROM best b JOIN sessions s ON s.id = b.session_id
+WHERE b.k = 1 %s
+ORDER BY b.rank
+LIMIT %d
+`, opts.SnippetChars/16, where, opts.Limit)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup on iteration completion
 
 	var out []SearchHit
 	for rows.Next() {
@@ -202,97 +128,17 @@ func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*agent.Session
 	if limit == 0 {
 		limit = 10
 	}
-	rows, err := s.db.QueryContext(ctx, `
-SELECT payload FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit)
+	sums, err := s.List(ctx, limit)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: recent: %w", err)
 	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup on iteration completion
-
-	var out []*agent.Session
-	for rows.Next() {
-		var payload string
-		if err := rows.Scan(&payload); err != nil {
-			return nil, err
-		}
-		sess := &agent.Session{}
-		if err := json.Unmarshal([]byte(payload), sess); err != nil {
-			return nil, fmt.Errorf("sqlite: unmarshal session: %w", err)
+	out := make([]*agent.Session, 0, len(sums))
+	for _, sum := range sums {
+		sess, err := s.Load(ctx, sum.ID)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: recent: %w", err)
 		}
 		out = append(out, sess)
 	}
-	return out, rows.Err()
-}
-
-// searchSchemaVersion is the PRAGMA user_version once the FTS index
-// holds extracted message text rather than raw JSON payloads.
-const searchSchemaVersion = 1
-
-// migrateSearchText upgrades a database whose FTS index was built from
-// raw payloads (JSON keys, base64 images): it fills search_text for
-// every session, drops the payload-indexing triggers so searchSchema
-// recreates them on search_text, and rebuilds the index. Runs once;
-// later opens see user_version and skip it.
-func (s *Store) migrateSearchText(ctx context.Context) error {
-	var version int
-	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
-		return fmt.Errorf("sqlite: read user_version: %w", err)
-	}
-	if version >= searchSchemaVersion {
-		return nil
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, payload FROM sessions`)
-	if err != nil {
-		return fmt.Errorf("sqlite: search migration: list: %w", err)
-	}
-	type update struct{ id, text string }
-	var updates []update
-	for rows.Next() {
-		var id, payload string
-		if err := rows.Scan(&id, &payload); err != nil {
-			rows.Close() //nolint:errcheck,gosec // primary error is returned
-			return fmt.Errorf("sqlite: search migration: scan: %w", err)
-		}
-		var sess agent.Session
-		if json.Unmarshal([]byte(payload), &sess) == nil {
-			updates = append(updates, update{id, searchText(&sess)})
-		}
-	}
-	rows.Close() //nolint:errcheck,gosec // iteration finished
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("sqlite: search migration: %w", err)
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("sqlite: search migration: begin: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
-	for _, q := range []string{
-		`DROP TRIGGER IF EXISTS sessions_fts_ai`,
-		`DROP TRIGGER IF EXISTS sessions_fts_au`,
-	} {
-		if _, err := tx.ExecContext(ctx, q); err != nil {
-			return fmt.Errorf("sqlite: search migration: %w", err)
-		}
-	}
-	for _, u := range updates {
-		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET search_text = ? WHERE id = ?`, u.text, u.id); err != nil {
-			return fmt.Errorf("sqlite: search migration: backfill: %w", err)
-		}
-	}
-	var haveFTS int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE name = 'sessions_fts'`).Scan(&haveFTS); err != nil {
-		return fmt.Errorf("sqlite: search migration: %w", err)
-	}
-	if haveFTS > 0 {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions_fts`); err != nil {
-			return fmt.Errorf("sqlite: search migration: clear index: %w", err)
-		}
-	}
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, searchSchemaVersion)); err != nil {
-		return fmt.Errorf("sqlite: search migration: version: %w", err)
-	}
-	return tx.Commit()
+	return out, nil
 }

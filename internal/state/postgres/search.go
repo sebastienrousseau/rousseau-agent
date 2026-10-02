@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,36 +10,6 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	sqlitesearch "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
-
-// searchSchema adds a Postgres full-text search index on top of
-// the sessions table. Idempotent — safe to call every daemon
-// boot. Differences from the SQLite driver's FTS5 setup and why:
-//
-//   - Generated column `search_vector tsvector` derived from
-//     title + payload. Postgres 12+ handles updates automatically
-//     — no INSERT / UPDATE / DELETE triggers needed. The SQLite
-//     driver installs three triggers because FTS5 is a separate
-//     virtual table; here the index lives on the same row.
-//   - GIN index on the generated column so `@@` queries hit an
-//     index scan. Without it, every search is a seq scan of
-//     to_tsvector(payload) — fine at 100 rows, unacceptable at
-//     100k.
-//   - Language `'english'` matches the FTS5 `porter unicode61`
-//     stemmer choice — same "walk / walking / walked" collapse
-//     an operator would get on SQLite. Operators pinning a
-//     different language should replace this constant in a
-//     follow-up (not exposed as config yet — no concrete demand).
-const searchSchema = `
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS search_vector tsvector
-    GENERATED ALWAYS AS (
-        setweight(to_tsvector('english', coalesce(title, '')),   'A') ||
-        setweight(to_tsvector('english', coalesce(payload, '')), 'B')
-    ) STORED;
-
-CREATE INDEX IF NOT EXISTS idx_sessions_search_vector
-    ON sessions USING GIN (search_vector);
-`
 
 // SearchHit is re-exported from the sqlite package so the
 // canonical shape is shared across drivers. Same fields, same
@@ -50,129 +19,39 @@ CREATE INDEX IF NOT EXISTS idx_sessions_search_vector
 // Rank as an ordering key, not a semantic score.
 type SearchHit = sqlitesearch.SearchHit
 
-// SearchOptions is re-exported for the same reason as SearchHit
-// — one canonical option surface across drivers.
+// SearchOptions is re-exported for the same reason as SearchHit.
 type SearchOptions = sqlitesearch.SearchOptions
 
-// EnsureSearch installs the search schema (generated tsvector
-// column + GIN index). Called by daemon startup once the sessions
-// table is known to exist. Mirrors [sqlitesearch.EnsureSearch]'s
-// contract: idempotent, safe on every open, no-op if the schema
-// is already in place.
+// EnsureSearch installs the search index: a generated tsvector over
+// each message's text (session_messages.body_vector) and over each
+// session's title (sessions.title_vector), both GIN-indexed. Open
+// already does this; it is exported for callers holding a Store
+// through an interface. Idempotent. Language 'english' matches the
+// SQLite driver's porter stemmer.
 func (s *Store) EnsureSearch(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, searchSchema); err != nil {
+	if _, err := s.db.ExecContext(ctx, v2Schema); err != nil {
 		return fmt.Errorf("postgres: install search schema: %w", err)
 	}
 	return nil
 }
 
-// Search runs a Postgres full-text query and returns ranked hits.
-// Query string is parsed with `websearch_to_tsquery` so a caller
-// can pass a natural query like `postgres OR mysql -pgvector` and
-// it will parse the same as they'd expect from Google.
-//
-// Matches the SQLite driver's Search contract:
-//   - empty query → error (not empty result — that would mask a
-//     caller bug)
-//   - default limit 20
-//   - default snippet 200 chars
-//   - hits sorted by rank (best match first)
+// Search runs a websearch_to_tsquery over message text and session
+// titles and returns the best hit per session, highest rank first.
 func (s *Store) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchHit, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, errors.New("postgres: empty search query")
-	}
-	if opts.Limit == 0 {
-		opts.Limit = 20
-	}
-	if opts.SnippetChars == 0 {
-		opts.SnippetChars = 200
-	}
-
-	// ts_headline is expensive (re-tokenises the source text), so
-	// it runs only over the LIMIT rows via a subquery. Doing it
-	// in the outer projection would headline every candidate row
-	// before the ORDER + LIMIT collapse; on a 100k-row table
-	// that is the difference between ms and seconds.
-	//
-	// MaxWords is derived from SnippetChars/6 to loosely match
-	// English average word length + one space per word — matches
-	// the SQLite driver's chars/16-ish word-per-fragment shape.
-	// Options are formatted server-side rather than parameterised
-	// individually because pg's ts_headline reads them as a single
-	// comma-separated string, not as bound values.
-	maxWords := opts.SnippetChars / 6
-	if maxWords < 2 {
-		maxWords = 2
-	}
-	minWords := maxWords / 2
-	if minWords < 1 {
-		minWords = 1
-	}
-	// StartSel / StopSel are quoted-empty so ts_headline returns
-	// plain text without <b>...</b> wrappers — matches the SQLite
-	// driver's snippet() call which uses empty delimiters. Bare
-	// `StartSel=,` (unquoted empty) is a SQLSTATE 42601 syntax
-	// error in ts_headline's option parser; the quotes make it
-	// happy.
-	headlineOpts := fmt.Sprintf(
-		`MaxWords=%d, MinWords=%d, ShortWord=3, HighlightAll=false, StartSel="", StopSel=""`,
-		maxWords, minWords,
-	)
-	const q = `
-WITH ranked AS (
-    SELECT id, title, payload, updated_at,
-           ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS rank
-    FROM sessions
-    WHERE search_vector @@ websearch_to_tsquery('english', $1)
-    ORDER BY rank DESC
-    LIMIT $2
-)
-SELECT id, title,
-       ts_headline('english', payload,
-                   websearch_to_tsquery('english', $1),
-                   $3) AS snippet,
-       updated_at,
-       rank
-FROM ranked
-ORDER BY rank DESC
-`
-	rows, err := s.db.QueryContext(ctx, q, query, opts.Limit, headlineOpts)
-	if err != nil {
-		return nil, fmt.Errorf("postgres: search: %w", err)
-	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
-
-	var out []SearchHit
-	for rows.Next() {
-		var (
-			hit       SearchHit
-			updatedAt sql.NullTime
-		)
-		if err := rows.Scan(&hit.SessionID, &hit.Title, &hit.Snippet, &updatedAt, &hit.Rank); err != nil {
-			return nil, fmt.Errorf("postgres: scan hit: %w", err)
-		}
-		if updatedAt.Valid {
-			hit.UpdatedAt = updatedAt.Time.UTC()
-		}
-		out = append(out, hit)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("postgres: iterate hits: %w", err)
-	}
-	return out, nil
+	return s.search(ctx, "", query, opts, "postgres: search")
 }
 
-// SearchBySender runs Search but restricts hits to sessions
-// whose sender matches the caller's JID. Backs the transport
-// /find chat verb — every operator only sees their own
-// conversation history. Empty sender short-circuits to nil so
-// a bug that forgot to plumb the sender through never
-// accidentally leaks cross-sender content.
+// SearchBySender is Search restricted to sessions whose sender is the
+// caller's key. Empty sender returns nil so a caller that forgot to
+// plumb the sender through never sees other senders' history.
 func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts SearchOptions) ([]SearchHit, error) {
 	if sender == "" {
 		return nil, nil
 	}
+	return s.search(ctx, sender, query, opts, "postgres: search by sender")
+}
+
+func (s *Store) search(ctx context.Context, sender, query string, opts SearchOptions, op string) ([]SearchHit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, errors.New("postgres: empty search query")
@@ -183,46 +62,39 @@ func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts S
 	if opts.SnippetChars == 0 {
 		opts.SnippetChars = 200
 	}
-
-	maxWords := opts.SnippetChars / 6
-	if maxWords < 2 {
-		maxWords = 2
-	}
-	minWords := maxWords / 2
-	if minWords < 1 {
-		minWords = 1
-	}
+	maxWords := max(opts.SnippetChars/6, 2)
+	minWords := max(maxWords/2, 1)
 	headlineOpts := fmt.Sprintf(
 		`MaxWords=%d, MinWords=%d, ShortWord=3, HighlightAll=false, StartSel="", StopSel=""`,
 		maxWords, minWords,
 	)
-	// Same CTE shape as Search — the extra WHERE sender = $2
-	// clause hits the (sender, updated_at) index for the
-	// pre-filter, then the FTS predicate narrows further. The
-	// index-based sender filter is cheaper than post-filtering
-	// FTS hits with an application-level set intersection.
+	// One candidate per matching message or title; DISTINCT ON keeps
+	// each session's best one.
 	const q = `
-WITH ranked AS (
-    SELECT id, title, payload, updated_at,
-           ts_rank_cd(search_vector, websearch_to_tsquery('english', $1)) AS rank
-    FROM sessions
-    WHERE sender = $2
-      AND search_vector @@ websearch_to_tsquery('english', $1)
-    ORDER BY rank DESC
-    LIMIT $3
+WITH hits AS (
+    SELECT m.session_id, m.body AS text, ts_rank_cd(m.body_vector, websearch_to_tsquery('english', $1)) AS rank
+    FROM session_messages m
+    WHERE m.body_vector @@ websearch_to_tsquery('english', $1)
+    UNION ALL
+    SELECT s.id, s.title, ts_rank_cd(s.title_vector, websearch_to_tsquery('english', $1))
+    FROM sessions s
+    WHERE s.title_vector @@ websearch_to_tsquery('english', $1)
+), best AS (
+    SELECT DISTINCT ON (session_id) session_id, text, rank
+    FROM hits
+    ORDER BY session_id, rank DESC
 )
-SELECT id, title,
-       ts_headline('english', payload,
-                   websearch_to_tsquery('english', $1),
-                   $4) AS snippet,
-       updated_at,
-       rank
-FROM ranked
-ORDER BY rank DESC
+SELECT b.session_id, s.title,
+       ts_headline('english', b.text, websearch_to_tsquery('english', $1), $3) AS snippet,
+       s.updated_at, b.rank
+FROM best b JOIN sessions s ON s.id = b.session_id
+WHERE $4 = '' OR s.sender = $4
+ORDER BY b.rank DESC
+LIMIT $2
 `
-	rows, err := s.db.QueryContext(ctx, q, query, sender, opts.Limit, headlineOpts)
+	rows, err := s.db.QueryContext(ctx, q, query, opts.Limit, headlineOpts, sender)
 	if err != nil {
-		return nil, fmt.Errorf("postgres: search by sender: %w", err)
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
 
@@ -254,24 +126,17 @@ func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*agent.Session
 	if limit == 0 {
 		limit = 10
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT payload FROM sessions ORDER BY updated_at DESC LIMIT $1`, limit)
+	sums, err := s.List(ctx, limit)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: recent: %w", err)
 	}
-	defer func() { _ = rows.Close() }() //nolint:errcheck // best-effort cleanup
-
-	var out []*agent.Session
-	for rows.Next() {
-		var payload string
-		if err := rows.Scan(&payload); err != nil {
-			return nil, err
-		}
-		sess := &agent.Session{}
-		if err := json.Unmarshal([]byte(payload), sess); err != nil {
-			return nil, fmt.Errorf("postgres: unmarshal session: %w", err)
+	out := make([]*agent.Session, 0, len(sums))
+	for _, sum := range sums {
+		sess, err := s.Load(ctx, sum.ID)
+		if err != nil {
+			return nil, fmt.Errorf("postgres: recent: %w", err)
 		}
 		out = append(out, sess)
 	}
-	return out, rows.Err()
+	return out, nil
 }
