@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -100,6 +101,18 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			defer shutdown()
 
 			startHeartbeat(ctx, opts, "whatsapp", func() (bool, bool) { return client.Connected(), true })
+			// Once linked, tell senders whose turn the last restart
+			// interrupted. Waits up to 5 minutes for the connection.
+			go func() {
+				deadline := time.Now().Add(5 * time.Minute)
+				for !client.Connected() {
+					if ctx.Err() != nil || time.Now().After(deadline) {
+						return
+					}
+					time.Sleep(time.Second)
+				}
+				notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", client.Deliver, opts.Logger)
+			}()
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
 			err = client.Start(ctx, wiring.TransportHandler("whatsapp", opts.Logger))
 			if errors.Is(err, whatsapp.ErrNeedsOperator) {

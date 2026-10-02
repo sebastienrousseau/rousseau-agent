@@ -113,6 +113,10 @@ type daemonWiring struct {
 	// otelShutdown flushes the tracer; set by StartBackgroundServers,
 	// called by Cleanup.
 	otelShutdown func(context.Context) error
+	// TurnJournal records agent turns in flight (nil on drivers
+	// without one); transports read it at startup to notify senders
+	// whose turn a restart interrupted.
+	TurnJournal *sqlitestore.TurnJournal
 	// stopBackground cancels and waits for goroutines assembleDaemon
 	// started (the reliability pruner). Called first by Cleanup.
 	stopBackground func()
@@ -630,6 +634,18 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 		SessionIdleTimeout: cfg.Agent.SessionIdleTimeout,
 	}
+	// Interrupted-turn journal (SQLite): lets a restarted daemon tell
+	// senders whose turn it cut off.
+	var turnJournal *sqlitestore.TurnJournal
+	if st, ok := concrete.(*sqlitestore.Store); ok {
+		tj, jerr := sqlitestore.NewTurnJournal(ctx, st)
+		if jerr != nil {
+			opts.Logger.Warn("turn_journal.unavailable", slog.String("err", jerr.Error()))
+		} else {
+			turnJournal = tj
+			routerOpts.TurnJournal = tj
+		}
+	}
 	// claude keeps the conversation in its own transcript; /save must
 	// copy it for the snapshot to resume with history.
 	if cp, ok := provider.(*claudecli.Provider); ok {
@@ -672,6 +688,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 
 	return &daemonWiring{
+		TurnJournal:    turnJournal,
 		stopBackground: stopBackground,
 		toolgate:       gate,
 		Provider:       provider,
@@ -1166,5 +1183,32 @@ func runSessionRetention(ctx context.Context, store idleSessionEraser, ttl, inte
 		case <-t.C:
 			prune()
 		}
+	}
+}
+
+// interruptedNotice is sent to a sender whose turn a restart cut off.
+func interruptedNotice(preview string) string {
+	return "I was restarted while working on your message (\"" + preview + "\"), so you did not get a reply. " +
+		"Some steps may already have run; ask me what state things are in, or send it again."
+}
+
+// notifyInterruptedTurns tells each sender whose turn on transport was
+// cut off by the last shutdown, once deliver can reach them. It takes
+// (and clears) the journal entries, so each notice is sent once.
+func notifyInterruptedTurns(ctx context.Context, j *sqlitestore.TurnJournal, transportName string, deliver func(ctx context.Context, to, body string) error, logger *slog.Logger) {
+	if j == nil {
+		return
+	}
+	turns, err := j.TakeInterrupted(ctx, transportName)
+	if err != nil {
+		logger.Warn("turn_journal.take_failed", slog.String("err", err.Error()))
+		return
+	}
+	for _, t := range turns {
+		if err := deliver(ctx, t.Sender, interruptedNotice(t.Preview)); err != nil {
+			logger.Warn("turn_journal.notify_failed", slog.String("to", t.Sender), slog.String("err", err.Error()))
+			continue
+		}
+		logger.Info("turn_journal.notified", slog.String("transport", transportName), slog.String("to", t.Sender))
 	}
 }

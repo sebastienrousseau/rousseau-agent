@@ -485,3 +485,40 @@ func TestRouter_SaveForksProviderHistory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, reply, "without the model's history")
 }
+
+type memJournal struct {
+	mu    sync.Mutex
+	begun []string
+	ended []string
+}
+
+func (m *memJournal) Begin(_ context.Context, transport, sender, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.begun = append(m.begun, transport+"|"+sender+"|"+body)
+	return nil
+}
+
+func (m *memJournal) End(_ context.Context, transport, sender string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ended = append(m.ended, transport+"|"+sender)
+	return nil
+}
+
+// TestRouter_JournalsAgentTurns pins the interrupted-turn record: an
+// agent turn is journalled before it runs and cleared after, so a
+// restart in between can be reported to the sender. Synchronous
+// commands are not journalled.
+func TestRouter_JournalsAgentTurns(t *testing.T) {
+	j := &memJournal{}
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{Transport: "whatsapp", TurnJournal: j})
+	_, err := r.Handle(context.Background(), IncomingMessage{From: "a", Body: "deploy staging"})
+	require.NoError(t, err)
+	_, err = r.Handle(context.Background(), IncomingMessage{From: "a", Body: "/version"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"whatsapp|a|deploy staging"}, j.begun)
+	assert.Equal(t, []string{"whatsapp|a"}, j.ended)
+}

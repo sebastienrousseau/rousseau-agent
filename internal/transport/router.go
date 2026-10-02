@@ -132,6 +132,16 @@ type RouterOptions struct {
 	// Without it, resuming a snapshot on such a provider starts with
 	// no history.
 	ForkSession func(ctx context.Context, fromID, toID string) error
+	// TurnJournal, when set, records each agent turn while it runs so
+	// a daemon restarted mid-turn can tell the sender (see
+	// sqlite.TurnJournal). Needs Transport.
+	TurnJournal TurnJournal
+}
+
+// TurnJournal records agent turns in flight.
+type TurnJournal interface {
+	Begin(ctx context.Context, transport, sender, body string) error
+	End(ctx context.Context, transport, sender string) error
 }
 
 // Router binds an inbound Handler to an agent + persistent session state.
@@ -153,6 +163,7 @@ type Router struct {
 	buildStamp string
 	idleAfter  time.Duration
 	forkSess   func(ctx context.Context, fromID, toID string) error
+	journal    TurnJournal
 	now        func() time.Time
 	// senders serialises session lookup and rebinding per sender; a
 	// router-wide mutex used to make every sender wait on one slow
@@ -194,6 +205,7 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		buildStamp: opts.BuildStamp,
 		idleAfter:  opts.SessionIdleTimeout,
 		forkSess:   opts.ForkSession,
+		journal:    opts.TurnJournal,
 		now:        time.Now,
 	}
 }
@@ -379,6 +391,18 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 
 	if userMsg, ok := buildUserMessage(msg, r.transport); ok {
 		sess.Append(userMsg)
+	}
+	if r.journal != nil && r.transport != "" {
+		if err := r.journal.Begin(ctx, r.transport, msg.From, msg.Body); err != nil {
+			r.logger.Warn("router.journal_failed", slog.String("err", err.Error()))
+		}
+		defer func() {
+			// Background: the turn's ctx may already be cancelled
+			// (timeout, /cancel), and the record must still clear.
+			if err := r.journal.End(context.Background(), r.transport, msg.From); err != nil {
+				r.logger.Warn("router.journal_failed", slog.String("err", err.Error()))
+			}
+		}()
 	}
 	final, err := r.runTurn(ctx, sess)
 	if err != nil {
