@@ -489,6 +489,7 @@ log:
 
 state:
   path: ~/.local/share/rousseau/sessions.db
+  auto_migrate: false            # upgrade an older store at startup (after a backup) instead of exiting 78
 
 agent:
   system_prompt: ""            # empty falls back to the built-in default

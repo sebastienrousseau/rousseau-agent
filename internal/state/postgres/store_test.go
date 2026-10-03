@@ -36,7 +36,7 @@ func openTest(t *testing.T) *Store {
 	ctx := context.Background()
 	store, err := Open(ctx, requirePG(t))
 	require.NoError(t, err)
-	_, err = store.db.ExecContext(ctx, `TRUNCATE TABLE sessions`)
+	_, err = store.db.ExecContext(ctx, `TRUNCATE TABLE sessions CASCADE`)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 	return store

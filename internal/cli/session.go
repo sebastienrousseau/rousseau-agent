@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
+	"github.com/sebastienrousseau/rousseau-agent/internal/senderkey"
 
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
@@ -280,8 +282,9 @@ func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
 		Long: "Deletes the sender's sessions (and search index rows), jid mapping, identity\n" +
 			"handles, SSO bindings, cron jobs delivering to them, per-session costs, recall\n" +
 			"vectors and reliability samples, with secure_delete and a WAL checkpoint, then\n" +
-			"removes claude's transcripts of those sessions. The sender is the transport's\n" +
-			"identifier, e.g. 15551234567@s.whatsapp.net. Stop the daemon first so it does\n" +
+			"removes claude's transcripts of those sessions. The sender is the stored key,\n" +
+			"e.g. whatsapp:15551234567@s.whatsapp.net, or the bare identifier when only one\n" +
+			"transport holds it (it is refused when several do). Stop the daemon first so it does\n" +
 			"not recreate a session mid-erasure. Not covered: the WhatsApp device store\n" +
 			"(whatsapp.db), sessions saved before sender tracking, and backups.",
 		Args: cobra.ExactArgs(1),
@@ -298,7 +301,11 @@ func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
 			if !ok {
 				return fmt.Errorf("erasure is not implemented for the %q state driver yet", driverName(opts.Config.State))
 			}
-			rep, err := eraser.EraseSender(cmd.Context(), args[0])
+			key, err := resolveSenderKey(cmd, store, args[0])
+			if err != nil {
+				return err
+			}
+			rep, err := eraser.EraseSender(cmd.Context(), key)
 			if err != nil {
 				return err
 			}
@@ -307,7 +314,7 @@ func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
 				return fmt.Errorf("store erased, but claude transcripts were not: %w", err)
 			}
 			out := cmd.OutOrStdout()
-			_, _ = fmt.Fprintf(out, "erased %s: %d session(s), %d claude transcript file(s)\n", args[0], len(rep.SessionIDs), files) //nolint:errcheck // CLI output
+			_, _ = fmt.Fprintf(out, "erased %s: %d session(s), %d claude transcript file(s)\n", key, len(rep.SessionIDs), files) //nolint:errcheck // CLI output
 			tables := make([]string, 0, len(rep.Rows))
 			for t := range rep.Rows {
 				tables = append(tables, t)
@@ -321,4 +328,40 @@ func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
 	}
 	c.Flags().BoolVar(&confirm, "yes", false, "confirm erasure")
 	return c
+}
+
+// senderKeyLister is implemented by stores that can map a bare sender
+// identifier to the transport-namespaced keys holding it.
+type senderKeyLister interface {
+	SenderKeys(ctx context.Context, sender string) ([]string, error)
+}
+
+// resolveSenderKey turns the operator's argument into a stored key. A
+// namespaced key is used as given. A bare identifier resolves to the
+// one key holding it, and is refused when several transports hold it,
+// so one transport's erasure never reaches another's data by accident.
+func resolveSenderKey(cmd *cobra.Command, store any, arg string) (string, error) {
+	if _, _, ok := senderkey.Split(arg); ok {
+		return arg, nil
+	}
+	lister, ok := store.(senderKeyLister)
+	if !ok {
+		return arg, nil
+	}
+	keys, err := lister.SenderKeys(cmd.Context(), arg)
+	if err != nil {
+		return "", err
+	}
+	switch len(keys) {
+	case 0:
+		return arg, nil
+	case 1:
+		if keys[0] != arg {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "resolved %s to %s\n", arg, keys[0]) //nolint:errcheck // CLI output
+		}
+		return keys[0], nil
+	default:
+		return "", fmt.Errorf("%s is held on several transports (%s); pass one key at a time",
+			arg, strings.Join(keys, ", "))
+	}
 }

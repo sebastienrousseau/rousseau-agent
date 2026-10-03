@@ -83,13 +83,19 @@ func TestOpen_HappyPathAppliesSchema(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
 	require.NoError(t, err)
 	mock.ExpectPing()
-	// Open now runs three Execs: schema, ADD COLUMN IF NOT EXISTS
-	// (sender), CREATE INDEX IF NOT EXISTS. Match each with the
-	// permissive ".*" pattern the original test used — we're not
-	// testing the exact DDL here, just that Open runs to completion.
+	// schema, ADD COLUMN IF NOT EXISTS (sender), CREATE INDEX IF NOT
+	// EXISTS, then the version check: an empty store is upgraded in
+	// place to schema version 2.
 	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS rousseau_schema").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT version FROM rousseau_schema").WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(0))
+	mock.ExpectBegin()
+	mock.ExpectExec("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS head").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("INSERT INTO rousseau_schema").WithArgs(2).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	orig := openDB
 	t.Cleanup(func() { openDB = orig })
@@ -101,37 +107,57 @@ func TestOpen_HappyPathAppliesSchema(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestOpen_RefusesAStoreThatNeedsMigration(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.MonitorPingsOption(true))
+	require.NoError(t, err)
+	mock.ExpectPing()
+	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec("CREATE TABLE IF NOT EXISTS rousseau_schema").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT version FROM rousseau_schema").WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("SELECT COUNT").WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(3))
+	mock.ExpectClose()
+
+	orig := openDB
+	t.Cleanup(func() { openDB = orig })
+	openDB = func(string, string) (*sql.DB, error) { return db, nil }
+
+	_, err = Open(context.Background(), "postgres://x")
+	require.ErrorIs(t, err, ErrNeedsMigration)
+	assert.Contains(t, err.Error(), "3 sessions")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 // -- Save ----------------------------------------------------------
 
-const saveQuery = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (id) DO UPDATE SET
-    title = EXCLUDED.title,
-    payload = EXCLUDED.payload,
-    message_count = EXCLUDED.message_count,
-    updated_at = EXCLUDED.updated_at,
-    sender = EXCLUDED.sender
-`
-
-func TestSave_HappyPath(t *testing.T) {
+func TestSave_NewSessionWritesTheRowThenItsMessages(t *testing.T) {
 	store, mock := newMockStore(t)
 	sess := agent.NewSession("hello")
 	sess.Append(agent.NewUserText("hi"))
 
-	mock.ExpectExec(q(saveQuery)).
-		WithArgs(sess.ID, sess.Title, sqlmock.AnyArg(), 1, sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+	mock.ExpectBegin()
+	mock.ExpectExec(q(`SELECT pg_advisory_xact_lock(hashtext($1))`)).WithArgs(sess.ID).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT message_count, base_seq, next_seq, view_hash FROM sessions").WithArgs(sess.ID).WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("INSERT INTO sessions").
+		WithArgs(sess.ID, sess.Title, sqlmock.AnyArg(), 1, sqlmock.AnyArg(), sqlmock.AnyArg(), "", int64(1), sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO session_messages").
+		WithArgs(sess.ID, int64(0), sqlmock.AnyArg(), sqlmock.AnyArg(), "hi\n", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
 	require.NoError(t, store.Save(context.Background(), sess))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestSave_ExecError(t *testing.T) {
+func TestSave_LockError(t *testing.T) {
 	store, mock := newMockStore(t)
 	sess := agent.NewSession("hello")
 
-	mock.ExpectExec(q(saveQuery)).WillReturnError(errors.New("exec boom"))
+	mock.ExpectBegin()
+	mock.ExpectExec("pg_advisory_xact_lock").WillReturnError(errors.New("exec boom"))
+	mock.ExpectRollback()
 
 	err := store.Save(context.Background(), sess)
 	require.Error(t, err)
@@ -141,23 +167,29 @@ func TestSave_ExecError(t *testing.T) {
 
 // -- Load ----------------------------------------------------------
 
-const loadQuery = `SELECT payload FROM sessions WHERE id = $1`
+const loadQuery = `SELECT payload, head, base_seq, sender FROM sessions WHERE id = $1`
 
 func TestLoad_HappyPath(t *testing.T) {
 	store, mock := newMockStore(t)
 	want := agent.NewSession("loaded")
-	want.Append(agent.NewUserText("body"))
 	payload, err := json.Marshal(want)
+	require.NoError(t, err)
+	m, err := json.Marshal(agent.NewUserText("body"))
 	require.NoError(t, err)
 
 	mock.ExpectQuery(q(loadQuery)).
 		WithArgs(want.ID).
-		WillReturnRows(sqlmock.NewRows([]string{"payload"}).AddRow(string(payload)))
+		WillReturnRows(sqlmock.NewRows([]string{"payload", "head", "base_seq", "sender"}).
+			AddRow(string(payload), "[]", 0, "signal:+1"))
+	mock.ExpectQuery("SELECT message FROM session_messages").
+		WithArgs(want.ID, int64(0)).
+		WillReturnRows(sqlmock.NewRows([]string{"message"}).AddRow(string(m)))
 
 	got, err := store.Load(context.Background(), want.ID)
 	require.NoError(t, err)
 	assert.Equal(t, want.ID, got.ID)
 	assert.Equal(t, "loaded", got.Title)
+	assert.Equal(t, "signal:+1", got.Sender, "the sender column is authoritative")
 	require.Len(t, got.Messages, 1)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -189,7 +221,7 @@ func TestLoad_UnmarshalError(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectQuery(q(loadQuery)).
 		WithArgs("x").
-		WillReturnRows(sqlmock.NewRows([]string{"payload"}).AddRow("{not-json"))
+		WillReturnRows(sqlmock.NewRows([]string{"payload", "head", "base_seq", "sender"}).AddRow("{not-json", "[]", 0, ""))
 
 	_, err := store.Load(context.Background(), "x")
 	require.Error(t, err)

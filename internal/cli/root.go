@@ -72,6 +72,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.AddCommand(newWhatsAppCmd(opts))
 	root.AddCommand(newDoctorCmd(opts))
 	root.AddCommand(newSessionCmd(opts))
+	root.AddCommand(newMigrateCmd(opts))
 	root.AddCommand(newCronCmd(opts))
 	root.AddCommand(newMCPCmd(opts))
 	root.AddCommand(newSkillsCmd(opts))
@@ -127,12 +128,13 @@ func silentExit(code int) error {
 func (e *exitCodeError) Error() string { return e.err.Error() }
 func (e *exitCodeError) Unwrap() error { return e.err }
 
-// withExitCode tags err so Execute exits with code instead of 1.
-func withExitCode(err error, code int) error {
+// needsOperator tags err so Execute exits with ExitNeedsOperator
+// instead of 1.
+func needsOperator(err error) error {
 	if err == nil {
 		return nil
 	}
-	return &exitCodeError{err: err, code: code}
+	return &exitCodeError{err: err, code: ExitNeedsOperator}
 }
 
 func exitCodeFor(err error) int {

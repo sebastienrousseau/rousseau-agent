@@ -124,7 +124,7 @@ func TestRouter_PostTurnSaveFailureStillReplies(t *testing.T) {
 	jm := newMemJID()
 	sess := agent.NewSession("chat: +123")
 	store.sessions[sess.ID] = sess
-	jm.data["+123"] = sess.ID
+	jm.data["whatsapp:+123"] = sess.ID // the router stores senders as transport:from
 	store.saveErr = errors.New("disk full")
 
 	var logs bytes.Buffer

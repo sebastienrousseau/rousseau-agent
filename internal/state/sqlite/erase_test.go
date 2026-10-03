@@ -58,13 +58,14 @@ func TestEraseSender(t *testing.T) {
 		return n
 	}
 	assert.Zero(t, count(`SELECT COUNT(*) FROM sessions WHERE sender = 'alice'`))
-	assert.Zero(t, count(`SELECT COUNT(*) FROM sessions_fts WHERE sessions_fts MATCH 'secret'`), "FTS index purged")
+	assert.Zero(t, count(`SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'secret'`), "FTS index purged")
+	assert.Zero(t, count(`SELECT COUNT(*) FROM session_messages WHERE session_id IN (?, ?)`, alice1, alice2), "message rows purged")
 	assert.Zero(t, count(`SELECT COUNT(*) FROM jid_sessions WHERE jid = 'alice'`))
 	assert.Zero(t, count(`SELECT COUNT(*) FROM session_costs WHERE session_id IN (?, ?)`, alice1, alice2))
 	assert.Zero(t, count(`SELECT COUNT(*) FROM claude_sessions WHERE session_id IN (?, ?)`, alice1, alice2))
 
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM sessions WHERE sender = 'bob'`), "other senders untouched")
-	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM sessions_fts WHERE sessions_fts MATCH 'pineapple'`))
+	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'pineapple'`))
 	assert.Equal(t, 1, count(`SELECT COUNT(*) FROM jid_sessions WHERE jid = 'bob'`))
 
 	rep, err = s.EraseSender(ctx, "alice")

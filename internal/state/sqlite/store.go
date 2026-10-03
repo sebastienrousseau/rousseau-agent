@@ -5,8 +5,6 @@ package sqlite
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -51,6 +49,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
+	if path == ":memory:" {
+		// Every pooled connection to :memory: is a separate, empty
+		// database; one connection keeps them all on the same one.
+		db.SetMaxOpenConns(1)
+	}
 	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, fmt.Errorf("sqlite: enable WAL: %w", err)
@@ -84,62 +87,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: db}
-	if err := s.EnsureSearch(ctx); err != nil {
+	if err := s.ensureVersion(ctx); err != nil {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, err
 	}
 	return s, nil
-}
-
-// Save writes a Session, creating or replacing it.
-func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
-	payload, err := json.Marshal(sess)
-	if err != nil {
-		return fmt.Errorf("sqlite: marshal session: %w", err)
-	}
-	// sender is persisted both in the payload (for round-trip via
-	// Load's json.Unmarshal) and in a top-level column so
-	// ListBySender can index-scan without decoding every row.
-	const q = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender, search_text)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(id) DO UPDATE SET
-    title=excluded.title,
-    payload=excluded.payload,
-    message_count=excluded.message_count,
-    updated_at=excluded.updated_at,
-    sender=excluded.sender,
-    search_text=excluded.search_text
-`
-	_, err = s.db.ExecContext(ctx, q,
-		sess.ID, sess.Title, string(payload), len(sess.Messages),
-		sess.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
-		sess.UpdatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
-		sess.Sender,
-		searchText(sess),
-	)
-	if err != nil {
-		return fmt.Errorf("sqlite: save session: %w", err)
-	}
-	return nil
-}
-
-// Load returns the Session identified by id, or state.ErrNotFound.
-func (s *Store) Load(ctx context.Context, id string) (*agent.Session, error) {
-	const q = `SELECT payload FROM sessions WHERE id = ?`
-	var payload string
-	err := s.db.QueryRowContext(ctx, q, id).Scan(&payload)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, state.ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: load session: %w", err)
-	}
-	sess := &agent.Session{}
-	if err := json.Unmarshal([]byte(payload), sess); err != nil {
-		return nil, fmt.Errorf("sqlite: unmarshal session: %w", err)
-	}
-	return sess, nil
 }
 
 // List returns Session summaries newest-first, capped at limit.

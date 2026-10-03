@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/senderkey"
+
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
@@ -14,7 +16,7 @@ import (
 func (r *Router) sessionFor(ctx context.Context, jid string) (*agent.Session, error) {
 	defer r.senders.Lock(jid)()
 
-	id, ok, err := r.jidMap.Get(ctx, jid)
+	id, ok, err := r.jidMap.Get(ctx, r.key(jid))
 	if err != nil {
 		return nil, err
 	}
@@ -42,7 +44,7 @@ func (r *Router) turnSessionFor(ctx context.Context, jid string) (*agent.Session
 	}
 	defer r.senders.Lock(jid)()
 
-	id, ok, err := r.jidMap.Get(ctx, jid)
+	id, ok, err := r.jidMap.Get(ctx, r.key(jid))
 	if err != nil {
 		return nil, "", err
 	}
@@ -74,11 +76,11 @@ func (r *Router) turnSessionFor(ctx context.Context, jid string) (*agent.Session
 // jid. Caller holds jid's lock in r.senders.
 func (r *Router) newSessionLocked(ctx context.Context, jid string) (*agent.Session, error) {
 	sess := agent.NewSession("chat: " + jid)
-	sess.Sender = jid // enables /sessions to list this session for the sender later
+	sess.Sender = r.key(jid) // enables /sessions to list this session for the sender later
 	if err := r.store.Save(ctx, sess); err != nil {
 		return nil, err
 	}
-	if err := r.jidMap.Put(ctx, jid, sess.ID); err != nil {
+	if err := r.jidMap.Put(ctx, r.key(jid), sess.ID); err != nil {
 		return nil, err
 	}
 	return sess, nil
@@ -168,3 +170,8 @@ func buildUserMessage(msg IncomingMessage, transport string) (agent.Message, boo
 		CreatedAt: time.Now().UTC(),
 	}, true
 }
+
+// key is the stored form of a sender on this router's transport:
+// "<transport>:<from>", so senders on different transports never
+// share sessions, /sessions lists or /find results.
+func (r *Router) key(from string) string { return senderkey.Make(r.transport, from) }

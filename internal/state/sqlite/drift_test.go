@@ -97,18 +97,23 @@ func TestOpen_SchemaApplyFailsWhenIndexSquatsOnTableName(t *testing.T) {
 	assert.Contains(t, err.Error(), "already an index named sessions")
 }
 
-func TestOpen_EnsureSearchFailsWhenFTSTableIsDrifted(t *testing.T) {
+func TestSave_FailsWhenFTSTableIsDrifted(t *testing.T) {
 	s, path := openFileStore(t)
 	require.NoError(t, s.Close())
 
 	// Replace the FTS5 virtual table with a plain table missing the
-	// `title`/`body` columns: CREATE VIRTUAL TABLE IF NOT EXISTS then
-	// no-ops and the backfill INSERT is what blows up.
-	execRaw(t, path, `DROP TABLE sessions_fts; CREATE TABLE sessions_fts (session_id TEXT);`)
+	// body column: Open's CREATE VIRTUAL TABLE IF NOT EXISTS no-ops,
+	// and the index trigger fails on the first appended message.
+	execRaw(t, path, `DROP TABLE messages_fts; CREATE TABLE messages_fts (session_id TEXT);`)
 
-	_, err := Open(context.Background(), path)
+	s2, err := Open(context.Background(), path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s2.Close() }) //nolint:errcheck // test cleanup
+	sess := agent.NewSession("t")
+	sess.Append(agent.NewUserText("hello"))
+	err = s2.Save(context.Background(), sess)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "backfill fts")
+	assert.Contains(t, err.Error(), "append")
 }
 
 // -- Save / Load / List / Delete ----------------------------------------
@@ -126,7 +131,7 @@ func TestStore_SaveRejectsUnmarshalableSession(t *testing.T) {
 
 	err := s.Save(context.Background(), sess)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "marshal session")
+	assert.Contains(t, err.Error(), "marshal message")
 }
 
 func TestStore_MutationsFailOnClosedDB(t *testing.T) {
@@ -173,15 +178,15 @@ VALUES ('drift', 'T', '{}', 'not-a-number', 'x', 'x')`)
 // -- Search / RecentSessions --------------------------------------------
 
 const ftsDDL = `
-CREATE VIRTUAL TABLE sessions_fts USING fts5(
-    session_id UNINDEXED, title, body, tokenize = 'porter unicode61');`
+CREATE VIRTUAL TABLE messages_fts USING fts5(session_id UNINDEXED, seq UNINDEXED, body);
+CREATE VIRTUAL TABLE titles_fts USING fts5(session_id UNINDEXED, title);`
 
 func TestSearch_ScanFailsWhenTitleIsNull(t *testing.T) {
 	db := driftDB(t, `
-CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, payload TEXT, updated_at TEXT);
-INSERT INTO sessions VALUES ('a', NULL, 'hello kubernetes world', '2026-01-02T00:00:00.000Z');`+
+CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, sender TEXT, updated_at TEXT);
+INSERT INTO sessions VALUES ('a', NULL, '', '2026-01-02T00:00:00.000Z');`+
 		ftsDDL+`
-INSERT INTO sessions_fts (session_id, title, body) VALUES ('a', NULL, 'hello kubernetes world');`)
+INSERT INTO messages_fts (session_id, seq, body) VALUES ('a', 0, 'hello kubernetes world');`)
 
 	_, err := (&Store{db: db}).Search(context.Background(), "kubernetes", SearchOptions{})
 	require.Error(t, err)
@@ -190,8 +195,9 @@ INSERT INTO sessions_fts (session_id, title, body) VALUES ('a', NULL, 'hello kub
 
 func TestRecentSessions_ScanFailsWhenPayloadIsNull(t *testing.T) {
 	db := driftDB(t, `
-CREATE TABLE sessions (id TEXT PRIMARY KEY, payload TEXT, updated_at TEXT);
-INSERT INTO sessions VALUES ('a', NULL, '2026-01-02T00:00:00.000Z');`)
+CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, payload TEXT, message_count INTEGER,
+                       updated_at TEXT, head TEXT, base_seq INTEGER, sender TEXT);
+INSERT INTO sessions VALUES ('a', 't', NULL, 0, '2026-01-02T00:00:00.000Z', '[]', 0, '');`)
 
 	_, err := (&Store{db: db}).RecentSessions(context.Background(), 5)
 	require.Error(t, err)

@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -125,12 +127,29 @@ func openStore(ctx context.Context, cfg config.StateConfig) (state.Store, error)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("create state dir: %w", err)
 		}
-		return sqlitestore.Open(ctx, path)
+		st, err := sqlitestore.Open(ctx, path)
+		if errors.Is(err, sqlitestore.ErrNeedsMigration) && cfg.AutoMigrate {
+			rep, merr := sqlitestore.Migrate(ctx, path, sqlitestore.MigrateOptions{})
+			if merr != nil {
+				return nil, needsOperator(fmt.Errorf("state.auto_migrate: %w", merr))
+			}
+			slog.Default().Info("state.migrated", "from", rep.FromVersion, "to", rep.ToVersion,
+				"sessions", rep.Sessions, "messages", rep.Messages, "keys", len(rep.Keys), "backup", rep.Backup)
+			st, err = sqlitestore.Open(ctx, path)
+		}
+		if errors.Is(err, sqlitestore.ErrNeedsMigration) {
+			return nil, needsOperator(err)
+		}
+		return st, err
 	case "postgres":
 		if cfg.DSN == "" {
 			return nil, fmt.Errorf("state driver=postgres requires state.dsn (e.g. postgres://user:pass@host:5432/db?sslmode=require)")
 		}
-		return pgstore.Open(ctx, cfg.DSN)
+		st, err := pgstore.Open(ctx, cfg.DSN)
+		if errors.Is(err, pgstore.ErrNeedsMigration) {
+			return nil, needsOperator(err)
+		}
+		return st, err
 	default:
 		return nil, fmt.Errorf("unknown state driver %q (want \"sqlite\" or \"postgres\")", driver)
 	}

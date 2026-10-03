@@ -28,7 +28,7 @@ func openSearchStore(t *testing.T) (*Store, context.Context) {
 	// The generated column is column-of-a-truncated-table so no
 	// separate FTS-store TRUNCATE is needed (unlike SQLite's
 	// separate FTS5 virtual table).
-	_, err = store.db.ExecContext(ctx, `TRUNCATE TABLE sessions`)
+	_, err = store.db.ExecContext(ctx, `TRUNCATE TABLE sessions CASCADE`)
 	require.NoError(t, err)
 	return store, ctx
 }
@@ -37,7 +37,7 @@ func openSearchStore(t *testing.T) (*Store, context.Context) {
 // sessions table with a title + user message body so full-text
 // queries have something to hit. Uses the canonical Store.Save
 // path — that's where the JSON-serialisation shape lives, and we
-// want tsvector to index whatever Save actually wrote to payload.
+// want the index to hold whatever Save actually wrote.
 func saveSession(t *testing.T, store *Store, ctx context.Context, title, body string) *agent.Session {
 	t.Helper()
 	sess := &agent.Session{
@@ -58,10 +58,10 @@ func TestSearchSchema_MentionsExpectedShape(t *testing.T) {
 	// blows up in fast local tests, not only when a Postgres
 	// instance happens to be reachable. The behavioural
 	// integration tests below cover query results.
-	assert.Contains(t, searchSchema, "ADD COLUMN IF NOT EXISTS search_vector tsvector")
-	assert.Contains(t, searchSchema, "GENERATED ALWAYS AS")
-	assert.Contains(t, searchSchema, "USING GIN (search_vector)")
-	assert.Contains(t, searchSchema, "'english'")
+	assert.Contains(t, v2Schema, "body_vector tsvector GENERATED ALWAYS AS")
+	assert.Contains(t, v2Schema, "USING GIN (body_vector)")
+	assert.Contains(t, v2Schema, "USING GIN (title_vector)")
+	assert.Contains(t, v2Schema, "'english'")
 }
 
 func TestSearch_EmptyQueryRejected(t *testing.T) {

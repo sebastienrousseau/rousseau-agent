@@ -670,7 +670,9 @@ func checkState(cfg *config.Config) []diagResult {
 			out = append(out, diagResult{Name: "state.db_size", Status: "ok", Detail: humanBytes(info.Size())})
 			if n, err := countSessions(path); err == nil {
 				out = append(out, diagResult{Name: "state.sessions", Status: "ok", Detail: fmt.Sprintf("%d recorded", n)})
+				out = append(out, schemaDiag(path, n))
 			}
+			out = append(out, backupDiags(path, time.Now())...)
 		} else if os.IsNotExist(err) {
 			out = append(out, diagResult{Name: "state.db_size", Status: "info", Detail: "does not exist yet (created on first run)"})
 		} else {
@@ -801,6 +803,41 @@ func humanBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+// schemaDiag reports whether the store needs `rousseau migrate`: a
+// daemon refuses (exit 78) to start on an older store with sessions.
+func schemaDiag(path string, sessions int) diagResult {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return diagResult{Name: "state.schema", Status: "fail", Detail: err.Error()}
+	}
+	defer func() { _ = db.Close() }() //nolint:errcheck // best-effort cleanup
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return diagResult{Name: "state.schema", Status: "fail", Detail: err.Error()}
+	}
+	if v < 2 && sessions > 0 {
+		return diagResult{Name: "state.schema", Status: "warn",
+			Detail: fmt.Sprintf("version %d: run `rousseau migrate --dry-run`, then `rousseau migrate` (the daemon will not start until then)", v)}
+	}
+	return diagResult{Name: "state.schema", Status: "ok", Detail: fmt.Sprintf("version %d", v)}
+}
+
+// backupDiags lists the copies `rousseau migrate` left next to the
+// store. They hold personal data: an erasure has to cover them too.
+func backupDiags(path string, now time.Time) []diagResult {
+	matches, _ := filepath.Glob(path + ".pre-*") //nolint:errcheck // the pattern is well-formed
+	var out []diagResult
+	for _, m := range matches {
+		info, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		out = append(out, diagResult{Name: "state.backup", Status: "info", Detail: fmt.Sprintf("%s (%s, %s old; delete once no longer needed)",
+			filepath.Base(m), humanBytes(info.Size()), now.Sub(info.ModTime()).Round(time.Hour))})
+	}
+	return out
 }
 
 func countSessions(path string) (int, error) {

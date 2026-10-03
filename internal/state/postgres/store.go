@@ -30,14 +30,12 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // register "pgx" driver
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 )
 
@@ -93,56 +91,12 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		_ = db.Close() //nolint:errcheck // constructor rollback; primary error already returned
 		return nil, fmt.Errorf("postgres: index sender: %w", err)
 	}
-	return &Store{db: db}, nil
-}
-
-// Save writes a Session, creating or replacing it. Uses ON
-// CONFLICT DO UPDATE so the write path is race-free under
-// concurrent replicas hitting the same session.
-func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
-	payload, err := json.Marshal(sess)
-	if err != nil {
-		return fmt.Errorf("postgres: marshal session: %w", err)
+	st := &Store{db: db}
+	if err := st.ensureVersion(ctx); err != nil {
+		_ = db.Close() //nolint:errcheck // constructor rollback; primary error already returned
+		return nil, err
 	}
-	// sender is stored both in the payload (round-trips through
-	// Load's json.Unmarshal) and as a top-level column so
-	// ListBySender can index-scan without decoding every row.
-	const q = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (id) DO UPDATE SET
-    title = EXCLUDED.title,
-    payload = EXCLUDED.payload,
-    message_count = EXCLUDED.message_count,
-    updated_at = EXCLUDED.updated_at,
-    sender = EXCLUDED.sender
-`
-	_, err = s.db.ExecContext(ctx, q,
-		sess.ID, sess.Title, string(payload), len(sess.Messages),
-		sess.CreatedAt.UTC(), sess.UpdatedAt.UTC(), sess.Sender,
-	)
-	if err != nil {
-		return fmt.Errorf("postgres: save session: %w", err)
-	}
-	return nil
-}
-
-// Load returns the Session identified by id, or state.ErrNotFound.
-func (s *Store) Load(ctx context.Context, id string) (*agent.Session, error) {
-	const q = `SELECT payload FROM sessions WHERE id = $1`
-	var payload string
-	err := s.db.QueryRowContext(ctx, q, id).Scan(&payload)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, state.ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("postgres: load session: %w", err)
-	}
-	sess := &agent.Session{}
-	if err := json.Unmarshal([]byte(payload), sess); err != nil {
-		return nil, fmt.Errorf("postgres: unmarshal session: %w", err)
-	}
-	return sess, nil
+	return st, nil
 }
 
 // List returns Session summaries newest-first, capped at limit

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/senderkey"
 )
 
 // EraseReport says what an erasure removed.
@@ -18,10 +20,10 @@ type EraseReport struct {
 }
 
 // perSessionTables hold rows keyed by session_id.
-var perSessionTables = []string{"session_costs", "claude_sessions", "recall_vectors", "reliability_samples"}
+var perSessionTables = []string{"session_messages", "session_costs", "claude_sessions", "recall_vectors", "reliability_samples"}
 
 // EraseSender removes everything this store holds for sender (GDPR
-// Article 17): its sessions (and their FTS rows), its jid mapping and
+// Article 17): its sessions, their messages and FTS rows, its jid mapping and
 // identity handles, SSO bindings, cron jobs delivering to it, and the
 // per-session rows in session_costs, claude_sessions, recall_vectors
 // and reliability_samples. Tables a deployment never created are
@@ -33,14 +35,20 @@ func (s *Store) EraseSender(ctx context.Context, sender string) (EraseReport, er
 	if strings.TrimSpace(sender) == "" {
 		return EraseReport{Rows: map[string]int64{}}, fmt.Errorf("sqlite: erase: empty sender")
 	}
-	return s.erase(ctx,
-		`SELECT id FROM sessions WHERE sender = ?`, []any{sender},
-		[]senderStep{
-			{"jid_sessions", `DELETE FROM jid_sessions WHERE jid = ?`},
-			{"identity_handles", `DELETE FROM identity_handles WHERE sender = ?`},
-			{"sso_bindings", `DELETE FROM sso_bindings WHERE external_id = ?`},
-			{"cron_jobs", `DELETE FROM cron_jobs WHERE deliver_to = ?`},
-		}, sender)
+	steps := []senderStep{
+		{"jid_sessions", `DELETE FROM jid_sessions WHERE jid = ?`, []any{sender}},
+		{"identity_handles", `DELETE FROM identity_handles WHERE sender = ?`, []any{sender}},
+		{"sso_bindings", `DELETE FROM sso_bindings WHERE external_id = ?`, []any{sender}},
+		{"cron_jobs", `DELETE FROM cron_jobs WHERE deliver_to = ?`, []any{sender}},
+	}
+	// A namespaced key ("signal:+44...") scopes the transport-keyed
+	// tables to that transport; cron targets are bare addresses.
+	if t, bare, ok := senderkey.Split(sender); ok {
+		steps[1] = senderStep{"identity_handles", `DELETE FROM identity_handles WHERE transport = ? AND sender = ?`, []any{t, bare}}
+		steps[2] = senderStep{"sso_bindings", `DELETE FROM sso_bindings WHERE transport = ? AND external_id = ?`, []any{t, bare}}
+		steps[3] = senderStep{"cron_jobs", `DELETE FROM cron_jobs WHERE deliver_to = ?`, []any{bare}}
+	}
+	return s.erase(ctx, `SELECT id FROM sessions WHERE sender = ?`, []any{sender}, steps)
 }
 
 // EraseIdleSessions removes sessions not updated since cutoff, with
@@ -50,17 +58,20 @@ func (s *Store) EraseSender(ctx context.Context, sender string) (EraseReport, er
 func (s *Store) EraseIdleSessions(ctx context.Context, cutoff time.Time) (EraseReport, error) {
 	return s.erase(ctx,
 		`SELECT id FROM sessions WHERE updated_at < ?`, []any{cutoff.UTC().Format("2006-01-02T15:04:05.000Z")},
-		nil, "")
+		nil)
 }
 
-type senderStep struct{ table, q string }
+type senderStep struct {
+	table, q string
+	args     []any
+}
 
 // erase deletes the sessions selectQuery returns plus their
 // per-session rows and jid mappings, then any sender-level steps, in
 // one transaction on one connection with secure_delete on (freed pages
 // are zeroed). It then optimises the FTS index and truncates the WAL
 // so deleted text does not linger in either.
-func (s *Store) erase(ctx context.Context, selectQuery string, selectArgs []any, steps []senderStep, sender string) (EraseReport, error) {
+func (s *Store) erase(ctx context.Context, selectQuery string, selectArgs []any, steps []senderStep) (EraseReport, error) {
 	rep := EraseReport{Rows: map[string]int64{}}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -117,7 +128,7 @@ func (s *Store) erase(ctx context.Context, selectQuery string, selectArgs []any,
 		}
 	}
 	for _, st := range steps {
-		if err := exec(st.table, st.q, sender); err != nil {
+		if err := exec(st.table, st.q, st.args...); err != nil {
 			return rep, err
 		}
 	}
@@ -128,8 +139,11 @@ func (s *Store) erase(ctx context.Context, selectQuery string, selectArgs []any,
 		return rep, nil
 	}
 	// Deleted FTS terms can survive in index segments until merged.
-	if existing["sessions_fts"] {
-		if _, err := conn.ExecContext(ctx, `INSERT INTO sessions_fts(sessions_fts) VALUES('optimize')`); err != nil {
+	for _, fts := range []string{"messages_fts", "titles_fts"} {
+		if !existing[fts] {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO `+fts+`(`+fts+`) VALUES('optimize')`); err != nil { //nolint:gosec // fixed table names
 			return rep, fmt.Errorf("sqlite: erase: fts optimize: %w", err)
 		}
 	}
@@ -154,6 +168,37 @@ func queryStrings(ctx context.Context, conn *sql.Conn, q string, args ...any) ([
 			return nil, err
 		}
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// SenderKeys returns the stored sender keys that name sender: the key
+// itself, or any "<transport>:<sender>" key whose bare part is sender.
+// It lets an operator erase by the bare identifier when only one
+// transport holds it, and shows the choices when several do.
+func (s *Store) SenderKeys(ctx context.Context, sender string) ([]string, error) {
+	const q = `
+SELECT sender AS k FROM sessions WHERE sender = ?1 OR substr(sender, instr(sender, ':') + 1) = ?1
+UNION
+SELECT jid AS k FROM jid_sessions WHERE jid = ?1 OR substr(jid, instr(jid, ':') + 1) = ?1`
+	rows, err := s.db.QueryContext(ctx, q, sender)
+	if err != nil && isNoSuchTable(err) {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT DISTINCT sender FROM sessions WHERE sender = ?1 OR substr(sender, instr(sender, ':') + 1) = ?1`, sender)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: sender keys: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only iteration
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("sqlite: sender keys: %w", err)
+		}
+		if k == sender || senderkey.Bare(k) == sender {
+			out = append(out, k)
+		}
 	}
 	return out, rows.Err()
 }

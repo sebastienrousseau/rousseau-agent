@@ -134,3 +134,17 @@ ignore:
     package:
       name: "brace-expansion"
       location: "/usr/local/lib/node_modules/npm/node_modules/brace-expansion/**"
+
+  # http-cache-semantics 4.2.0, bundled by npm 12.2.0 (the latest npm)
+  # in its own node_modules: GHSA-ch52-4w7c-c8xp (max-stale handling can
+  # serve one user's cached response to another) has NO patched version
+  # (the advisory lists none, and 4.2.0 is the latest release, checked
+  # 2026-10-03). npm uses it for its registry HTTP cache, a single-user
+  # cache in this container. Scoped to npm's bundled copy only.
+  #
+  # REMOVE WHEN: http-cache-semantics ships a fix and an npm release
+  # bundles it (bump NPM_VERSION in docker/Dockerfile).
+  - vulnerability: "GHSA-ch52-4w7c-c8xp"
+    package:
+      name: "http-cache-semantics"
+      location: "/usr/local/lib/node_modules/npm/node_modules/http-cache-semantics/**"

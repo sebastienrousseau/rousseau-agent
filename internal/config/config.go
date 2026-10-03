@@ -814,6 +814,12 @@ type StateConfig struct {
 	// 6 hours. Zero (the default) keeps sessions until deleted.
 	// SQLite only for now.
 	SessionTTL time.Duration `mapstructure:"session_ttl"`
+	// AutoMigrate upgrades an older SQLite store at startup (after
+	// the same backup `rousseau migrate` takes) instead of exiting 78
+	// and waiting for an operator. Ambiguous sender keys still stop
+	// it. SQLite only: a Postgres upgrade needs an operator-taken
+	// backup.
+	AutoMigrate bool `mapstructure:"auto_migrate"`
 }
 
 // AgentConfig configures the agent loop.

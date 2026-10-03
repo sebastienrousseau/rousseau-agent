@@ -116,7 +116,7 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
 			err = client.Start(ctx, wiring.TransportHandler("whatsapp", opts.Logger))
 			if errors.Is(err, whatsapp.ErrNeedsOperator) {
-				return withExitCode(err, ExitNeedsOperator)
+				return needsOperator(err)
 			}
 			return err
 		},
