@@ -205,3 +205,27 @@ func TestDoctorStateDiags(t *testing.T) {
 
 	assert.Equal(t, "fail", schemaDiag(filepath.Join(t.TempDir(), "missing", "x.db"), 1).Status)
 }
+
+func TestMigrateCmd_PostgresAndDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("state:\n  driver: postgres\n  dsn: \"\"\n"), 0o600))
+	_, err := runCLI(t, cfgPath, "migrate", "--dry-run")
+	assert.ErrorContains(t, err, "empty DSN")
+	_, err = runCLI(t, cfgPath, "migrate", "--down", "--backup-taken")
+	assert.ErrorContains(t, err, "empty DSN")
+
+	require.NoError(t, os.WriteFile(cfgPath, []byte("state:\n  driver: etcd\n"), 0o600))
+	_, err = runCLI(t, cfgPath, "migrate")
+	assert.ErrorContains(t, err, "unknown state driver")
+
+	t.Setenv("HOME", dir)
+	p, err := statePath("")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, ".local", "share", "rousseau", "sessions.db"), p)
+	require.NoError(t, os.WriteFile(cfgPath, []byte("state:\n  path: "+filepath.Join(dir, "absent.db")+"\n"), 0o600))
+	_, err = runCLI(t, cfgPath, "migrate")
+	assert.ErrorContains(t, err, "no session store at")
+	_, err = runCLI(t, cfgPath, "migrate", "--down")
+	assert.Error(t, err)
+}

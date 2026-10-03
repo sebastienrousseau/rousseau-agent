@@ -107,6 +107,12 @@ func TestPGMigrate_V1ToV2AndBack(t *testing.T) {
 	assert.Equal(t, 6, rep.Messages)
 	assert.Len(t, rep.Keys, 2)
 
+	again, err := Migrate(ctx, dsn, MigrateOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 2, again.FromVersion, "a second run is a no-op")
+	_, err = MigrateDown(ctx, dsn, false)
+	require.ErrorIs(t, err, ErrBackupRequired)
+
 	s, err := Open(ctx, dsn)
 	require.NoError(t, err)
 	for id, w := range want {
@@ -150,4 +156,60 @@ func TestPGMigrate_V1ToV2AndBack(t *testing.T) {
 	var payload string
 	require.NoError(t, db.QueryRowContext(ctx, `SELECT payload FROM sessions WHERE id = 's0'`).Scan(&payload))
 	assert.Contains(t, payload, "and now?", "down keeps messages written after the upgrade")
+}
+
+func TestPGMigrate_Errors(t *testing.T) {
+	ctx := context.Background()
+	_, err := Migrate(ctx, "", MigrateOptions{})
+	assert.ErrorContains(t, err, "empty DSN")
+	_, err = MigrateDown(ctx, "", true)
+	assert.ErrorContains(t, err, "empty DSN")
+
+	dsn := isolatedDSN(t)
+	writePGV1(t, dsn, "+447700900123")
+	_, err = Migrate(ctx, dsn, MigrateOptions{Map: map[string]string{"+447700900123": "pigeon"}})
+	assert.ErrorContains(t, err, "unknown transport")
+	_, err = Migrate(ctx, dsn, MigrateOptions{BackupTaken: true})
+	assert.ErrorIs(t, err, ErrAmbiguousSenders)
+	_, err = MigrateDown(ctx, dsn, true)
+	assert.ErrorContains(t, err, "not 2")
+}
+
+func TestPGMigrate_FailuresRollBack(t *testing.T) {
+	ctx := context.Background()
+	cases := map[string]string{
+		"schema fails":         `CREATE TABLE session_messages (session_id TEXT, seq BIGINT)`,
+		"session update fails": `CREATE FUNCTION no_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'sabotaged'; END $$; CREATE TRIGGER no_update BEFORE UPDATE ON sessions FOR EACH ROW EXECUTE FUNCTION no_update()`,
+	}
+	for name, sabotage := range cases {
+		t.Run(name, func(t *testing.T) {
+			dsn := isolatedDSN(t)
+			writePGV1(t, dsn, "447700900123@s.whatsapp.net")
+			db, err := sql.Open("pgx", dsn)
+			require.NoError(t, err)
+			defer db.Close() //nolint:errcheck // test
+			_, err = db.ExecContext(ctx, sabotage)
+			require.NoError(t, err)
+
+			_, err = Migrate(ctx, dsn, MigrateOptions{BackupTaken: true})
+			require.Error(t, err)
+			v, err := peekVersion(ctx, db)
+			require.NoError(t, err)
+			assert.Equal(t, 1, v)
+			var sender string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT sender FROM sessions WHERE id = 's0'`).Scan(&sender))
+			assert.Equal(t, "447700900123@s.whatsapp.net", sender)
+		})
+	}
+}
+
+func TestPGOpen_RefusesANewerSchema(t *testing.T) {
+	ctx := context.Background()
+	dsn := isolatedDSN(t)
+	s, err := Open(ctx, dsn)
+	require.NoError(t, err)
+	require.NoError(t, setVersion(ctx, s.db, 99))
+	require.NoError(t, s.Close())
+	_, err = Open(ctx, dsn)
+	assert.ErrorContains(t, err, "newer than this build")
 }

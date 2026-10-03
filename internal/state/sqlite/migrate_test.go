@@ -306,3 +306,122 @@ INSERT INTO sessions VALUES ('legacy-id', 'legacy', '{"id":"legacy-id","messages
 	require.NoError(t, err)
 	assert.Equal(t, []string{"hello"}, texts(got))
 }
+
+func TestSenderKeys(t *testing.T) {
+	ctx := context.Background()
+	s := openV2(t)
+	_, err := NewJIDMap(ctx, s)
+	require.NoError(t, err)
+	for _, k := range []string{"signal:+447700900123", "imessage:+447700900123", "+447700900999"} {
+		sess := agent.NewSession(k)
+		sess.Sender = k
+		require.NoError(t, s.Save(ctx, sess))
+	}
+	got, err := s.SenderKeys(ctx, "+447700900123")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"signal:+447700900123", "imessage:+447700900123"}, got)
+	got, err = s.SenderKeys(ctx, "+447700900999")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"+447700900999"}, got, "a legacy bare key matches itself")
+	got, err = s.SenderKeys(ctx, "nobody")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+
+	// Without a jid_sessions table, sessions alone answer.
+	bare := openV2(t)
+	sess := agent.NewSession("x")
+	sess.Sender = "slack:U0123ABCD"
+	require.NoError(t, bare.Save(ctx, sess))
+	got, err = bare.SenderKeys(ctx, "U0123ABCD")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"slack:U0123ABCD"}, got)
+}
+
+func TestOpen_RefusesANewerSchema(t *testing.T) {
+	f := writeV1(t)
+	db, err := sql.Open("sqlite", f.path)
+	require.NoError(t, err)
+	_, err = db.Exec(`PRAGMA user_version = 99`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+	_, err = Open(context.Background(), f.path)
+	assert.ErrorContains(t, err, "newer than this build")
+}
+
+func TestMigrate_Errors(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	junk := filepath.Join(dir, "junk.db")
+	require.NoError(t, os.WriteFile(junk, []byte("this is not a database, just text padding it out"), 0o600))
+	_, err := Migrate(ctx, junk, MigrateOptions{})
+	assert.Error(t, err, "not a database")
+
+	empty := filepath.Join(dir, "empty.db")
+	_, err = Migrate(ctx, empty, MigrateOptions{})
+	assert.ErrorContains(t, err, "nothing to migrate")
+
+	f := writeV1(t, "+447700900123")
+	_, err = Migrate(ctx, f.path, MigrateOptions{Map: map[string]string{"+447700900123": "pigeon"}})
+	assert.ErrorContains(t, err, "unknown transport")
+
+	require.NoError(t, os.WriteFile(f.path+".pre-v2-20261002T090000Z", nil, 0o600))
+	_, err = Migrate(ctx, f.path, MigrateOptions{Now: clock, Map: map[string]string{"+447700900123": "signal"}})
+	assert.ErrorContains(t, err, "already exists")
+	assert.Equal(t, 1, versionOf(t, f.path))
+
+	_, err = MigrateDown(ctx, f.path, clock)
+	assert.ErrorContains(t, err, "not 2")
+	_, err = MigrateDown(ctx, junk, clock)
+	assert.Error(t, err)
+}
+
+// TestMigrate_FailuresMidTransactionRollBack sabotages each write the
+// migration makes and checks every failure leaves version 1 and the
+// original keys in place.
+func TestMigrate_FailuresMidTransactionRollBack(t *testing.T) {
+	cases := map[string]string{
+		"message insert fails": `CREATE TABLE session_messages (session_id TEXT, seq INTEGER);`,
+		"session update fails": `CREATE TRIGGER no_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'sabotaged'); END;`,
+		"mapping rewrite fails": `ALTER TABLE jid_sessions RENAME TO jid_real;
+CREATE VIEW jid_sessions AS SELECT * FROM jid_real;`,
+		"title index fails": `CREATE TABLE titles_fts (session_id TEXT);`,
+	}
+	for name, sabotage := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			f := writeV1(t, "447700900123@s.whatsapp.net")
+			db, err := sql.Open("sqlite", f.path)
+			require.NoError(t, err)
+			_, err = db.ExecContext(ctx, sabotage)
+			require.NoError(t, err)
+			require.NoError(t, db.Close())
+
+			_, err = Migrate(ctx, f.path, MigrateOptions{Now: clock})
+			require.Error(t, err)
+			assert.Equal(t, 1, versionOf(t, f.path))
+			db, err = sql.Open("sqlite", f.path)
+			require.NoError(t, err)
+			defer db.Close() //nolint:errcheck // test
+			var sender string
+			require.NoError(t, db.QueryRowContext(ctx, `SELECT sender FROM sessions WHERE id = 'sa'`).Scan(&sender))
+			assert.Equal(t, "447700900123@s.whatsapp.net", sender)
+		})
+	}
+}
+
+func TestMigrateDown_FailureRollsBack(t *testing.T) {
+	ctx := context.Background()
+	f := writeV1(t, "447700900123@s.whatsapp.net")
+	_, err := Migrate(ctx, f.path, MigrateOptions{Now: clock})
+	require.NoError(t, err)
+	db, err := sql.Open("sqlite", f.path)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `CREATE TRIGGER no_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'sabotaged'); END;`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = MigrateDown(ctx, f.path, clock)
+	assert.ErrorContains(t, err, "sabotaged")
+	assert.Equal(t, 2, versionOf(t, f.path))
+}
