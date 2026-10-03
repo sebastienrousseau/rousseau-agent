@@ -115,29 +115,38 @@ systemctl --user enable --now rousseau-agent-claude-creds.path
 systemctl --user start rousseau-agent
 ```
 
-## Claude OAuth refresh
+## Claude Code config (container-owned)
 
-Two Claude Code state files are bind-mounted into the container:
+The container keeps its own Claude Code config in
+`~/.local/share/rousseau/claude` on the host, mounted at
+`/home/rousseau/.claude` with `CLAUDE_CONFIG_DIR` pointing at it. The
+host's `~/.claude/` and `~/.claude.json` are not mounted: read-write
+access to them let a tool call inside the container install hooks,
+plugins, `CLAUDE.md` or MCP servers that the host's own `claude` would
+then run.
 
-- `$HOME/.claude/` — session history, projects, plugin cache. Dir
-  bind, so files replaced inside it stay visible; no watcher help
-  needed.
-- `$HOME/.claude.json` — permission profile, MCP registry, per-project
-  session index. Lives at HOME root, so it has to be file-bound.
+One-time setup, before the first start:
 
-Claude Code rewrites both files via atomic `unlink + rename`. File
-binds follow the source **inode**, so an atomic replace leaves the
-container holding the deleted one and every subprocess after that
-dies with either `Failed to authenticate: OAuth session expired and
-could not be refreshed` or
-`Claude configuration file not found at: /home/rousseau/.claude.json`.
+```bash
+mkdir -p ~/.local/share/rousseau/claude
+chmod 700 ~/.local/share/rousseau ~/.local/share/rousseau/claude
+# Log the container in on its own (do not copy the host's
+# .credentials.json: OAuth refresh tokens rotate, so two copies can
+# sign each other out).
+podman run --rm -it --userns=keep-id \
+  -v ~/.local/share/rousseau/claude:/home/rousseau/.claude:Z \
+  -e CLAUDE_CONFIG_DIR=/home/rousseau/.claude \
+  --entrypoint claude localhost/rousseau-agent:local
+# then run /login inside that session and exit
+```
 
-`rousseau-agent-claude-creds.path` is a systemd path unit that
-watches **both** `%h/.claude.json` and `%h/.claude/.credentials.json`
-for change events and, when either fires, restarts
-`rousseau-agent.service` via a small oneshot service. Podman
-re-resolves file binds at start, so the fresh inodes are picked up
-immediately.
+Alternatively supply `ANTHROPIC_API_KEY` as a podman secret.
+
+Because claude now refreshes its token in place inside that directory,
+`rousseau-agent-claude-creds.path` (below) is only needed by
+deployments that still bind-mount the host's `~/.claude`.
+
+### Legacy: host-mounted Claude config
 
 Install (copied by `make quadlet-install`):
 

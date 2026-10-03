@@ -33,15 +33,18 @@ func newSMSCmd(opts *Options) *cobra.Command {
 			if prov == "" || fromNum == "" {
 				return errors.New("sms.provider and sms.from are required")
 			}
-			setUnattendedPermissionDefault(opts, "sms")
+			if err := requirePermissionMode(opts, "sms"); err != nil {
+				return err
+			}
 
 			ctx := cmd.Context()
 			wiring, err := assembleDaemon(ctx, opts, nil)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "sms", nil)
 
 			client, err := sms.New(sms.Config{
 				Provider:    sms.Provider(prov),

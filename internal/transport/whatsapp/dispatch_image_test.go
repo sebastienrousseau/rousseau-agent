@@ -267,3 +267,37 @@ func TestDownloadImage_NilMessageRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, att)
 }
+
+// TestDispatch_StrangerMediaIsDroppedBeforeDownload pins that the
+// allowlist runs before any media work: a non-allowlisted sender must
+// not cost a download, a whisper run, or transcription API spend.
+func TestDispatch_StrangerMediaIsDroppedBeforeDownload(t *testing.T) {
+	own := jid("15551234567", 21)
+	stranger := jid("15559990000", 0)
+	onlyOwner := func(from string) bool { return from == "15551234567@s.whatsapp.net" }
+
+	for name, evt := range map[string]*events.Message{
+		"image": imageEvent(stranger, stranger.ToNonAD(), "image/png", ""),
+		"voice": audioEvent(stranger, stranger.ToNonAD(), false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dl := &fakeDownloader{audio: pngHeader, mimetype: "image/png"}
+			tr := &fakeTranscriber{text: "hello"}
+			h := &captureHandler{reply: "should not happen"}
+			send := &fakeSender{}
+			Dispatch(context.Background(), DispatchInput{
+				Event:       evt,
+				OwnID:       &own,
+				Sender:      send,
+				Downloader:  dl,
+				Transcriber: tr,
+				Handler:     h,
+				Logger:      silentLogger(),
+				IsAllowed:   onlyOwner,
+			})
+			assert.Zero(t, dl.calls, "no download for a stranger")
+			assert.Empty(t, tr.seen, "no transcription for a stranger")
+			assert.Empty(t, send.sent)
+		})
+	}
+}

@@ -18,8 +18,12 @@ and when) and [`README.md`](../README.md) (how to use it).
 **Open-Core with a paid, self-hosted Enterprise / Team Edition
 delivered as an offline license key inside the same static binary.**
 
-- The `rousseau-agent` core (this repository, Apache-2.0 / MIT
-  dual licence) is fully functional on its own. Every default
+- The `rousseau-agent` core (this repository, FSL-1.1-Apache-2.0:
+  source-available, no competing commercial use, each version becomes
+  Apache-2.0 two years after release; see [`LICENSE`](../LICENSE),
+  [`NOTICE`](../NOTICE) and
+  [`LICENSE-RATIONALE.md`](./LICENSE-RATIONALE.md)) is fully
+  functional on its own. Every default
   ships in the core.
 - Enterprise / Team features live in the same static binary. They
   are **runtime-gated** by a signed license, not compiled out.
@@ -45,7 +49,7 @@ out. See [`memory/rousseau_agent_business_model.md`](../.claude-memory-notes)
 |---|---|
 | SaaS ("rousseau cloud") | Violates the core "zero telemetry, no control plane" promise, destroys the primary competitive moat with platform-ops / regulated / airgapped audiences, drags in billing hooks + multi-tenant isolation that has nothing to do with building a great agent. |
 | Enterprise-only support against pure OSS | Unscalable consulting shop; trades time for ad-hoc SLAs; leads directly to maintainer burnout. |
-| GPL / dual licensing | Would fragment the community and force a licence-audit cliff on every downstream consumer. Apache-2.0 / MIT + open-core is the friendlier path for platform-team adoption. |
+| GPL / AGPL + dual licensing | GPL-3.0 does not reach hosted use (a competitor can run it as a service without sharing anything), and any copyleft licence lets a user legally strip the licence-key check from the Enterprise features that live in this same binary. FSL keeps the source open to read, modify and self-host, forbids competing commercial use for two years, then converts each version to Apache-2.0, whose NOTICE requirement keeps attribution with every redistribution. |
 
 ---
 
@@ -76,7 +80,7 @@ different problem from directory-based user authentication.
 |---|---|
 | Structured `slog` to stdout | Streaming audit-log egress: Splunk HEC, Datadog Logs, OTLP push, generic HTTPS sink |
 | Full session history in the local SQLite DB (`sessions_fts`) | Immutable, tamper-evident log format (hash-chained records) |
-| Prometheus scrape endpoint (all 15 `rousseau_*` metric families) | Extended PII / secrets redaction rule packs (industry presets: HIPAA, PCI-DSS, GDPR) |
+| Prometheus scrape endpoint (all 29 `rousseau_*` metric families) | Extended PII / secrets redaction rule packs (industry presets: HIPAA, PCI-DSS, GDPR) |
 | OpenTelemetry OTLP/HTTP tracer for spans | SIEM-ready log field mapping (CEF, LEEF) |
 | Default redaction rules (`internal/observability/redact`) | Configurable retention policies with automated purge |
 

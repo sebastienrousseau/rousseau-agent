@@ -240,7 +240,7 @@ func (w *setupWizard) askAll(scanner *bufio.Scanner) (setupAnswers, error) {
 // Creates the parent directory. File mode 0600 because config
 // may embed API keys.
 func (w *setupWizard) writeConfig(a setupAnswers) error {
-	if err := os.MkdirAll(filepath.Dir(w.configPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(w.configPath), 0o700); err != nil {
 		return fmt.Errorf("setup: create config dir: %w", err)
 	}
 	body := renderSetupYAML(a)

@@ -7,7 +7,7 @@
   <em>A self-hosted AI agent daemon for teams that cannot use SaaS.
   Single static Go binary, rootless container, offline-verified
   license — deployable inside your perimeter with enforced SSO,
-  OPA policy, and signed audit egress to your SIEM. Reachable from
+  OPA policy, and tamper-evident audit egress to your SIEM. Reachable from
   the chat transports your organisation already runs.</em>
 </p>
 
@@ -222,7 +222,7 @@ The full command tree:
 | **Sub-agent fan-out** | `subagent.Spawn(ctx, parent, provider, tasks, policy)` runs N detached-copy tasks with bounded concurrency, per-task timeout, and an aggregate token budget. Two aggregators ship (human-readable and JSON). Also exposed to the model as the `spawn_subagent` tool. |
 | **Memory and recall** | FTS5 keyword search across every stored session, plus hybrid vector recall (`internal/recall`) — SQLite blob store, cosine similarity, weighted blend against the keyword score. Letta-style self-editing memory in `internal/memory/letta`. |
 | **Tool registry** | Concurrency-safe registry. Six built-ins (`read`, `write`, `edit`, `grep`, `bash`, `spawn_subagent`), 26 native integration tools, tools imported from external MCP servers, and the opt-in Composio adapter. |
-| **Approval policy** | `allow_all`, `deny_all`, or `pattern` mode with per-tool allow and deny regular expressions over a configurable default verdict. |
+| **Approval policy** | `allow_all`, `deny_all`, or `pattern` mode with per-tool allow and deny regular expressions over a configurable default verdict. Enterprise layers on top: RBAC, OPA, multi-party approval, and a risk-scored check (`agent.approver.risk`: a model judges each call to the listed tools that the other layers allowed and blocks confident "risky" verdicts, with the reason in the audit log; it can only deny, and fails closed). Configured layers that cannot run block the tools they govern. |
 | **Bash sandbox** | Four backends selected by `tools.bash.sandbox.kind`: `none` (default), `nsjail`, `gvisor`, `firecracker` (`internal/tools/sandbox`). Zero config = direct exec (byte-for-byte identical to pre-sandbox); opt in per-deployment. Policy fields cover network isolation, per-invocation tmpdir, wallclock / CPU / memory caps, and bindmount lists. |
 | **OAuth broker and vault** | `internal/auth/oauth` — provider-agnostic broker with an XChaCha20-Poly1305 vault. Master key from `$ROUSSEAU_TOKEN_KEY`, the OS keyring, or a mode-0600 file. Key rotation preserves plaintext. |
 | **Session store** | SQLite via `modernc.org/sqlite` (pure Go, embedded). WAL journaling, `busy_timeout=15s`, checkpoint on `Close`. Tables cover sessions (with FTS5 twin), transport-JID mapping, provider session cache, cron jobs, OAuth tokens, session costs, recall vectors, cross-transport identity + handles, static + approved sender lists, SSO bindings, the SCIM 2.0 directory (users/groups/memberships), and the tamper-evident audit chain. Postgres mirror in `internal/state/postgres/` covers every relational table; FTS-backed history search and vector recall remain sqlite-only. |
@@ -231,7 +231,7 @@ The full command tree:
 | **Identity** | Stable identity IDs across transports (`internal/identity`) so one conversation can move from WhatsApp to Slack to email. `/whoami`, `/link`, `/unlink` chat commands resolve without an LLM round trip. `/version` echoes the daemon's build stamp for post-redeploy sanity checks — same path, no LLM. |
 | **Workspaces** | `internal/workspace` scopes routing, credentials, and per-team approver rules within a single on-premise deployment (not a SaaS boundary — see [`docs/workspaces.md`](./docs/workspaces.md)). |
 | **Cost accounting** | Every completion records provider, model, token usage (input, output, cache-read, cache-creation) and an estimated USD figure from `internal/pricing`. Query with `rousseau session cost`. |
-| **Observability** | Prometheus registry with 15 `rousseau_*` metric families, an OpenTelemetry OTLP/HTTP tracer, and a redacting `slog` handler carrying default rules for every credential shape the daemon touches. |
+| **Observability** | Prometheus registry with 29 `rousseau_*` metric families (including `rousseau_transport_connected` and `rousseau_transport_last_inbound_timestamp_seconds` for liveness alerts), an OpenTelemetry OTLP/HTTP tracer, and a redacting `slog` handler carrying default rules for every credential shape the daemon touches. |
 | **TUI** | Bubble Tea client with viewport, scrollback, streaming indicator, and typing feedback. |
 
 There is no SaaS control plane, no telemetry endpoint, no license server,
@@ -373,26 +373,25 @@ Skills are Markdown files with YAML frontmatter in the
 daemon actually loaded. Four skills are bundled — see
 [`skills/README.md`](./skills/README.md).
 
-Because a skill is prompt text that the model will follow, skill loading
-can require a signature. `internal/skills/verify.go` shells out to
-`ssh-keygen -Y verify` against an OpenSSH allowed-signers file, which is
-the same mechanism Git uses for SSH-signed commits.
+Because a skill is prompt text that the model will follow, signed skill
+bundles are supported (Enterprise, `governance_advanced`): `*.skill.json`
+bundles in `agent.skill_bundles.dir` load only when signed by an Ed25519
+key listed in `trusted_publisher_keys`; a bundle that fails verification
+is not loaded.
 
 ```yaml
 agent:
   skills_dir: ~/.local/share/rousseau/skills
-  skills_require_signature: true
-  skills_allowed_signers_file: /etc/rousseau/allowed_signers.pub
-  skills_signature_namespace: rousseau-skills
+  skill_bundles:
+    dir: /etc/rousseau/skill-bundles
+    trusted_publisher_keys:
+      - "<base64 Ed25519 public key>"
+    strict: true            # log verification failures at ERROR
 ```
 
-```bash
-ssh-keygen -Y sign -f ~/.ssh/rousseau-skills -n rousseau-skills git-rebase.md
-# produces git-rebase.md.sig
-```
-
-With `skills_require_signature: true` an unsigned or badly signed skill
-is dropped rather than loaded.
+Plain Markdown skills in `skills_dir` are not signature-checked. The
+OpenSSH verifier in `internal/skills/verify.go` (`ssh-keygen -Y verify`)
+is a library API and is not yet configurable from `config.yaml`.
 
 ---
 
@@ -455,8 +454,8 @@ then default**. The file lives at `~/.config/rousseau/config.yaml`;
 |---|---|
 | `provider` | Which backend to use: `claudecli`, `anthropic`, `openai`, `openrouter`, `ollama`, `bedrock`, `vertex`, `router` |
 | `anthropic`, `openai`, `openrouter`, `ollama`, `bedrock`, `vertex`, `claudecli` | Per-provider credentials, model, endpoint |
-| `router` | `default`, `rules`, and the named `providers` the rules select |
-| `agent` | System prompt, `max_iterations`, skills directory and signature policy, compression, approver |
+| `router` | `default`, `rules` (by message length, tool-use count, session prefix, or `intents` classified by the `classifier` provider), and the named `providers` the rules select |
+| `agent` | System prompt, `max_iterations`, `session_idle_timeout`, `turn_timeout`, `max_concurrent_turns`, skills directory and signature policy, compression, approver |
 | `log` | `level` and `format` |
 | `state` | Path to the SQLite database |
 | `recall` | Embedder, chunking, retrieval breadth, hybrid weight, purge window |
@@ -494,6 +493,9 @@ state:
 agent:
   system_prompt: ""            # empty falls back to the built-in default
   max_iterations: 32
+  session_idle_timeout: 12h      # fresh chat session after this much idle; 0 = never
+  turn_timeout: 30m              # stop a chat turn (and its claude process) after this; 0 = no limit
+  max_concurrent_turns: 4        # agent turns running at once; more queue; 0 = unlimited
   skills_dir: ~/.config/rousseau/skills
   compression:
     enabled: true
@@ -978,9 +980,24 @@ exposure. Three controls narrow it:
    workspace, the state directory, and `~/.claude`. Nothing else on the
    host is visible from inside.
 
-Operators running unattended chat-transport daemons must either enforce
-`pattern` mode with a deny default or accept `bypassPermissions` with an
-explicit understanding of the exposure.
+Unattended chat-transport daemons fail closed on two points:
+
+- **Sender allowlist.** Each chat transport refuses to start with an empty
+  allowlist (`--allow` or `<transport>.allowlist`) unless `--allow-anyone`
+  is passed.
+- **Permission mode.** The daemon refuses to start until
+  `claudecli.permission_mode` (or `ROUSSEAU_CLAUDECLI_PERMISSION_MODE`) is
+  set explicitly: `bypassPermissions` lets claude attempt any tool;
+  `dontAsk` plus `claudecli.extra_args: ["--allowedTools", "..."]` limits
+  it to the listed tools.
+- **Policy bridge.** `claude` runs its own tools, so the daemon installs a
+  `PreToolUse` hook (`rousseau hook pre-tool-use`) that asks rousseau's
+  approver chain (pattern, RBAC, OPA, multi-party) over a private unix
+  socket before every call, audits the decision (`executor=external`),
+  and blocks on deny or on any failure to get a decision. It cannot run
+  with `claudecli.bare` (claude skips hooks there); that combination is
+  refused unless `claudecli.disable_policy_hook: true`. API providers
+  apply the same approver natively.
 
 ### Credential handling
 
@@ -1082,6 +1099,10 @@ anniversary of its release — the fair-source pattern also used by
 Sentry and others.
 
 `SPDX-License-Identifier: FSL-1.1-Apache-2.0`
+
+Redistributions and derivative works must keep the attribution in
+[`NOTICE`](./NOTICE) (Apache-2.0 section 4(d) applies once a version
+has converted).
 
 **Versions v0.0.3 and earlier** were dual-licensed under [Apache
 License 2.0](./LICENSE-APACHE) or [MIT](./LICENSE-MIT), at your

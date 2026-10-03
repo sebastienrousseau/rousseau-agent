@@ -110,6 +110,30 @@ func (t *Turn) Drain() []string {
 	return steered
 }
 
+// DrainOrFinish returns text steered into the turn that nothing has
+// consumed, or, when there is none, marks the turn done in the same
+// critical section so no later Steer can land in it unseen (Steer then
+// returns false and the sender's message starts a new turn). A
+// cancelled turn returns nil: the user stopped it. The supervisor calls
+// this after the provider returns, because providers that run the whole
+// turn themselves (claudecli) never reach the agent's steering
+// checkpoint.
+func (t *Turn) DrainOrFinish() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.state == TurnCancelled {
+		t.steer = nil
+		return nil
+	}
+	if len(t.steer) > 0 {
+		steered := t.steer
+		t.steer = nil
+		return steered
+	}
+	t.state = TurnDone
+	return nil
+}
+
 // Checkpoints reports how many checkpoints the loop has passed.
 func (t *Turn) Checkpoints() int {
 	t.mu.Lock()

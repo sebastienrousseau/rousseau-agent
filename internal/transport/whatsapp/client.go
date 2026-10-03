@@ -17,9 +17,11 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
+	"github.com/prometheus/client_golang/prometheus"
 	_ "modernc.org/sqlite" // register the modernc SQLite driver used by whatsmeow
 
 	"go.mau.fi/whatsmeow"
@@ -28,6 +30,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
@@ -77,6 +80,17 @@ type Client struct {
 	// "go f()". It stays inline by default so unit tests that build a
 	// Client directly keep their synchronous, race-free assertions.
 	dispatch func(func())
+	// fatal carries a session-ending condition (server-side logout)
+	// from the event goroutine to Start, which returns it so the
+	// process exits non-zero and the supervisor restarts it into a
+	// fresh pairing flow. Buffered 1; later sends are dropped.
+	fatal chan error
+	// linked mirrors the connected gauge for the health heartbeat.
+	linked atomic.Bool
+	// baseCtx is Start's context. In-flight turns derive from it so
+	// shutdown cancels them (stopping their claude processes) instead
+	// of leaving them running on context.Background().
+	baseCtx context.Context
 }
 
 // Start-path test seams. Start's whatsmeow touchpoints — opening the
@@ -164,6 +178,7 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 		allow:    allowSet,
 		openAll:  len(allowSet) == 0,
 		dispatch: func(f func()) { f() },
+		fatal:    make(chan error, 1),
 	}, nil
 }
 
@@ -185,6 +200,7 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("whatsapp: already started")
 	}
 	c.handler = handler
+	c.baseCtx = ctx
 	c.mu.Unlock()
 
 	wm, err := newWMClient(ctx, c.cfg)
@@ -214,27 +230,60 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		if err := wmConnect(wm); err != nil {
 			return fmt.Errorf("whatsapp: connect: %w", err)
 		}
+		paired, last := false, ""
 		for evt := range qrChan {
+			last = evt.Event
 			switch evt.Event {
 			case "code":
-				// Log the raw pair code alongside the ASCII render.
-				// Lets operators pipe it into an alternative renderer
-				// (e.g. `qrencode -o pair.png <code>`) when the
-				// terminal display is too small or wrapped to scan.
-				c.logger.Info("whatsapp.qr_ready", slog.String("code", evt.Code))
+				// The raw code is deliberately not a log field: with
+				// it, anyone who can read the journal during the
+				// window can link a device to the account.
+				c.logger.Info("whatsapp.qr_ready")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, qrOut)
 			case "success":
+				paired = true
 				c.logger.Info("whatsapp.paired")
 			default:
 				c.logger.Warn("whatsapp.qr_event", slog.String("event", evt.Event))
 			}
 		}
+		// The QR channel closes on success, timeout, or error. Only a
+		// success leaves a usable session; anything else used to fall
+		// through to <-ctx.Done() and leave an unpaired daemon idling
+		// forever with systemd reporting it healthy. Exit instead so
+		// the supervisor restarts into a fresh QR window.
+		if !paired && ctx.Err() == nil {
+			_ = c.Stop() //nolint:errcheck // Stop never fails; primary error is the pairing outcome
+			return fmt.Errorf("%w: pairing did not complete (last qr event %q); restart to get a new QR", ErrNeedsOperator, last)
+		}
+		// Store.ID was nil when captured above; adopt the JID the
+		// pairing just wrote so self-chat attribution works without
+		// a restart.
+		c.adoptOwnID()
 	} else if err := wmConnect(wm); err != nil {
 		return fmt.Errorf("whatsapp: connect: %w", err)
 	}
 
-	<-ctx.Done()
-	return c.Stop()
+	select {
+	case <-ctx.Done():
+		return c.Stop()
+	case err := <-c.fatal:
+		_ = c.Stop() //nolint:errcheck // Stop never fails; primary error is the fatal event
+		return err
+	}
+}
+
+// adoptOwnID refreshes ownID from the whatsmeow store. The store's
+// JID is only populated once pairing succeeds, so a value captured
+// at Start on a fresh device is nil; without this refresh every
+// self-chat message is attributed to the sender's LID and dropped by
+// the allowlist until the next restart.
+func (c *Client) adoptOwnID() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wm != nil && c.wm.Store != nil && c.wm.Store.ID != nil {
+		c.ownID = c.wm.Store.ID
+	}
 }
 
 // Deliver sends a plain-text message to the given JID string. Suitable
@@ -263,6 +312,7 @@ func (c *Client) Stop() error {
 		return nil
 	}
 	c.stopped = true
+	c.setLinked(false)
 	if c.wm != nil {
 		c.wm.Disconnect()
 	}
@@ -277,13 +327,57 @@ func (c *Client) onEvent(raw any) {
 	case *events.Connected:
 		c.handleConnected()
 	case *events.Disconnected:
+		c.setLinked(false)
 		c.logger.Warn("whatsapp.disconnected")
 	case *events.LoggedOut:
 		c.logger.Error("whatsapp.logged_out", slog.Int("reason", int(evt.Reason)))
+		// whatsmeow has already deleted the device; the socket will
+		// never deliver another message. Surface it as a process exit
+		// rather than a silently deaf daemon.
+		c.endSession(fmt.Errorf("%w: logged out by server (reason %d); re-pair required", ErrNeedsOperator, int(evt.Reason)))
+	case *events.StreamReplaced:
+		c.logger.Error("whatsapp.stream_replaced")
+		// Another client took this session. Reconnecting would just
+		// displace it back and forth.
+		c.endSession(fmt.Errorf("%w: session taken over by another client (stream replaced)", ErrNeedsOperator))
+	case *events.ClientOutdated:
+		c.logger.Error("whatsapp.client_outdated")
+		c.endSession(fmt.Errorf("%w: WhatsApp rejected this client version; update go.mau.fi/whatsmeow and rebuild", ErrNeedsOperator))
+	case *events.TemporaryBan:
+		c.logger.Error("whatsapp.temporary_ban", slog.String("detail", evt.String()))
+		c.endSession(fmt.Errorf("%w: %s", ErrNeedsOperator, evt.String()))
 	case *events.KeepAliveTimeout:
 		c.handleKeepAliveTimeout()
 	case *events.KeepAliveRestored:
 		c.handleKeepAliveRestored()
+	}
+}
+
+// Connected reports whether the WhatsApp session is currently linked
+// (between a Connected event and the next disconnect or session end).
+func (c *Client) Connected() bool { return c.linked.Load() }
+
+func (c *Client) setLinked(up bool) {
+	c.linked.Store(up)
+	if up {
+		connectedGauge().Set(1)
+	} else {
+		connectedGauge().Set(0)
+	}
+}
+
+func connectedGauge() prometheus.Gauge {
+	return observability.TransportConnected.WithLabelValues("whatsapp")
+}
+
+// endSession hands a session-ending error to Start. Non-blocking: the
+// first one wins and later ones are dropped, so the whatsmeow event
+// goroutine never stalls.
+func (c *Client) endSession(err error) {
+	c.setLinked(false)
+	select {
+	case c.fatal <- err:
+	default:
 	}
 }
 
@@ -297,6 +391,8 @@ func (c *Client) handleConnected() {
 	c.mu.Lock()
 	c.keepaliveMisses = 0
 	c.mu.Unlock()
+	c.adoptOwnID()
+	c.setLinked(true)
 	c.logger.Info("whatsapp.connected")
 }
 
@@ -378,7 +474,13 @@ func (c *Client) handleMessage(evt *events.Message) {
 // dispatchOne runs one inbound message through Dispatch. Split out so
 // handleMessage's goroutine seam stays a one-liner.
 func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Downloader, ownID *types.JID) {
-	Dispatch(context.Background(), DispatchInput{
+	c.mu.Lock()
+	ctx := c.baseCtx
+	c.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	Dispatch(ctx, DispatchInput{
 		Event:       evt,
 		OwnID:       ownID,
 		Sender:      sender,
@@ -389,6 +491,7 @@ func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Down
 		Logger:      c.logger,
 		Progress:    c.bus,
 		IsAllowed:   c.isAllowed,
+		SSOCommands: c.cfg.SSOCommands,
 	})
 }
 
@@ -398,6 +501,9 @@ func (c *Client) dispatchOne(evt *events.Message, sender Sender, downloader Down
 // placeholder messages) so a stranger messaging the number sees
 // nothing back — no signal that a bot is watching.
 func (c *Client) isAllowed(from string) bool {
+	if c.cfg.IsAllowed != nil {
+		return c.cfg.IsAllowed(from)
+	}
 	if c.openAll {
 		return true
 	}

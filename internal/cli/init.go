@@ -68,7 +68,7 @@ func runInit(w io.Writer, in *bufio.Reader, opts *Options, force bool) error {
 			return fmt.Errorf("%s already exists; pass --force to overwrite", cfgPath)
 		}
 	}
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		return err
 	}
 	content := renderConfig(providerName, providerBlock, workspace, whatsappJID, telegramToken)

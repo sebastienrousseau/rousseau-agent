@@ -23,23 +23,22 @@ func TestWrapWithMultiParty_NoRulesReturnsInnerAndNilManager(t *testing.T) {
 	assert.Nil(t, pending)
 }
 
-func TestWrapWithMultiParty_UnlicensedFallsBackToInner(t *testing.T) {
-	// Most common misconfig: rules configured, no licence.
-	// Daemon must fall back to inner — rules ignored, never
-	// silently start blocking.
-	inner := agent.AllowAllApprover{}
-	got, pending := wrapWithMultiParty(inner,
+func TestWrapWithMultiParty_UnlicensedDeniesGovernedTools(t *testing.T) {
+	// Rules configured, no licence: the governed tool fails closed
+	// (it used to run with no approvals); the router intercept stays
+	// inert (nil manager).
+	got, pending := wrapWithMultiParty(agent.AllowAllApprover{},
 		config.MultiPartyConfig{Rules: []config.MultiPartyRule{
 			{Tool: "bash", NeededApprovals: 2},
 		}}, license.Core(), nil, silentLogger())
-	assert.Equal(t, inner, got)
-	assert.Nil(t, pending, "unlicensed → nil manager so router intercept becomes inert")
+	assert.Nil(t, pending)
+	decision, _ := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
+	assert.Equal(t, agent.DecisionDeny, decision)
+	decision, _ = got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "read"})
+	assert.Equal(t, agent.DecisionAllow, decision)
 }
 
-func TestWrapWithMultiParty_BadRuleFallsBackToInner(t *testing.T) {
-	// NeededApprovals=0 is caught by approval.NewApprover.
-	// The wrap-layer must fail-safe: log WARN + return inner
-	// unchanged (matches wrapWithRBAC pattern).
+func TestWrapWithMultiParty_BadRuleDeniesGovernedTools(t *testing.T) {
 	chk := signAndLoadLicense(t, license.Claims{
 		Subject:   "cust-gov",
 		Tier:      license.TierEnterprise,
@@ -49,9 +48,10 @@ func TestWrapWithMultiParty_BadRuleFallsBackToInner(t *testing.T) {
 		config.MultiPartyConfig{Rules: []config.MultiPartyRule{
 			{Tool: "bash", NeededApprovals: 0}, // invalid
 		}}, chk, nil, silentLogger())
-	// wrap-skipped → inner returned + nil manager.
-	assert.Equal(t, agent.AllowAllApprover{}, got)
 	assert.Nil(t, pending)
+	decision, reason := got.Approve(context.Background(), agent.ApprovalRequest{ToolName: "bash"})
+	assert.Equal(t, agent.DecisionDeny, decision)
+	assert.Contains(t, reason, "invalid")
 }
 
 func TestWrapWithMultiParty_LicensedReturnsWrappedApproverAndManager(t *testing.T) {

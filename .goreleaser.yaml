@@ -75,7 +75,7 @@ builds:
 
 archives:
   - id: default
-    builds: [rousseau]
+    ids: [rousseau]
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     format_overrides:
@@ -83,14 +83,16 @@ archives:
         formats: [zip]
     files:
       - LICENSE
+      - NOTICE
       - README.md
       - SECURITY.md
   - id: lite
-    builds: [rousseau-lite]
+    ids: [rousseau-lite]
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}-lite_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
     files:
       - LICENSE
+      - NOTICE
       - README.md
       - SECURITY.md
 

@@ -90,16 +90,16 @@ jobs:
         include:
           - flavour: full
             dockerfile: docker/Dockerfile
-            gate: false
+            gate: true
           - flavour: distroless
             dockerfile: docker/Dockerfile.distroless
             gate: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Compute build date
         id: date
@@ -107,7 +107,7 @@ jobs:
 
       - name: Build amd64 (load locally for scan)
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -123,16 +123,16 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.flavour }}-amd64,mode=max
 
       - name: Generate SBOM (SPDX)
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: rousseau-agent-${{ matrix.flavour }}:edge
           format: spdx-json
           artifact-name: rousseau-agent-${{ matrix.flavour }}.spdx.json
 
-      # BLOCKING for distroless, report-only for full — same
-      # rationale as before the refactor. See flavour comments above.
+      # BLOCKING for both flavours at high and above. Exceptions live
+      # in .grype.yaml, each with its reason and removal condition.
       - name: Scan for vulnerabilities
-        uses: anchore/scan-action@v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           image: rousseau-agent-${{ matrix.flavour }}:edge
           severity-cutoff: high
@@ -173,17 +173,17 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Compute build date
         id: date
@@ -194,7 +194,7 @@ jobs:
       # manifest with the semantic tags.
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -217,7 +217,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: digests-${{ matrix.flavour }}-${{ matrix.arch }}
           path: /tmp/digests/*
@@ -237,34 +237,34 @@ jobs:
         include:
           - flavour: full
             tag_prefix: ""
-            gate: false
+            gate: true
           - flavour: distroless
             tag_prefix: "distroless-"
             gate: true
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download digests for this flavour
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: digests-${{ matrix.flavour }}-*
           merge-multiple: true
           path: /tmp/digests
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Derive image tags
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # The tag prefix (distroless- or empty) is baked in via
@@ -304,7 +304,7 @@ jobs:
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Sign the merged manifest (keyless)
         env:
@@ -318,25 +318,25 @@ jobs:
           done <<< "$TAGS"
 
       - name: Generate SLSA build provenance attestation
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.inspect.outputs.digest }}
           push-to-registry: true
 
       - name: Generate SBOM (SPDX)
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.inspect.outputs.digest }}
           format: spdx-json
           artifact-name: rousseau-agent-${{ matrix.flavour }}.spdx.json
 
-      # BLOCKING for distroless, report-only for full — same rationale
-      # as pre-refactor. Grype scans one arch of the multi-arch
+      # BLOCKING for both flavours at high and above (exceptions in
+      # .grype.yaml). Grype scans one arch of the multi-arch
       # manifest by default; the amd64 image is what most operators
       # will pull first.
       - name: Scan for vulnerabilities
-        uses: anchore/scan-action@v7
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
         with:
           image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.inspect.outputs.digest }}
           severity-cutoff: high

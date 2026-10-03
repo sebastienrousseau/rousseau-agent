@@ -52,6 +52,12 @@ type Config struct {
 	// Transcriber, when non-nil, is invoked when a received message
 	// has no text but carries an audio/* attachment.
 	Transcriber Transcriber
+	// IsAllowed, when set, gates media pre-processing: for a sender it
+	// rejects, voice notes are not transcribed and files are not
+	// downloaded, so a stranger cannot spend bandwidth, CPU or API
+	// budget. Text still reaches the router, which makes the final
+	// decision (and handles SSO /login). Wired to Router.Allowed.
+	IsAllowed func(from string) bool
 	// AttachmentsDir is the local path where signal-cli writes
 	// received attachments. Required for audio transcription — the
 	// signal-cli JSON-RPC feed exposes attachments only by `id`, so
@@ -77,6 +83,10 @@ type Client struct {
 	stdin   *jsonWriter
 	stopped atomic.Bool
 	nextID  atomic.Uint64
+
+	// inflight runs each message off the read loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client. Account is required.
@@ -132,7 +142,10 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 	c.mu.Unlock()
 
 	c.logger.Info("signal.started", slog.String("account", c.cfg.Account))
+	c.inflight = new(transport.Inflight)
 	err = c.pump(ctx, stdout, handler)
+	// Let in-flight turns send their replies before signal-cli goes.
+	c.inflight.Wait()
 	_ = c.Stop() //nolint:errcheck // best-effort stop after pump exit
 	return err
 }
@@ -207,11 +220,32 @@ func (c *Client) handleFrame(ctx context.Context, raw []byte, handler transport.
 	if err := json.Unmarshal(env.Params, &params); err != nil {
 		return fmt.Errorf("parse receive params: %w", err)
 	}
+	// Parsed on the read loop (raw is the scanner's reused buffer); the
+	// turn runs off it so other senders and /cancel keep being read.
+	c.inflight.Do(func() {
+		if err := c.handleReceive(ctx, params, handler); err != nil {
+			c.logger.Error("signal.send_failed", slog.String("err", err.Error()))
+		}
+	})
+	return nil
+}
+
+// handleReceive turns one receive notification into an IncomingMessage,
+// runs the handler, and sends the reply.
+func (c *Client) handleReceive(ctx context.Context, params receiveParams, handler transport.Handler) error {
 	body := strings.TrimSpace(params.Envelope.DataMessage.Message)
-	if body == "" {
+	from := params.Envelope.SourceNumber
+	if from == "" {
+		from = params.Envelope.Source
+	}
+	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(from)
+	if body == "" && mediaOK {
 		body = c.transcribeAudio(ctx, params.Envelope.DataMessage.Attachments)
 	}
-	attachments := c.collectImageAttachments(params.Envelope.DataMessage.Attachments)
+	var attachments []transport.Attachment
+	if mediaOK {
+		attachments = c.collectImageAttachments(params.Envelope.DataMessage.Attachments)
+	}
 	if body == "" && len(attachments) == 0 {
 		return nil
 	}

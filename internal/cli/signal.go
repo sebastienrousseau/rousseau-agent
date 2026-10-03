@@ -30,7 +30,9 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			if acct == "" {
 				return errors.New("--account or signal.account is required")
 			}
-			setUnattendedPermissionDefault(opts, "signal")
+			if err := requirePermissionMode(opts, "signal"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -38,12 +40,16 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("signal", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "signal", nil)
 
 			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
 			if tErr != nil {
@@ -57,6 +63,7 @@ func newSignalCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := signal.New(signal.Config{
+				IsAllowed:      wiring.SenderAllowed("signal"), // no media work for senders the router would reject
 				Binary:         firstNonEmpty(binary, cfg.Signal.Binary),
 				Account:        acct,
 				ExtraArgs:      cfg.Signal.ExtraArgs,

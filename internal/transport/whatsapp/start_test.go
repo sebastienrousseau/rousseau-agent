@@ -18,6 +18,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
@@ -217,6 +218,7 @@ func TestStart_PairingLoopRendersQRThenPairs(t *testing.T) {
 	}
 
 	assert.True(t, logs.has("whatsapp.qr_ready"))
+	assert.False(t, logs.has("pair-me"), "the pairing code must not reach the structured log")
 	assert.True(t, logs.has("whatsapp.paired"))
 	assert.True(t, logs.has("whatsapp.qr_event"))
 	assert.True(t, c.stopped, "Start must Stop the client on context cancellation")
@@ -305,4 +307,152 @@ func TestWMQRChannel_RealClient(t *testing.T) {
 	// refuses to hand out a QR channel.
 	_, err = wmQRChannel(context.Background(), pairedClient(t))
 	assert.ErrorIs(t, err, whatsmeow.ErrQRStoreContainsID)
+}
+
+// TestStart_PairingTimeoutReturnsError pins the fix for the silent
+// hang: a QR window that closes without "success" must end Start with
+// an error (non-zero exit → supervisor restart) instead of blocking on
+// ctx.Done with an unpaired device.
+func TestStart_PairingTimeoutReturnsError(t *testing.T) {
+	wm := whatsmeow.NewClient(unpairedDevice(t), waLog.Noop)
+	t.Cleanup(wm.Disconnect)
+
+	ch := make(chan whatsmeow.QRChannelItem, 2)
+	ch <- whatsmeow.QRChannelItem{Event: "code", Code: "pair-me"}
+	ch <- whatsmeow.QRChannelItem{Event: "timeout"}
+	close(ch)
+
+	stubSeams(t,
+		func(context.Context, Config) (*whatsmeow.Client, error) { return wm, nil },
+		func(context.Context, *whatsmeow.Client) (<-chan whatsmeow.QRChannelItem, error) {
+			var ro <-chan whatsmeow.QRChannelItem = ch
+			return ro, nil
+		},
+		func(*whatsmeow.Client) error { return nil }, io.Discard)
+
+	c, err := New(Config{StoreDSN: "x"}, silentLogger())
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- c.Start(context.Background(), noopHandler()) }()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pairing did not complete")
+		assert.Contains(t, err.Error(), `"timeout"`)
+		assert.ErrorIs(t, err, ErrNeedsOperator)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start hung after the QR window timed out")
+	}
+	assert.True(t, c.stopped)
+}
+
+// TestStart_PairingAdoptsOwnIDWithoutRestart pins the fix for
+// self-chat messages being dropped right after a fresh pairing: the
+// JID pairing writes to the store must reach ownID before Start
+// settles into the run loop.
+func TestStart_PairingAdoptsOwnIDWithoutRestart(t *testing.T) {
+	wm := whatsmeow.NewClient(unpairedDevice(t), waLog.Noop)
+	t.Cleanup(wm.Disconnect)
+
+	stubSeams(t,
+		func(context.Context, Config) (*whatsmeow.Client, error) { return wm, nil },
+		func(context.Context, *whatsmeow.Client) (<-chan whatsmeow.QRChannelItem, error) {
+			ch := make(chan whatsmeow.QRChannelItem)
+			go func() {
+				ch <- whatsmeow.QRChannelItem{Event: "code", Code: "pair-me"}
+				jid := types.JID{User: "15551234567", Server: types.DefaultUserServer, Device: 28}
+				wm.Store.ID = &jid // what whatsmeow does on PairSuccess
+				ch <- whatsmeow.QRChannelItem{Event: "success"}
+				close(ch)
+			}()
+			return ch, nil
+		},
+		func(*whatsmeow.Client) error { return nil }, io.Discard)
+
+	c, err := New(Config{StoreDSN: "x"}, silentLogger())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Start(ctx, noopHandler()) }()
+
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.ownID != nil && c.ownID.User == "15551234567"
+	}, 2*time.Second, 5*time.Millisecond, "ownID must be adopted after pairing, not only after a restart")
+	cancel()
+	require.NoError(t, <-done)
+}
+
+// TestStart_LoggedOutEndsStartWithError pins that a server-side
+// logout (device removed from the phone, session revoked) ends Start
+// with an error instead of leaving a connected-looking deaf daemon.
+func TestStart_LoggedOutEndsStartWithError(t *testing.T) {
+	wm := pairedClient(t)
+	connected := make(chan struct{})
+	stubSeams(t,
+		func(context.Context, Config) (*whatsmeow.Client, error) { return wm, nil },
+		nil,
+		func(*whatsmeow.Client) error { close(connected); return nil }, nil)
+
+	c, err := New(Config{StoreDSN: "x"}, silentLogger())
+	require.NoError(t, err)
+
+	done := make(chan error, 1)
+	go func() { done <- c.Start(context.Background(), noopHandler()) }()
+	<-connected
+
+	c.onEvent(&events.LoggedOut{Reason: 401})
+	// A second logout must not block the event goroutine.
+	c.onEvent(&events.LoggedOut{Reason: 401})
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "logged out")
+		assert.Contains(t, err.Error(), "401")
+		assert.ErrorIs(t, err, ErrNeedsOperator)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after LoggedOut")
+	}
+	assert.True(t, c.stopped)
+}
+
+// TestStart_SessionEndingEventsEndStart pins that every event after
+// which whatsmeow will not deliver messages again ends Start with an
+// operator-action error, instead of leaving a deaf daemon that looks
+// healthy.
+func TestStart_SessionEndingEventsEndStart(t *testing.T) {
+	for name, evt := range map[string]any{
+		"stream_replaced": &events.StreamReplaced{},
+		"client_outdated": &events.ClientOutdated{},
+		"temporary_ban":   &events.TemporaryBan{Expire: time.Hour},
+	} {
+		t.Run(name, func(t *testing.T) {
+			wm := pairedClient(t)
+			connected := make(chan struct{})
+			stubSeams(t,
+				func(context.Context, Config) (*whatsmeow.Client, error) { return wm, nil },
+				nil,
+				func(*whatsmeow.Client) error { close(connected); return nil }, nil)
+
+			c, err := New(Config{StoreDSN: "x"}, silentLogger())
+			require.NoError(t, err)
+			done := make(chan error, 1)
+			go func() { done <- c.Start(context.Background(), noopHandler()) }()
+			<-connected
+
+			c.onEvent(evt)
+			select {
+			case err := <-done:
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrNeedsOperator)
+			case <-time.After(2 * time.Second):
+				t.Fatal("Start did not return after a session-ending event")
+			}
+		})
+	}
 }

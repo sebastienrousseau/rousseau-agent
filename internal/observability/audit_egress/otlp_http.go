@@ -347,6 +347,9 @@ func attrsForRecord(r Record) []any {
 			kvString("rousseau.audit.chain.hash", r.Chain.Hash),
 			kvString("rousseau.audit.chain.prev_hash", r.Chain.PrevHash),
 		)
+		if r.Chain.MAC != "" {
+			attrs = append(attrs, kvString("rousseau.audit.chain.mac", r.Chain.MAC))
+		}
 	}
 	return attrs
 }

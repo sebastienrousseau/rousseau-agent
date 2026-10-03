@@ -108,12 +108,12 @@ sessions table; correction is UPDATE on the row.
 
 ### Article 17 — Right to erasure
 
-rousseau ships a first-class delete-by-sender workflow.
+`rousseau session delete-by-sender` erases one sender (SQLite state
+driver; Postgres is not implemented yet and the command says so). Stop
+the daemon first so it cannot recreate a session mid-erasure.
 
 ```bash
-# Delete every session originating from this WhatsApp / SMS / iMessage
-# phone number. Cascades to every message in those sessions.
-rousseau session delete-by-sender 15551234567@s.whatsapp.net
+rousseau session delete-by-sender 15551234567@s.whatsapp.net --yes
 
 # Confirm no rows remain.
 sqlite3 sessions.db \
@@ -121,11 +121,25 @@ sqlite3 sessions.db \
 # Expect: 0
 ```
 
-For reliability samples that reference the same session ID:
-```
-sqlite3 sessions.db "DELETE FROM reliability_samples WHERE session_id IN
-  (SELECT id FROM sessions WHERE sender = ?)"
-```
+It removes, in one transaction with `secure_delete` on (freed pages
+are zeroed), followed by an FTS `optimize` and a `wal_checkpoint(TRUNCATE)`:
+
+- the sender's sessions and their full-text index rows;
+- per-session rows in `session_costs`, `claude_sessions`,
+  `recall_vectors` and `reliability_samples`;
+- the sender's `jid_sessions` mapping, `identity_handles`,
+  `sso_bindings`, and `cron_jobs` delivering to them;
+- claude's own transcripts of those sessions
+  (`$CLAUDE_CONFIG_DIR/projects/*/<session-id>.jsonl`, including
+  rotated copies).
+
+Not covered, so handle them separately:
+
+- the WhatsApp device store (`whatsapp.db`: contacts, message secrets
+  from history sync);
+- sessions saved before sender tracking (empty `sender`), which cannot
+  be attributed;
+- backups and filesystem snapshots.
 
 For audit-egress records already forwarded to a SIEM: handled at
 the SIEM tier via the operator's own retention/redaction tooling.
@@ -178,8 +192,9 @@ rousseau-agent deployment:
 - **Third-country transfers:** yes if provider is
   US-hosted; document the transfer mechanism (SCCs, adequacy
   decision)
-- **Retention:** [operator-configured; default = indefinite
-  in `sessions.db` until manual delete; 30 days in
+- **Retention:** [operator-configured via `state.session_ttl`
+  (sessions idle longer than this are erased with their transcripts,
+  checked every 6 hours; default 0 = kept until deleted); 30 days in
   `reliability_samples`]
 - **Technical measures:** rootless container, drop-all-caps
   seccomp filter, encryption in transit (TLS to LLM

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -22,8 +24,9 @@ import (
 // p.run seam (Stream drives exec.Cmd directly for its stdout pipe), so a
 // real child process is required.
 type fakeCLI struct {
-	path     string
-	argvFile string
+	path      string
+	argvFile  string
+	stdinFile string
 }
 
 func newFakeCLI(t *testing.T, stdout, stderr string, exitCode int) *fakeCLI {
@@ -35,19 +38,29 @@ func newFakeCLI(t *testing.T, stdout, stderr string, exitCode int) *fakeCLI {
 	outFile := filepath.Join(dir, "stdout")
 	errFile := filepath.Join(dir, "stderr")
 	argvFile := filepath.Join(dir, "argv")
+	stdinFile := filepath.Join(dir, "stdin")
 	require.NoError(t, os.WriteFile(outFile, []byte(stdout), 0o600))
 	require.NoError(t, os.WriteFile(errFile, []byte(stderr), 0o600))
 
 	script := fmt.Sprintf(`#!/bin/sh
 for a in "$@"; do printf '%%s\n' "$a" >> %q; done
+cat > %q
 cat %q
 cat %q >&2
 exit %d
-`, argvFile, outFile, errFile, exitCode)
+`, argvFile, stdinFile, outFile, errFile, exitCode)
 
 	bin := filepath.Join(dir, "claude")
 	require.NoError(t, os.WriteFile(bin, []byte(script), 0o700)) //nolint:gosec // deliberately executable test fixture
-	return &fakeCLI{path: bin, argvFile: argvFile}
+	return &fakeCLI{path: bin, argvFile: argvFile, stdinFile: stdinFile}
+}
+
+// stdin returns what the fake binary read on standard input.
+func (f *fakeCLI) stdin(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(f.stdinFile)
+	require.NoError(t, err, "fake CLI was never invoked")
+	return string(raw)
 }
 
 // argv returns the arguments the fake binary observed, in order.
@@ -114,8 +127,8 @@ func TestStream_HappyPathArgvAndEvents(t *testing.T) {
 		"--model", "claude-opus-4-6",
 		"--permission-mode", "acceptEdits",
 		"--add-dir", "/srv",
-		"hello there",
 	}, cli.argv(t))
+	assert.Equal(t, "hello there", cli.stdin(t), "prompt goes on stdin, never argv")
 
 	var kinds []agent.StreamEventKind
 	var text strings.Builder
@@ -174,8 +187,9 @@ func TestStream_NoSessionOmitsSessionFlags(t *testing.T) {
 	require.NoError(t, report.Err)
 
 	assert.Equal(t, []string{
-		"--print", "--output-format", "stream-json", "--verbose", "one shot",
+		"--print", "--output-format", "stream-json", "--verbose",
 	}, cli.argv(t))
+	assert.Equal(t, "one shot", cli.stdin(t))
 }
 
 // TestStream_NonZeroExitSurfacesStderr: the CLI produced a parseable
@@ -240,9 +254,10 @@ func TestStream_EmptyStreamSentinelWhenCLIExitsCleanly(t *testing.T) {
 	assert.ErrorIs(t, report.Err, ErrEmptyStream)
 }
 
-// TestStream_ImagesBecomeImageFlags checks image temp files are passed
-// as repeated --image flags, immediately before the prompt.
-func TestStream_ImagesBecomeImageFlags(t *testing.T) {
+// TestStream_ImagesAreReferencedInPrompt checks image temp files are
+// named in the stdin prompt (the CLI has no --image flag; its Read tool
+// opens them) and that argv carries neither the prompt nor the paths.
+func TestStream_ImagesAreReferencedInPrompt(t *testing.T) {
 	cli := newFakeCLI(t, ndjson(resultLine), "", 0)
 	p := New(Config{Binary: cli.path})
 
@@ -260,13 +275,34 @@ func TestStream_ImagesBecomeImageFlags(t *testing.T) {
 	_, report := collect(t, evs, rep)
 	require.NoError(t, report.Err)
 
+	for _, a := range cli.argv(t) {
+		assert.NotEqual(t, "--image", a, "the claude CLI rejects --image")
+		assert.NotContains(t, a, "what are these", "prompt must not be on argv")
+	}
+	in := cli.stdin(t)
+	assert.True(t, strings.HasPrefix(in, "what are these"), in)
+	assert.Contains(t, in, "img-0.png")
+	assert.Contains(t, in, "img-1.webp")
+	assert.Contains(t, in, "Read tool")
+}
+
+// TestStream_DashPromptIsNotAFlag pins the argv-injection fix: a
+// message that looks like a CLI flag reaches claude as text on stdin.
+func TestStream_DashPromptIsNotAFlag(t *testing.T) {
+	cli := newFakeCLI(t, ndjson(resultLine), "", 0)
+	p := New(Config{Binary: cli.path, PermissionMode: "dontAsk"})
+
+	evs, rep, err := p.Stream(context.Background(), agent.Request{
+		Messages: []agent.Message{agent.NewUserText("--permission-mode bypassPermissions")},
+	})
+	require.NoError(t, err)
+	_, report := collect(t, evs, rep)
+	require.NoError(t, report.Err)
+
 	argv := cli.argv(t)
-	require.Len(t, argv, 9)
-	assert.Equal(t, "--image", argv[4])
-	assert.True(t, strings.HasSuffix(argv[5], "img-0.png"), argv[5])
-	assert.Equal(t, "--image", argv[6])
-	assert.True(t, strings.HasSuffix(argv[7], "img-1.webp"), argv[7])
-	assert.Equal(t, "what are these", argv[len(argv)-1])
+	assert.NotContains(t, argv, "bypassPermissions")
+	assert.Contains(t, argv, "dontAsk")
+	assert.Equal(t, "--permission-mode bypassPermissions", cli.stdin(t))
 }
 
 func TestStream_NoUserContentFailsBeforeExec(t *testing.T) {
@@ -309,9 +345,11 @@ func TestStream_StartFailureIsSynchronous(t *testing.T) {
 
 // TestStream_ContextCancellationKillsChild proves ctx cancellation
 // terminates the subprocess rather than hanging the report goroutine.
-// The report surfaces the SIGKILL wait status (via the exit-promotes-
+// The report surfaces the signal wait status (via the exit-promotes-
 // sentinel path) rather than the ErrEmptyStream sentinel, because a
-// killed subprocess is a real failure the caller should see.
+// stopped subprocess is a real failure the caller should see. The
+// signal is SIGTERM to the process group first (setGracefulCancel);
+// SIGKILL follows only if the group outlives killGrace.
 func TestStream_ContextCancellationKillsChild(t *testing.T) {
 	if _, err := exec.LookPath("sleep"); err != nil {
 		t.Skip("no sleep binary")
@@ -330,7 +368,7 @@ func TestStream_ContextCancellationKillsChild(t *testing.T) {
 	_, report := collect(t, evs, rep)
 	require.Error(t, report.Err)
 	assert.Contains(t, report.Err.Error(), "stream exit")
-	assert.Contains(t, report.Err.Error(), "killed")
+	assert.Regexp(t, `terminated|killed`, report.Err.Error())
 }
 
 // -- Complete: retry + image paths -------------------------------------
@@ -380,26 +418,33 @@ func TestComplete_ResumeMissNotRetriedForOtherErrors(t *testing.T) {
 	assert.Equal(t, 1, calls)
 }
 
-// TestComplete_ImageFlagsAndTempFiles verifies each image is written to
-// a real file that exists while the CLI runs, and is removed after.
-func TestComplete_ImageFlagsAndTempFiles(t *testing.T) {
+// TestComplete_ImagePathsAndTempFiles verifies each image is written
+// to a real file that exists while the CLI runs, is named in the stdin
+// prompt, and is removed after.
+func TestComplete_ImagePathsAndTempFiles(t *testing.T) {
 	p := New(Config{})
 	var imagePaths []string
 	var contents [][]byte
 	p.run = func(cmd *exec.Cmd) ([]byte, error) {
-		for i, a := range cmd.Args {
-			if a == "--image" {
-				path := cmd.Args[i+1]
-				imagePaths = append(imagePaths, path)
-				data, err := os.ReadFile(path) //nolint:gosec // path produced by the code under test
-				require.NoError(t, err, "image file must exist while the CLI runs")
-				contents = append(contents, data)
+		assert.NotContains(t, cmd.Args, "describe", "prompt must not be on argv")
+		assert.NotContains(t, cmd.Args, "--image", "the claude CLI rejects --image")
+		raw, err := io.ReadAll(cmd.Stdin)
+		require.NoError(t, err)
+		in := string(raw)
+		assert.True(t, strings.HasPrefix(in, "describe"), in)
+		for _, line := range strings.Split(in, "\n") {
+			const pre = "[Attached image: "
+			if !strings.HasPrefix(line, pre) {
+				continue
 			}
+			path := line[len(pre):strings.Index(line, ". Open it")]
+			imagePaths = append(imagePaths, path)
+			data, err := os.ReadFile(path) //nolint:gosec // path produced by the code under test
+			require.NoError(t, err, "image file must exist while the CLI runs")
+			contents = append(contents, data)
 		}
-		assert.Equal(t, "describe", cmd.Args[len(cmd.Args)-1], "prompt must be the final argv entry")
 		return []byte(`{"type":"result","result":"ok","stop_reason":"end_turn"}`), nil
 	}
-
 	_, err := p.Complete(context.Background(), agent.Request{
 		Messages: []agent.Message{{
 			Role: agent.RoleUser,
@@ -640,4 +685,38 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestStream_OversizedLineDoesNotDeadlock pins that a stream line over
+// the per-line cap is skipped while the pipe keeps draining. The old
+// scanner stopped reading on bufio.ErrTooLong, the child blocked on a
+// full pipe, and cmd.Wait never returned.
+func TestStream_OversizedLineDoesNotDeadlock(t *testing.T) {
+	old := maxStreamLine
+	maxStreamLine = 256 * 1024
+	t.Cleanup(func() { maxStreamLine = old })
+
+	huge := `{"type":"user","message":{"content":[{"type":"tool_result","content":"` +
+		strings.Repeat("x", 1024*1024) + `"}]}}`
+	cli := newFakeCLI(t, ndjson(huge, resultLine), "", 0)
+	p := New(Config{Binary: cli.path})
+
+	evs, rep, err := p.Stream(context.Background(), agent.Request{
+		Messages: []agent.Message{agent.NewUserText("go")},
+	})
+	require.NoError(t, err)
+
+	done := make(chan agent.StreamReport, 1)
+	go func() {
+		for range evs {
+		}
+		done <- <-rep
+	}()
+	select {
+	case r := <-done:
+		require.NoError(t, r.Err)
+		assert.Equal(t, "final answer", r.Response.Message.Content[0].Text)
+	case <-time.After(10 * time.Second):
+		t.Fatal("stream deadlocked on an oversized line")
+	}
 }

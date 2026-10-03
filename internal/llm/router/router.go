@@ -34,6 +34,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
@@ -62,6 +63,12 @@ type Rule struct {
 	// string. Empty disables this filter. Useful for pinning a
 	// specific test-tenant's traffic to a cheap model.
 	SessionIDPrefix string
+	// Intents matches when the classifier labels the last user
+	// message as one of these (semantic routing). Labels are free-form
+	// words ("smalltalk", "coding"); the router classifies into the
+	// union of every rule's intents plus "other". Empty disables this
+	// filter. Requires Options.Classifier.
+	Intents []string
 	// Use names the child provider to route to when this rule matches.
 	// Must correspond to a key in [Router.providers].
 	Use string
@@ -75,6 +82,8 @@ type Router struct {
 	rules      []Rule
 	providers  map[string]agent.Provider
 	logger     *slog.Logger
+	classifier agent.Provider
+	intents    []string // union of rule intents, plus "other"
 }
 
 // Options collects the constructor arguments for [New].
@@ -91,6 +100,10 @@ type Options struct {
 	// Logger is used for routing decisions logged at Debug. Nil uses
 	// slog.Default.
 	Logger *slog.Logger
+	// Classifier labels the last user message for rules with Intents
+	// (one agent.Decide call per request, only when such a rule
+	// exists). A small fast model keeps the added latency low.
+	Classifier agent.Provider
 }
 
 // New constructs a Router. Returns an error when Default is empty,
@@ -118,12 +131,50 @@ func New(opts Options) (*Router, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	var intents []string
+	seen := map[string]bool{}
+	for _, r := range opts.Rules {
+		for _, in := range r.Intents {
+			if in = strings.TrimSpace(in); in != "" && !seen[in] {
+				seen[in] = true
+				intents = append(intents, in)
+			}
+		}
+	}
+	if len(intents) > 0 {
+		if opts.Classifier == nil {
+			return nil, errors.New("router: rules use intents but no classifier is configured")
+		}
+		if !seen["other"] {
+			intents = append(intents, "other")
+		}
+	}
 	return &Router{
 		defaultKey: opts.Default,
 		rules:      opts.Rules,
 		providers:  opts.Providers,
 		logger:     logger,
+		classifier: opts.Classifier,
+		intents:    intents,
 	}, nil
+}
+
+// classify labels the last user message with one of r.intents, or
+// "other" when the classifier fails (routing then falls through to the
+// rules that do not depend on intent, and the default).
+func (r *Router) classify(ctx context.Context, req agent.Request) string {
+	text := lastUserText(req.Messages)
+	got, err := agent.Decide(ctx, r.classifier, agent.DecisionRequest{
+		Kind:     agent.DecisionChoice,
+		Question: "Which category best describes what this message asks for?",
+		Options:  r.intents,
+		Context:  text,
+	})
+	if err != nil {
+		r.logger.Warn("router.classify_failed", slog.String("err", err.Error()))
+		return "other"
+	}
+	return got.Answer
 }
 
 // Name satisfies [agent.Provider]. Constant identifier so metrics keep
@@ -135,7 +186,7 @@ func (*Router) Name() string { return "router" }
 // provider. Emits an observability.RouterDecisions counter with the
 // rule name and chosen provider.
 func (r *Router) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
-	key, ruleName := r.selectChild(req)
+	key, ruleName := r.selectChild(ctx, req)
 	provider := r.providers[key]
 	observability.RouterDecisions.WithLabelValues(ruleName, key, provider.Name()).Inc()
 	r.logger.Debug("router.decision",
@@ -150,11 +201,18 @@ func (r *Router) Complete(ctx context.Context, req agent.Request) (agent.Respons
 
 // selectChild returns (providerKey, ruleName) for the first matching
 // rule, or (defaultKey, "default") when nothing matches.
-func (r *Router) selectChild(req agent.Request) (string, string) {
+func (r *Router) selectChild(ctx context.Context, req agent.Request) (string, string) {
 	lastLen := lastUserTextLen(req.Messages)
 	toolCount := toolUseCount(req.Messages)
+	intent := ""
+	if len(r.intents) > 0 {
+		intent = r.classify(ctx, req)
+	}
 	for _, rule := range r.rules {
 		if !ruleMatches(rule, req, lastLen, toolCount) {
+			continue
+		}
+		if len(rule.Intents) > 0 && !containsFold(rule.Intents, intent) {
 			continue
 		}
 		name := rule.Name
@@ -225,4 +283,29 @@ func hasPrefix(s, prefix string) bool {
 		return false
 	}
 	return s[:len(prefix)] == prefix
+}
+
+func lastUserText(msgs []agent.Message) string {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != agent.RoleUser {
+			continue
+		}
+		var b strings.Builder
+		for _, c := range msgs[i].Content {
+			if c.Kind == agent.ContentText {
+				b.WriteString(c.Text)
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
+func containsFold(xs []string, x string) bool {
+	for _, v := range xs {
+		if strings.EqualFold(strings.TrimSpace(v), x) {
+			return true
+		}
+	}
+	return false
 }

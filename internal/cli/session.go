@@ -1,12 +1,16 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/llm/claudecli"
 
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
@@ -20,6 +24,7 @@ func newSessionCmd(opts *Options) *cobra.Command {
 	cmd.AddCommand(newSessionSearchCmd(opts))
 	cmd.AddCommand(newSessionShowCmd(opts))
 	cmd.AddCommand(newSessionDeleteCmd(opts))
+	cmd.AddCommand(newSessionDeleteBySenderCmd(opts))
 	cmd.AddCommand(newSessionCostCmd(opts))
 	return cmd
 }
@@ -256,4 +261,64 @@ func shortID(s string) string {
 		return s
 	}
 	return s[:8]
+}
+
+// senderEraser is implemented by stores that support GDPR erasure.
+type senderEraser interface {
+	EraseSender(ctx context.Context, sender string) (sqlitestore.EraseReport, error)
+}
+
+// newSessionDeleteBySenderCmd implements GDPR Article 17 erasure for
+// one sender: everything the session store holds for them (see
+// sqlite.Store.EraseSender) plus claude's own transcripts of their
+// sessions.
+func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
+	var confirm bool
+	c := &cobra.Command{
+		Use:   "delete-by-sender <sender>",
+		Short: "Erase everything stored for one sender (GDPR Art. 17)",
+		Long: "Deletes the sender's sessions (and search index rows), jid mapping, identity\n" +
+			"handles, SSO bindings, cron jobs delivering to them, per-session costs, recall\n" +
+			"vectors and reliability samples, with secure_delete and a WAL checkpoint, then\n" +
+			"removes claude's transcripts of those sessions. The sender is the transport's\n" +
+			"identifier, e.g. 15551234567@s.whatsapp.net. Stop the daemon first so it does\n" +
+			"not recreate a session mid-erasure. Not covered: the WhatsApp device store\n" +
+			"(whatsapp.db), sessions saved before sender tracking, and backups.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !confirm {
+				return errors.New("refusing to erase without --yes")
+			}
+			store, err := openSearchableStore(cmd.Context(), opts.Config.State)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
+			eraser, ok := store.(senderEraser)
+			if !ok {
+				return fmt.Errorf("erasure is not implemented for the %q state driver yet", driverName(opts.Config.State))
+			}
+			rep, err := eraser.EraseSender(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			files, err := claudecli.EraseTranscripts(rep.SessionIDs)
+			if err != nil {
+				return fmt.Errorf("store erased, but claude transcripts were not: %w", err)
+			}
+			out := cmd.OutOrStdout()
+			_, _ = fmt.Fprintf(out, "erased %s: %d session(s), %d claude transcript file(s)\n", args[0], len(rep.SessionIDs), files) //nolint:errcheck // CLI output
+			tables := make([]string, 0, len(rep.Rows))
+			for t := range rep.Rows {
+				tables = append(tables, t)
+			}
+			sort.Strings(tables)
+			for _, t := range tables {
+				_, _ = fmt.Fprintf(out, "  %-20s %d row(s)\n", t, rep.Rows[t]) //nolint:errcheck // CLI output
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&confirm, "yes", false, "confirm erasure")
+	return c
 }

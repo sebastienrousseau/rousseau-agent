@@ -30,19 +30,39 @@ type StructuredResponse struct {
 	Parsed json.RawMessage
 }
 
-// Structured runs a completion and enforces that the model's output
-// parses as JSON matching the supplied Schema. Provider-native
-// constrained decoding (Anthropic tool-use, OpenAI response_format,
-// Vertex responseSchema) is not yet plumbed; today the helper falls
-// back to prompting with the schema plus a strict "reply with ONLY
-// JSON" instruction, then parses the first JSON object out of the
-// response.
+// StructuredCompleter is implemented by providers with native
+// schema-constrained output (claudecli --json-schema). The returned
+// JSON conforms to schema as enforced by the provider.
+type StructuredCompleter interface {
+	CompleteStructured(ctx context.Context, req Request, schema map[string]any) (json.RawMessage, error)
+}
+
+// Structured runs a completion whose output must be JSON matching the
+// supplied Schema. Providers implementing StructuredCompleter use
+// their native constrained decoding; others fall back to prompting
+// with the schema plus a strict "reply with ONLY JSON" instruction and
+// parsing the first JSON value out of the reply. Either way the result
+// is then checked against the schema's required properties, property
+// types and enums (see validateAgainstSchema).
 func Structured(ctx context.Context, provider Provider, req StructuredRequest) (StructuredResponse, error) {
 	if provider == nil {
 		return StructuredResponse{}, errors.New("agent: nil provider")
 	}
 	if len(req.Schema) == 0 {
 		return StructuredResponse{}, errors.New("agent: empty schema")
+	}
+	if sc, ok := provider.(StructuredCompleter); ok {
+		out, err := sc.CompleteStructured(ctx, Request{
+			System:   strings.TrimSpace(req.SystemPrompt),
+			Messages: []Message{NewUserText(req.Prompt)},
+		}, req.Schema)
+		if err != nil {
+			return StructuredResponse{}, fmt.Errorf("agent: structured: %w", err)
+		}
+		if err := validateAgainstSchema(out, req.Schema); err != nil {
+			return StructuredResponse{}, fmt.Errorf("agent: structured: %w", err)
+		}
+		return StructuredResponse{Raw: string(out), Parsed: out}, nil
 	}
 	schemaBytes, err := json.MarshalIndent(req.Schema, "", "  ")
 	if err != nil {
@@ -70,7 +90,93 @@ func Structured(ctx context.Context, provider Provider, req StructuredRequest) (
 	if err != nil {
 		return StructuredResponse{}, fmt.Errorf("agent: parse JSON: %w: %s", err, truncateForError(text, 200))
 	}
+	if err := validateAgainstSchema(obj, req.Schema); err != nil {
+		return StructuredResponse{}, fmt.Errorf("agent: structured: %w", err)
+	}
 	return StructuredResponse{Raw: text, Parsed: obj}, nil
+}
+
+// validateAgainstSchema checks the subset of JSON Schema that typed
+// outputs rely on: an object's required properties, and each declared
+// property's "type" (string, number, integer, boolean, array, object)
+// and "enum". It is not a full validator; it exists so a prompt-only
+// provider's drift (a missing field, an out-of-set label) is an error
+// rather than a silently wrong value.
+func validateAgainstSchema(raw json.RawMessage, schema map[string]any) error {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("output is not JSON: %w", err)
+	}
+	return checkValue(v, schema, "$")
+}
+
+func checkValue(v any, schema map[string]any, path string) error {
+	if enum, ok := schema["enum"].([]any); ok {
+		found := false
+		for _, e := range enum {
+			if fmt.Sprint(e) == fmt.Sprint(v) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%s: %v is not one of %v", path, v, enum)
+		}
+	}
+	switch t, _ := schema["type"].(string); t {
+	case "object":
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s: want object", path)
+		}
+		if req, ok := schema["required"].([]any); ok {
+			for _, r := range req {
+				if _, present := obj[fmt.Sprint(r)]; !present {
+					return fmt.Errorf("%s: missing required property %q", path, r)
+				}
+			}
+		}
+		if req, ok := schema["required"].([]string); ok {
+			for _, r := range req {
+				if _, present := obj[r]; !present {
+					return fmt.Errorf("%s: missing required property %q", path, r)
+				}
+			}
+		}
+		props, _ := schema["properties"].(map[string]any)
+		for name, ps := range props {
+			sub, ok := ps.(map[string]any)
+			val, present := obj[name]
+			if !ok || !present {
+				continue
+			}
+			if err := checkValue(val, sub, path+"."+name); err != nil {
+				return err
+			}
+		}
+	case "string":
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("%s: want string", path)
+		}
+	case "number":
+		if _, ok := v.(float64); !ok {
+			return fmt.Errorf("%s: want number", path)
+		}
+	case "integer":
+		f, ok := v.(float64)
+		if !ok || f != float64(int64(f)) {
+			return fmt.Errorf("%s: want integer", path)
+		}
+	case "boolean":
+		if _, ok := v.(bool); !ok {
+			return fmt.Errorf("%s: want boolean", path)
+		}
+	case "array":
+		if _, ok := v.([]any); !ok {
+			return fmt.Errorf("%s: want array", path)
+		}
+	}
+	return nil
 }
 
 // firstText returns the first non-empty ContentText block of a

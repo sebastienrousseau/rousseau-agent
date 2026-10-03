@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,7 +20,8 @@ import (
 func TestBuildAuditSink_UnconfiguredReturnsNop(t *testing.T) {
 	// Zero-config OSS path: no sink activity at all — the
 	// operator hasn't asked for one, we don't build one.
-	sink := buildAuditSink(config.AuditEgressConfig{}, license.Core(), nil, silentLogger())
+	sink, err := buildAuditSink(config.AuditEgressConfig{}, license.Core(), nil, silentLogger())
+	require.NoError(t, err)
 	require.NotNil(t, sink)
 	_, isNop := sink.(audit_egress.Nop)
 	assert.True(t, isNop, "empty config must return Nop")
@@ -28,10 +31,11 @@ func TestBuildAuditSink_UnlicensedReturnsNop(t *testing.T) {
 	// Configured but licence doesn't unlock → Nop. The user-
 	// facing signal is a doctor warn row + INFO log; the sink
 	// itself is silent.
-	sink := buildAuditSink(config.AuditEgressConfig{
+	sink, err := buildAuditSink(config.AuditEgressConfig{
 		Kind:     "otlp_http",
 		Endpoint: "https://siem.example.com/v1/logs",
 	}, license.Core(), nil, silentLogger())
+	require.NoError(t, err)
 	_, isNop := sink.(audit_egress.Nop)
 	assert.True(t, isNop, "configured but unlicensed must return Nop")
 }
@@ -42,10 +46,11 @@ func TestBuildAuditSink_LicensedNoChainReturnsOTLPSink(t *testing.T) {
 		Tier:      license.TierEnterprise,
 		ExpiresAt: time.Now().Add(90 * 24 * time.Hour).Unix(),
 	})
-	sink := buildAuditSink(config.AuditEgressConfig{
+	sink, err := buildAuditSink(config.AuditEgressConfig{
 		Kind:     "otlp_http",
 		Endpoint: "https://siem.example.com/v1/logs",
 	}, chk, nil, silentLogger())
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -65,11 +70,12 @@ func TestBuildAuditSink_ChainedFlagWrapsInChainedSink(t *testing.T) {
 		Tier:      license.TierEnterprise,
 		ExpiresAt: time.Now().Add(90 * 24 * time.Hour).Unix(),
 	})
-	sink := buildAuditSink(config.AuditEgressConfig{
+	sink, err := buildAuditSink(config.AuditEgressConfig{
 		Kind:     "otlp_http",
 		Endpoint: "https://siem.example.com/v1/logs",
 		Chained:  true,
 	}, chk, nil, silentLogger())
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -83,10 +89,11 @@ func TestBuildAuditSink_ChainedFlagOnNopIsNop(t *testing.T) {
 	// Chaining a Nop wastes hash computation on records that
 	// never leave the process. buildAuditSink short-circuits:
 	// Nop stays Nop even when chained=true is set.
-	sink := buildAuditSink(config.AuditEgressConfig{
+	sink, err := buildAuditSink(config.AuditEgressConfig{
 		Kind:    "otlp_http",
 		Chained: true,
 	}, license.Core(), nil, silentLogger())
+	require.NoError(t, err)
 	_, isChained := sink.(*audit_egress.ChainedSink)
 	assert.False(t, isChained)
 	_, isNop := sink.(audit_egress.Nop)
@@ -166,4 +173,39 @@ func TestCheckAuditEgress_ChainedFlagSurfaces(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "yes (tamper-evident hash chain)", haveChained.Detail)
+}
+
+// TestBuildAuditSink_ChainKeyFailsClosed pins that a configured but
+// unusable chain key stops startup instead of silently dropping the
+// keyed MAC, and that a good key produces a chained sink.
+func TestBuildAuditSink_ChainKeyFailsClosed(t *testing.T) {
+	chk := signAndLoadLicense(t, license.Claims{
+		Subject: "cust-audit", Tier: license.TierEnterprise,
+		ExpiresAt: time.Now().Add(90 * 24 * time.Hour).Unix(),
+	})
+	dir := t.TempDir()
+	short := filepath.Join(dir, "short.key")
+	require.NoError(t, os.WriteFile(short, []byte("too-short\n"), 0o600))
+	good := filepath.Join(dir, "good.key")
+	require.NoError(t, os.WriteFile(good, []byte("0123456789abcdef0123456789abcdef\n"), 0o600))
+
+	base := config.AuditEgressConfig{Kind: "otlp_http", Endpoint: "https://siem.example.com/v1/logs", Chained: true}
+	for name, path := range map[string]string{"missing": filepath.Join(dir, "nope.key"), "short": short} {
+		cfg := base
+		cfg.ChainHMACKeyFile = path
+		_, err := buildAuditSink(cfg, chk, nil, silentLogger())
+		assert.Error(t, err, name)
+	}
+
+	cfg := base
+	cfg.ChainHMACKeyFile = good
+	sink, err := buildAuditSink(cfg, chk, nil, silentLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = sink.Close(closeCtx) //nolint:errcheck // test cleanup
+	})
+	_, isChained := sink.(*audit_egress.ChainedSink)
+	assert.True(t, isChained)
 }

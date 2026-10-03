@@ -33,7 +33,9 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 				return errors.New("matrix.homeserver_url and matrix.access_token are required")
 			}
 			uid := firstNonEmpty(userID, cfg.Matrix.UserID)
-			setUnattendedPermissionDefault(opts, "matrix")
+			if err := requirePermissionMode(opts, "matrix"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -41,12 +43,16 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("matrix", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "matrix", nil)
 
 			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
 			if tErr != nil {
@@ -60,6 +66,7 @@ func newMatrixCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := matrix.New(matrix.Config{
+				IsAllowed:     wiring.SenderAllowed("matrix"), // no media work for senders the router would reject
 				HomeserverURL: hs,
 				AccessToken:   tok,
 				UserID:        uid,

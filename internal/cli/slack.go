@@ -33,7 +33,9 @@ func newSlackCmd(opts *Options) *cobra.Command {
 			if app == "" || bot == "" {
 				return errors.New("slack.app_token and slack.bot_token are required")
 			}
-			setUnattendedPermissionDefault(opts, "slack")
+			if err := requirePermissionMode(opts, "slack"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -41,14 +43,19 @@ func newSlackCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("slack", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "slack", nil)
 
 			client, err := slack.New(slack.Config{
+				IsAllowed:   wiring.SenderAllowed("slack"), // no media work for senders the router would reject
 				AppToken:    app,
 				BotToken:    bot,
 				BotUserID:   firstNonEmpty(botUserID, cfg.Slack.BotUserID),

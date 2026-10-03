@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mau.fi/whatsmeow"
@@ -18,6 +19,7 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -306,4 +308,62 @@ func TestOnEvent_ConnectedResetsKeepaliveCounter(t *testing.T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	assert.Equal(t, 0, c.keepaliveMisses)
+}
+
+func TestOnEvent_ConnectedAdoptsOwnIDFromStore(t *testing.T) {
+	c := newClientWithLog(t, silentLogger(), &fakeSender{})
+	c.ownID = nil
+	c.wm = pairedClient(t)
+	c.onEvent(&events.Connected{})
+	require.NotNil(t, c.ownID)
+	assert.Equal(t, "15551234567", c.ownID.User)
+}
+
+// TestOnEvent_ConnectedGaugeTracksLink pins rousseau_transport_connected
+// for WhatsApp: 1 while linked, 0 after a disconnect or a
+// session-ending event.
+func TestOnEvent_ConnectedGaugeTracksLink(t *testing.T) {
+	g := observability.TransportConnected.WithLabelValues("whatsapp")
+	c := newClientWithLog(t, silentLogger(), &fakeSender{})
+
+	c.onEvent(&events.Connected{})
+	assert.Equal(t, 1.0, testutil.ToFloat64(g))
+	assert.True(t, c.Connected())
+	c.onEvent(&events.Disconnected{})
+	assert.Equal(t, 0.0, testutil.ToFloat64(g))
+	assert.False(t, c.Connected())
+	c.onEvent(&events.Connected{})
+	c.onEvent(&events.LoggedOut{Reason: 401})
+	assert.Equal(t, 0.0, testutil.ToFloat64(g))
+}
+
+// TestDispatchOne_TurnsInheritStartContext pins that shutdown reaches
+// in-flight turns: the handler's context is derived from Start's, not
+// context.Background(), so cancelling the daemon cancels the turn
+// (and with it the claude subprocess).
+func TestDispatchOne_TurnsInheritStartContext(t *testing.T) {
+	send := &fakeSender{}
+	c := newClientWithLog(t, silentLogger(), send)
+	base, cancel := context.WithCancel(context.Background())
+	c.baseCtx = base
+	cancelled := make(chan struct{})
+	c.handler = transport.HandlerFunc(func(ctx context.Context, _ transport.IncomingMessage) (string, error) {
+		cancel() // daemon shutdown while the turn runs
+		select {
+		case <-ctx.Done():
+			close(cancelled)
+		case <-time.After(2 * time.Second):
+		}
+		return "", ctx.Err()
+	})
+	from := types.JID{User: "15551234567", Server: "s.whatsapp.net"}
+	c.onEvent(&events.Message{
+		Info:    types.MessageInfo{MessageSource: types.MessageSource{Sender: from, Chat: from.ToNonAD()}},
+		Message: &waProto.Message{Conversation: proto.String("long job")},
+	})
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("turn context was not cancelled by the Start context")
+	}
 }

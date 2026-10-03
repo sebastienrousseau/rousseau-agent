@@ -170,7 +170,7 @@ func TestSelectChild_EveryRuleConstraint(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			key, ruleName := r.selectChild(tc.req)
+			key, ruleName := r.selectChild(context.Background(), tc.req)
 			assert.Equal(t, tc.wantKey, key)
 			assert.Equal(t, tc.wantRule, ruleName)
 		})

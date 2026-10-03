@@ -5,9 +5,17 @@ package whatsapp
 
 import (
 	"context"
+	"errors"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
 )
+
+// ErrNeedsOperator marks a Start error that restarting cannot fix: the
+// device is unpaired or logged out, another client took the session,
+// the client is outdated, or the number is temporarily banned. The CLI
+// maps it to exit status 78 so the supervisor stops restarting and the
+// unit shows as failed instead of looping (or idling deaf).
+var ErrNeedsOperator = errors.New("whatsapp: operator action required")
 
 // Transcriber converts an audio payload into text. Implementations are
 // free to shell out (whisper.cpp), call a remote service, or return
@@ -55,6 +63,15 @@ type Config struct {
 	// Empty means "no restriction" (the transport reacts to everyone
 	// it hears from — sensible for unit tests, dangerous in prod).
 	Allowlist []string
+	// IsAllowed, when set, replaces the Allowlist check with the
+	// router's own decision (static allowlist or a valid SSO binding),
+	// so SSO-bound senders are not dropped by this pre-filter.
+	IsAllowed func(from string) bool
+	// SSOCommands lets /login and /logout from senders the pre-filter
+	// would drop reach the router, which handles them before its
+	// allowlist. Set only when SSO is configured, so strangers still
+	// see no sign that a bot is listening.
+	SSOCommands bool
 }
 
 // DefaultReplyHeader is the string prepended to every outbound reply

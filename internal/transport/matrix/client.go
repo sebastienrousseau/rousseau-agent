@@ -53,6 +53,12 @@ type Config struct {
 	// the `url` field (mxc://…) is resolved via the media-download
 	// endpoint and the bytes handed off with the info.mimetype.
 	Transcriber Transcriber
+	// IsAllowed, when set, gates media pre-processing: for a sender it
+	// rejects, voice notes are not transcribed and files are not
+	// downloaded, so a stranger cannot spend bandwidth, CPU or API
+	// budget. Text still reaches the router, which makes the final
+	// decision (and handles SSO /login). Wired to Router.Allowed.
+	IsAllowed func(from string) bool
 	// MaxAudioBytes caps a single mxc download. Zero uses 32 MiB.
 	MaxAudioBytes int64
 	// MediaPolicy governs which m.image events are accepted (MIME
@@ -71,6 +77,10 @@ type Client struct {
 
 	mu    sync.Mutex
 	since string // opaque cursor returned by the last /sync
+
+	// inflight runs each event off the sync loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client. HomeserverURL + AccessToken are required.
@@ -103,6 +113,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("matrix: handler is required")
 	}
 	c.logger.Info("matrix.started", slog.String("homeserver", c.cfg.HomeserverURL))
+	c.inflight = new(transport.Inflight)
+	defer c.inflight.Wait()
 	for {
 		if c.stopped.Load() || ctx.Err() != nil {
 			return ctx.Err()
@@ -180,36 +192,46 @@ func (c *Client) route(ctx context.Context, resp *syncResponse, handler transpor
 			if c.cfg.UserID != "" && evt.Sender == c.cfg.UserID {
 				continue // loop prevention
 			}
-			body := extractBody(evt.Content)
-			if body == "" {
-				body = c.transcribeAudio(ctx, evt.Content)
-			}
-			attachments := c.collectImageAttachments(ctx, evt.Content)
-			if body == "" && len(attachments) == 0 {
-				continue
-			}
-			msg := transport.IncomingMessage{
-				From:        evt.Sender,
-				Body:        body,
-				At:          time.Unix(evt.OriginServerTS/1000, (evt.OriginServerTS%1000)*int64(time.Millisecond)),
-				Attachments: attachments,
-			}
-			c.logger.Info("matrix.incoming",
-				slog.String("from", msg.From),
-				slog.String("room", roomID),
-				slog.Int("attachments", len(attachments)))
-			reply, err := handler.Handle(ctx, msg)
-			if err != nil {
-				c.logger.Error("matrix.handler_failed", slog.String("err", err.Error()))
-				continue
-			}
-			if reply == "" {
-				continue
-			}
-			if err := c.Deliver(ctx, roomID, reply); err != nil {
-				c.logger.Error("matrix.send_failed", slog.String("err", err.Error()))
-			}
+			c.inflight.Do(func() { c.handleEvent(ctx, roomID, evt, handler) })
 		}
+	}
+}
+
+// handleEvent resolves one m.room.message into an IncomingMessage,
+// runs the handler, and posts the reply to the room.
+func (c *Client) handleEvent(ctx context.Context, roomID string, evt timelineEvent, handler transport.Handler) {
+	body := extractBody(evt.Content)
+	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(evt.Sender)
+	if body == "" && mediaOK {
+		body = c.transcribeAudio(ctx, evt.Content)
+	}
+	var attachments []transport.Attachment
+	if mediaOK {
+		attachments = c.collectImageAttachments(ctx, evt.Content)
+	}
+	if body == "" && len(attachments) == 0 {
+		return
+	}
+	msg := transport.IncomingMessage{
+		From:        evt.Sender,
+		Body:        body,
+		At:          time.Unix(evt.OriginServerTS/1000, (evt.OriginServerTS%1000)*int64(time.Millisecond)),
+		Attachments: attachments,
+	}
+	c.logger.Info("matrix.incoming",
+		slog.String("from", msg.From),
+		slog.String("room", roomID),
+		slog.Int("attachments", len(attachments)))
+	reply, err := handler.Handle(ctx, msg)
+	if err != nil {
+		c.logger.Error("matrix.handler_failed", slog.String("err", err.Error()))
+		return
+	}
+	if reply == "" {
+		return
+	}
+	if err := c.Deliver(ctx, roomID, reply); err != nil {
+		c.logger.Error("matrix.send_failed", slog.String("err", err.Error()))
 	}
 }
 

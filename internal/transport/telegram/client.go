@@ -45,6 +45,12 @@ type Config struct {
 	// messages to text before the router sees them. Nil skips audio
 	// messages entirely (they don't fall through to the LLM).
 	Transcriber Transcriber
+	// IsAllowed, when set, gates media pre-processing: for a sender it
+	// rejects, voice notes are not transcribed and files are not
+	// downloaded, so a stranger cannot spend bandwidth, CPU or API
+	// budget. Text still reaches the router, which makes the final
+	// decision (and handles SSO /login). Wired to Router.Allowed.
+	IsAllowed func(from string) bool
 	// MediaPolicy governs which image messages are accepted (MIME
 	// allowlist, per-image and per-turn byte caps). Zero-value falls
 	// back to the media.Policy defaults documented on that package.
@@ -68,6 +74,9 @@ type Client struct {
 	stopped atomic.Bool
 	mu      sync.Mutex
 	offset  int64
+	// inflight runs each update off the poll loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client. Token is required.
@@ -99,6 +108,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("telegram: handler is required")
 	}
 	c.logger.Info("telegram.started")
+	c.inflight = new(transport.Inflight)
+	defer c.inflight.Wait()
 	for {
 		if c.stopped.Load() || ctx.Err() != nil {
 			return ctx.Err()
@@ -117,7 +128,7 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 			}
 		}
 		for _, u := range updates {
-			c.route(ctx, u, handler)
+			c.inflight.Do(func() { c.route(ctx, u, handler) })
 		}
 	}
 }
@@ -156,10 +167,14 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 	if text == "" && u.Message.Caption != "" && len(u.Message.Photo) > 0 {
 		text = u.Message.Caption
 	}
-	if text == "" {
+	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(strconv.FormatInt(u.Message.Chat.ID, 10))
+	if text == "" && mediaOK {
 		text = c.transcribeAudio(ctx, u.Message)
 	}
-	attachments := c.collectImageAttachments(ctx, u.Message.Photo)
+	var attachments []transport.Attachment
+	if mediaOK {
+		attachments = c.collectImageAttachments(ctx, u.Message.Photo)
+	}
 	if text == "" && len(attachments) == 0 {
 		return
 	}

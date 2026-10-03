@@ -28,7 +28,9 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			if tok == "" {
 				return errors.New("discord.token is required")
 			}
-			setUnattendedPermissionDefault(opts, "discord")
+			if err := requirePermissionMode(opts, "discord"); err != nil {
+				return err
+			}
 
 			allow := allowlist
 			if len(allow) == 0 {
@@ -36,12 +38,16 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			}
 
 			ctx := cmd.Context()
+			if err := requireSenderPolicy("discord", allow, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allow)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
+			startHeartbeat(ctx, opts, "discord", nil)
 
 			transcriber, tErr := buildTranscriberString(opts.Config.Media.Audio)
 			if tErr != nil {
@@ -55,6 +61,7 @@ func newDiscordCmd(opts *Options) *cobra.Command {
 			}
 
 			client, err := discord.New(discord.Config{
+				IsAllowed:   wiring.SenderAllowed("discord"), // no media work for senders the router would reject
 				Token:       tok,
 				ReplyHeader: cfg.Discord.ReplyHeader,
 				Transcriber: discTranscriber,

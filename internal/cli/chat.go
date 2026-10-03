@@ -122,7 +122,7 @@ func openStore(ctx context.Context, cfg config.StateConfig) (state.Store, error)
 			}
 			path = filepath.Join(home, ".local", "share", "rousseau", "sessions.db")
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return nil, fmt.Errorf("create state dir: %w", err)
 		}
 		return sqlitestore.Open(ctx, path)

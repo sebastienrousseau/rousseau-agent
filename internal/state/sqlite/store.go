@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"database/sql"
 
@@ -20,6 +21,24 @@ import (
 //go:embed schema.sql
 var schema string
 
+// fileDSN adds per-connection pragmas to a file path. database/sql
+// pools connections, and a PRAGMA run through db.Exec reaches only the
+// connection that executed it; every other connection would run with
+// busy_timeout=0 (immediate SQLITE_BUSY under contention) and foreign
+// keys off. modernc.org/sqlite applies _pragma parameters on each new
+// connection. ":memory:", existing URIs, and paths containing URI
+// delimiters ('?', '#') are left as given; the latter keep the old
+// single-connection pragmas rather than risk a mis-parsed path.
+func fileDSN(path string) string {
+	if path == ":memory:" || strings.HasPrefix(path, "file:") || strings.ContainsAny(path, "?#") {
+		return path
+	}
+	return "file:" + path +
+		"?_pragma=busy_timeout(15000)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=journal_mode(WAL)"
+}
+
 // Store is a state.Store backed by SQLite.
 type Store struct {
 	db *sql.DB
@@ -28,7 +47,7 @@ type Store struct {
 // Open opens (or creates) a SQLite database at path and applies the
 // schema. Pass ":memory:" for an in-process database.
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", fileDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
@@ -60,6 +79,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, err
 	}
+	if err := ensureColumn(ctx, db, "search_text", `ALTER TABLE sessions ADD COLUMN search_text TEXT NOT NULL DEFAULT ''`); err != nil {
+		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
+		return nil, err
+	}
 	s := &Store{db: db}
 	if err := s.EnsureSearch(ctx); err != nil {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
@@ -78,20 +101,22 @@ func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
 	// Load's json.Unmarshal) and in a top-level column so
 	// ListBySender can index-scan without decoding every row.
 	const q = `
-INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at, sender, search_text)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
     title=excluded.title,
     payload=excluded.payload,
     message_count=excluded.message_count,
     updated_at=excluded.updated_at,
-    sender=excluded.sender
+    sender=excluded.sender,
+    search_text=excluded.search_text
 `
 	_, err = s.db.ExecContext(ctx, q,
 		sess.ID, sess.Title, string(payload), len(sess.Messages),
 		sess.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
 		sess.UpdatedAt.UTC().Format("2006-01-02T15:04:05.000Z"),
 		sess.Sender,
+		searchText(sess),
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: save session: %w", err)
@@ -260,3 +285,35 @@ func ensureSenderColumn(ctx context.Context, db *sql.DB) error {
 
 // Compile-time interface satisfaction check.
 var _ state.Store = (*Store)(nil)
+
+// ensureColumn adds a column to sessions when it is missing.
+func ensureColumn(ctx context.Context, db *sql.DB, name, ddl string) error {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?`, name).Scan(&n); err != nil {
+		return fmt.Errorf("sqlite: probe column %s: %w", name, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		return fmt.Errorf("sqlite: add column %s: %w", name, err)
+	}
+	return nil
+}
+
+// searchText is what the full-text index holds for a session: the
+// text of its messages, one per line. The JSON payload (keys, base64
+// image bytes, tool-call scaffolding) is deliberately left out.
+func searchText(sess *agent.Session) string {
+	var b strings.Builder
+	for _, m := range sess.Messages {
+		for _, c := range m.Content {
+			if c.Kind == agent.ContentText && c.Text != "" {
+				b.WriteString(c.Text)
+				b.WriteByte('\n')
+			}
+		}
+	}
+	return b.String()
+}

@@ -109,14 +109,24 @@ func buildRouter(cfg *config.Config) (agent.Provider, error) {
 			ToolUseCountMax: rule.ToolUseCountMax,
 			ToolUseCountMin: rule.ToolUseCountMin,
 			SessionIDPrefix: rule.SessionIDPrefix,
+			Intents:         rule.Intents,
 			Use:             rule.Use,
 		})
 		_ = i
 	}
+	var classifier agent.Provider
+	if rc.Classifier != "" {
+		c, ok := children[rc.Classifier]
+		if !ok {
+			return nil, fmt.Errorf("router.classifier %q is not a key in router.providers", rc.Classifier)
+		}
+		classifier = c
+	}
 	return router.New(router.Options{
-		Default:   rc.Default,
-		Rules:     rules,
-		Providers: children,
+		Default:    rc.Default,
+		Rules:      rules,
+		Providers:  children,
+		Classifier: classifier,
 	})
 }
 

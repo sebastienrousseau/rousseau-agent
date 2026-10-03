@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 )
@@ -46,4 +48,18 @@ func TestInstrumentedHandler_labelsByTransportName(t *testing.T) {
 		assert.Equal(t, 1.0, testutil.ToFloat64(observability.TransportIncoming.WithLabelValues(name)),
 			"transport %s should have one incoming", name)
 	}
+}
+
+// TestInstrumentedHandler_recordsLastInbound pins the staleness signal:
+// an alert on time() - last_inbound catches a bridge that is up but
+// no longer receiving (the 2026-09-27 outage looked exactly like that).
+func TestInstrumentedHandler_recordsLastInbound(t *testing.T) {
+	before := float64(time.Now().Unix())
+	h := InstrumentedHandler("lastinbound-test", HandlerFunc(func(context.Context, IncomingMessage) (string, error) {
+		return "", nil
+	}))
+	_, err := h.Handle(context.Background(), IncomingMessage{From: "x", Body: "y"})
+	require.NoError(t, err)
+	got := testutil.ToFloat64(observability.TransportLastInbound.WithLabelValues("lastinbound-test"))
+	assert.GreaterOrEqual(t, got, before)
 }

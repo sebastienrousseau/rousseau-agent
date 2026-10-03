@@ -1,9 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +32,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
+	"github.com/sebastienrousseau/rousseau-agent/internal/toolgate"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations"
@@ -93,6 +98,32 @@ type daemonWiring struct {
 	// the ListenAndServe goroutine with the same lifetime as
 	// itself.
 	SCIMAddr string
+	// MetricsAddr and OTLPEndpoint mirror observability.metrics_addr
+	// and observability.otlp_endpoint. StartBackgroundServers starts
+	// the Prometheus /metrics + /healthz server and the OTLP tracer
+	// from them; empty leaves each off.
+	MetricsAddr  string
+	OTLPEndpoint string
+	// TurnTimeout mirrors agent.turn_timeout; TransportHandler
+	// applies it to each routed turn (0 = no limit).
+	TurnTimeout time.Duration
+	// turnLimiter caps concurrent agent turns across every transport
+	// handler this wiring builds (agent.max_concurrent_turns).
+	turnLimiter *transport.TurnLimiter
+	// otelShutdown flushes the tracer; set by StartBackgroundServers,
+	// called by Cleanup.
+	otelShutdown func(context.Context) error
+	// TurnJournal records agent turns in flight (nil on drivers
+	// without one); transports read it at startup to notify senders
+	// whose turn a restart interrupted.
+	TurnJournal *sqlitestore.TurnJournal
+	// stopBackground cancels and waits for goroutines assembleDaemon
+	// started (the reliability pruner). Called first by Cleanup.
+	stopBackground func()
+	// toolgate answers claude's PreToolUse hook with this daemon's
+	// approver (nil when the provider is not claudecli or the bridge
+	// is disabled). Closed by Cleanup.
+	toolgate *toolgate.Server
 	// A2A is the (optional) Agent-to-Agent HTTP server runtime.
 	// Nil when a2a.server.enabled=false OR the operator's config
 	// is broken. When non-nil, callers start it via
@@ -155,6 +186,25 @@ type daemonWiring struct {
 // assembleDaemon, before entering their inbound loop. Idempotent
 // on nil sub-servers; skips ones the operator didn't configure.
 func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
+	if w.MetricsAddr != "" {
+		go func() {
+			if err := observability.StartMetricsServer(ctx, w.MetricsAddr, w.Logger); err != nil {
+				w.Logger.Warn("metrics.serve_failed",
+					slog.String("addr", w.MetricsAddr),
+					slog.String("err", err.Error()))
+			}
+		}()
+	}
+	if w.OTLPEndpoint != "" {
+		shutdown, err := observability.StartOTel(ctx, w.OTLPEndpoint, version, w.Logger)
+		if err != nil {
+			w.Logger.Warn("otel.start_failed",
+				slog.String("endpoint", w.OTLPEndpoint),
+				slog.String("err", err.Error()))
+		} else {
+			w.otelShutdown = shutdown
+		}
+	}
 	if w.SCIMServer != nil && w.SCIMAddr != "" {
 		go func() {
 			if err := w.SCIMServer.ListenAndServe(ctx, w.SCIMAddr); err != nil {
@@ -175,12 +225,25 @@ func (w *daemonWiring) StartBackgroundServers(ctx context.Context) {
 // underlying state Store. Safe to defer. Errors from MCP client Close
 // calls are logged but not returned — shutdown is best-effort.
 //
-// Callers that predate this helper still work: they may call
-// wiring.Sessions.Close() directly. The tradeoff is that MCP client
-// subprocesses leak until the parent daemon exits (the OS reaps them
-// then, so the leak is bounded).
+// Every transport command defers this. Calling only
+// wiring.Sessions.Close() instead leaks MCP subprocesses and never
+// emits or flushes the daemon.stop audit record.
 func (w *daemonWiring) Cleanup() error {
+	if w.stopBackground != nil {
+		w.stopBackground()
+		w.stopBackground = nil
+	}
+	if w.toolgate != nil {
+		_ = w.toolgate.Close() //nolint:errcheck // best-effort; removes the socket dir
+		w.toolgate = nil
+	}
 	closeMCPClients(w.MCPClients, w.Logger)
+	if w.otelShutdown != nil {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = w.otelShutdown(flushCtx) //nolint:errcheck // best-effort span flush on shutdown
+		cancel()
+		w.otelShutdown = nil
+	}
 	// Drain the audit sink first — losing the shutdown record
 	// (daemon.stop) after Sessions.Close blocks would surprise
 	// operators reviewing SIEM histories. Bounded by a small
@@ -201,30 +264,62 @@ func (w *daemonWiring) Cleanup() error {
 	return nil
 }
 
-// setUnattendedPermissionDefault forces the claudecli provider into a
-// permission mode that lets tool calls complete when the caller has no
-// interactive terminal. Emits a WARN so operators see the tradeoff.
-func setUnattendedPermissionDefault(opts *Options, transportName string) {
+// requirePermissionMode refuses to run an unattended claudecli daemon
+// whose permission mode was never chosen. It used to default silently
+// to bypassPermissions, letting any allowlisted chat message run any
+// tool, with only a WARN line to show for it. The operator now picks
+// the trade-off explicitly (config or ROUSSEAU_CLAUDECLI_PERMISSION_MODE).
+// Other providers run rousseau's own approver and are unaffected.
+func requirePermissionMode(opts *Options, transportName string) error {
 	cfg := opts.Config
 	if (cfg.Provider != "" && cfg.Provider != "claudecli") || cfg.ClaudeCLI.PermissionMode != "" {
-		return
+		return nil
 	}
-	cfg.ClaudeCLI.PermissionMode = "bypassPermissions"
-	opts.Logger.Warn(transportName+".permission_mode_default",
-		"mode", "bypassPermissions",
-		"why", "no claudecli.permission_mode set; unattended daemon cannot approve prompts",
-		"how_to_override", "set claudecli.permission_mode in ~/.config/rousseau/config.yaml (acceptEdits is a narrower alternative)",
-	)
+	return fmt.Errorf("%s: claudecli.permission_mode is not set. An unattended daemon cannot answer "+
+		"permission prompts, so choose explicitly in config.yaml or via ROUSSEAU_CLAUDECLI_PERMISSION_MODE: "+
+		"\"bypassPermissions\" lets claude run any tool for allowlisted senders (the previous implicit default); "+
+		"\"dontAsk\" denies anything not pre-approved, e.g. claudecli.extra_args: [\"--allowedTools\", \"Read,Grep,Glob\"]",
+		transportName)
+}
+
+// requireSenderPolicy refuses to start a chat transport with an empty
+// allowlist unless the operator passed --allow-anyone. An empty
+// allowlist means every sender reaches the agent (and its tools).
+func requireSenderPolicy(transportName string, allowlist []string, allowAnyone bool) error {
+	if len(allowlist) > 0 || allowAnyone {
+		return nil
+	}
+	return fmt.Errorf("%s: no sender allowlist configured, so anyone who can reach this %s account "+
+		"could drive the agent. Set --allow / %s.allowlist, or pass --allow-anyone to accept that explicitly",
+		transportName, transportName, transportName)
+}
+
+// normalizeEmailAllowlist trims and lower-cases addresses so matching
+// is case-insensitive (the email transport lower-cases senders too).
+func normalizeEmailAllowlist(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, a := range in {
+		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // assembleDaemon opens the shared state, wires every agent option, and
 // returns the composed pieces ready for a transport to attach a
 // Deliver function to the cron scheduler.
 //
-// Cleanup: the caller is responsible for closing wiring.Sessions and
-// shutting down any scheduler it starts.
+// Cleanup: the caller must defer wiring.Cleanup() and shut down any
+// scheduler it starts.
 func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*daemonWiring, error) {
 	cfg := opts.Config
+	bridge := policyBridgeEnabled(cfg)
+	if bridge && cfg.ClaudeCLI.Bare {
+		return nil, errors.New("claudecli.bare skips hooks, so rousseau's approver and audit trail " +
+			"cannot see claude's tool calls. Turn bare off, or set claudecli.disable_policy_hook: true " +
+			"to run ungoverned explicitly")
+	}
 	provider, err := buildProvider(cfg)
 	if err != nil {
 		return nil, err
@@ -304,10 +399,33 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// daemon's ctx is alive; a nil store (postgres deployment
 	// today) disables the loop cleanly via the Pruner interface
 	// check inside RunPruner.
+	// Background work owned by the wiring: Cleanup cancels and waits
+	// for it, so nothing touches the store after it is closed.
+	bgCtx, bgCancel := context.WithCancel(ctx)
+	var bgWG sync.WaitGroup
+	stopBackground := func() { bgCancel(); bgWG.Wait() }
 	if pr, ok := reliabilityStore.(reliability.Pruner); ok {
-		go reliability.RunPruner(ctx, pr, reliability.PruneConfig{
-			Logger: opts.Logger,
-		})
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			reliability.RunPruner(bgCtx, pr, reliability.PruneConfig{
+				Logger: opts.Logger,
+			})
+		}()
+	}
+
+	if cfg.State.SessionTTL > 0 {
+		if eraser, ok := concrete.(idleSessionEraser); ok {
+			bgWG.Add(1)
+			go func() {
+				defer bgWG.Done()
+				runSessionRetention(bgCtx, eraser, cfg.State.SessionTTL, 6*time.Hour, opts.Logger)
+			}()
+		} else {
+			opts.Logger.Warn("state.session_ttl_unsupported",
+				slog.String("driver", driverName(cfg.State)),
+				slog.String("effect", "sessions are kept until deleted"))
+		}
 	}
 
 	registry := tools.NewRegistry()
@@ -383,6 +501,9 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// (pattern / TUI) approver. Same three-condition fail-safe
 	// gate as wrapWithRBAC.
 	approver = wrapWithOPA(ctx, approver, cfg.Agent.Approver.OPA, checker, opts.Logger)
+	// Risk scoring sits after the deterministic layers: it only
+	// judges calls they allow, and can only deny.
+	approver = wrapWithRisk(approver, cfg.Agent.Approver.Risk, provider, cfg.ClaudeCLI, checker, opts.Logger)
 
 	skillsProv, err := buildSkillsProvider(opts, checker)
 	if err != nil {
@@ -413,7 +534,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		}
 		chainStore = cs
 	}
-	auditSink := buildAuditSink(cfg.Observability.AuditEgress, checker, chainStore, opts.Logger)
+	auditSink, err := buildAuditSink(cfg.Observability.AuditEgress, checker, chainStore, opts.Logger)
+	if err != nil {
+		closeMCPClients(mcpClients, opts.Logger)
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
 
 	// Snapshot the licence state into the audit trail so the
 	// SIEM has a boot-time record of "what tier is this daemon
@@ -505,6 +631,27 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		AuditSink:     auditSink,
 		Approvals:     pendingApprovals,
 		BuildStamp:    fmt.Sprintf("%s (commit %s, built %s)", version, commit, buildDate),
+
+		SessionIdleTimeout: cfg.Agent.SessionIdleTimeout,
+	}
+	// Interrupted-turn journal (SQLite): lets a restarted daemon tell
+	// senders whose turn it cut off.
+	var turnJournal *sqlitestore.TurnJournal
+	if st, ok := concrete.(*sqlitestore.Store); ok {
+		tj, jerr := sqlitestore.NewTurnJournal(ctx, st)
+		if jerr != nil {
+			opts.Logger.Warn("turn_journal.unavailable", slog.String("err", jerr.Error()))
+		} else {
+			turnJournal = tj
+			routerOpts.TurnJournal = tj
+		}
+	}
+	// claude keeps the conversation in its own transcript; /save must
+	// copy it for the snapshot to resume with history.
+	if cp, ok := provider.(*claudecli.Provider); ok {
+		routerOpts.ForkSession = func(_ context.Context, fromID, toID string) error {
+			return cp.ForkSession(fromID, toID)
+		}
 	}
 	router := transport.NewRouter(ag, concrete, jidMap, opts.Logger, routerOpts)
 
@@ -530,30 +677,47 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		opts.Logger.Info("a2a.dispatch_tool_registered", slog.Int("peer_count", len(a2aClients)))
 	}
 
+	var gate *toolgate.Server
+	if bridge {
+		gate, err = startPolicyBridge(ctx, provider, ag, opts.Logger)
+		if err != nil {
+			closeMCPClients(mcpClients, opts.Logger)
+			_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+			return nil, err
+		}
+	}
+
 	return &daemonWiring{
-		Provider:     provider,
-		Agent:        ag,
-		Registry:     registry,
-		Router:       router,
-		CronStore:    cronStore,
-		Sessions:     sessions,
-		Concrete:     concrete,
-		JIDMap:       jidMap,
-		ClaudeCache:  claudeCache,
-		CostStore:    costStore,
-		Identities:   identities,
-		routerOpts:   routerOpts,
-		MCPClients:   mcpClients,
-		RateLimiters: rateLimiters,
-		Logger:       opts.Logger,
-		Progress:     progressBus,
-		Licence:      checker,
-		SSOBindings:  ssoStore,
-		AuditSink:    auditSink,
-		SCIMServer:   scimServer,
-		SCIMAddr:     scimAddr,
-		A2A:          a2aRt,
-		A2AClients:   a2aClients,
+		TurnJournal:    turnJournal,
+		stopBackground: stopBackground,
+		toolgate:       gate,
+		Provider:       provider,
+		Agent:          ag,
+		Registry:       registry,
+		Router:         router,
+		CronStore:      cronStore,
+		Sessions:       sessions,
+		Concrete:       concrete,
+		JIDMap:         jidMap,
+		ClaudeCache:    claudeCache,
+		CostStore:      costStore,
+		Identities:     identities,
+		routerOpts:     routerOpts,
+		MCPClients:     mcpClients,
+		RateLimiters:   rateLimiters,
+		Logger:         opts.Logger,
+		Progress:       progressBus,
+		Licence:        checker,
+		SSOBindings:    ssoStore,
+		AuditSink:      auditSink,
+		SCIMServer:     scimServer,
+		SCIMAddr:       scimAddr,
+		MetricsAddr:    cfg.Observability.MetricsAddr,
+		OTLPEndpoint:   cfg.Observability.OTLPEndpoint,
+		TurnTimeout:    cfg.Agent.TurnTimeout,
+		turnLimiter:    transport.NewTurnLimiter(cfg.Agent.MaxConcurrentTurns, opts.Logger),
+		A2A:            a2aRt,
+		A2AClients:     a2aClients,
 	}, nil
 }
 
@@ -618,7 +782,7 @@ func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Check
 // A "daemon.start" record is stamped as the first Emit so
 // operators can verify their pipeline works end-to-end without
 // waiting for real activity.
-func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chainStore audit_egress.ChainStore, logger *slog.Logger) audit_egress.Sink {
+func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chainStore audit_egress.ChainStore, logger *slog.Logger) (audit_egress.Sink, error) {
 	inner := audit_egress.New(audit_egress.Config{
 		Kind:          audit_egress.Kind(cfg.Kind),
 		Endpoint:      cfg.Endpoint,
@@ -631,13 +795,20 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chain
 	// Nop → no chain wrap. Wrapping a Nop would waste hash
 	// computation on records that never leave the process.
 	if _, isNop := inner.(audit_egress.Nop); isNop {
-		return inner
+		return inner, nil
 	}
 	sink := inner
 	if cfg.Chained {
 		opts := []audit_egress.ChainOption{audit_egress.WithChainLogger(logger)}
 		if chainStore != nil {
 			opts = append(opts, audit_egress.WithChainStore(chainStore))
+		}
+		if cfg.ChainHMACKeyFile != "" {
+			key, err := readChainKey(cfg.ChainHMACKeyFile)
+			if err != nil {
+				return nil, err
+			}
+			opts = append(opts, audit_egress.WithChainHMACKey(key))
 		}
 		sink = audit_egress.NewChainedSink(inner, opts...)
 	}
@@ -651,7 +822,7 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chain
 		Object:   "daemon",
 		Result:   "success",
 	})
-	return sink
+	return sink, nil
 }
 
 // emitLicenseSnapshot writes one Category=license record to sink
@@ -807,12 +978,24 @@ func transportMappingsFromConfig(in []config.SSOTransportMapping) []sso.Transpor
 func (w *daemonWiring) TransportHandler(name string, logger *slog.Logger) transport.Handler {
 	sup := w.supervisorFor(name, logger)
 	h := transport.Handler(w.routerFor(name))
+	// Inside the Supervisor so the deadline covers the agent turn
+	// only; control verbs (/cancel, /status) stay instant.
+	h = transport.WithTurnTimeout(h, w.TurnTimeout, logger)
+	h = w.turnLimiter.Wrap(h)
 	h = sup.Wrap(h)
 	h = resilience.Recover(h, name, logger)
 	if lim, ok := w.RateLimiters[name]; ok {
 		h = ratelimit.Wrap(h, lim, name, "")
 	}
 	return h
+}
+
+// SenderAllowed returns the pre-processing gate for transport name: the
+// same static-allowlist-or-SSO check the router applies, for transports
+// to consult before downloading or transcribing media.
+func (w *daemonWiring) SenderAllowed(name string) func(from string) bool {
+	r := w.routerFor(name)
+	return func(from string) bool { return r.Allowed(context.Background(), from) }
 }
 
 // routerFor returns the transport.Router for transport name,
@@ -896,4 +1079,136 @@ func (w *daemonWiring) startCron(ctx context.Context, delivery rcron.Delivery, l
 		_ = scheduler.Shutdown(sctx) //nolint:errcheck // best-effort shutdown
 	}
 	return shutdown, nil
+}
+
+// policyBridgeEnabled reports whether claude's own tool calls should be
+// routed through rousseau's approver (see startPolicyBridge).
+func policyBridgeEnabled(cfg *config.Config) bool {
+	return (cfg.Provider == "" || cfg.Provider == "claudecli") && !cfg.ClaudeCLI.DisablePolicyHook
+}
+
+// startPolicyBridge makes rousseau's tool policy govern the claude CLI.
+// claude runs its tools in its own loop, so the agent's Approver never
+// sees them; without this, RBAC, OPA, pattern rules, multi-party
+// approval and the tool audit trail do nothing on the default backend.
+// It serves decisions from ag.DecideExternal on a private unix socket
+// and installs a PreToolUse hook on the provider that asks it before
+// every tool call, failing closed.
+func startPolicyBridge(ctx context.Context, provider agent.Provider, ag *agent.Agent, logger *slog.Logger) (*toolgate.Server, error) {
+	cp, ok := provider.(*claudecli.Provider)
+	if !ok {
+		// Fail closed: a wrapped or substituted provider must not
+		// silently run claude's tools ungoverned.
+		return nil, fmt.Errorf("policy bridge: provider is %T, not *claudecli.Provider; cannot install the hook", provider)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("policy bridge: locate rousseau binary: %w", err)
+	}
+	gate, err := toolgate.Listen(func(dctx context.Context, req toolgate.Request) toolgate.Response {
+		d, reason := ag.DecideExternal(dctx, agent.ApprovalRequest{
+			ToolName: req.ToolName, Input: req.ToolInput, SessionID: req.SessionID,
+		})
+		return toolgate.Response{Allow: d == agent.DecisionAllow, Reason: reason}
+	}, toolgateDecisionTimeout, logger)
+	if err != nil {
+		return nil, fmt.Errorf("policy bridge: %w", err)
+	}
+	settings, err := toolgate.HookSettings(
+		shellQuote(exe)+" hook pre-tool-use --socket "+shellQuote(gate.Path()), toolgateClaudeTimeout)
+	if err != nil {
+		_ = gate.Close() //nolint:errcheck // rollback
+		return nil, fmt.Errorf("policy bridge: %w", err)
+	}
+	cp.SetSettings(settings)
+	go gate.Serve(ctx)
+	logger.Info("policy_bridge.started", slog.String("socket", gate.Path()))
+	return gate, nil
+}
+
+// shellQuote single-quotes s for the POSIX shell claude runs hook
+// commands with.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// readChainKey loads the audit chain HMAC key. Surrounding whitespace
+// is trimmed (keys are often written with a trailing newline).
+func readChainKey(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // operator-configured path
+	if err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+	key := bytes.TrimSpace(raw)
+	if len(key) < 32 {
+		return nil, fmt.Errorf("audit chain key %s: %d bytes, need at least 32", path, len(key))
+	}
+	return key, nil
+}
+
+// idleSessionEraser is implemented by stores that support retention.
+type idleSessionEraser interface {
+	EraseIdleSessions(ctx context.Context, cutoff time.Time) (sqlitestore.EraseReport, error)
+}
+
+// runSessionRetention enforces state.session_ttl: once on start, then
+// every interval, it erases sessions idle for longer than ttl and
+// claude's transcripts of them, until ctx ends.
+func runSessionRetention(ctx context.Context, store idleSessionEraser, ttl, interval time.Duration, logger *slog.Logger) {
+	prune := func() {
+		rep, err := store.EraseIdleSessions(ctx, time.Now().Add(-ttl))
+		if err != nil {
+			logger.Error("state.session_retention_failed", slog.String("err", err.Error()))
+			return
+		}
+		if len(rep.SessionIDs) == 0 {
+			return
+		}
+		files, err := claudecli.EraseTranscripts(rep.SessionIDs)
+		if err != nil {
+			logger.Error("state.session_retention_transcripts_failed", slog.String("err", err.Error()))
+		}
+		logger.Info("state.session_retention",
+			slog.Int("sessions", len(rep.SessionIDs)),
+			slog.Int("transcripts", files),
+			slog.Duration("ttl", ttl))
+	}
+	prune()
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
+		}
+	}
+}
+
+// interruptedNotice is sent to a sender whose turn a restart cut off.
+func interruptedNotice(preview string) string {
+	return "I was restarted while working on your message (\"" + preview + "\"), so you did not get a reply. " +
+		"Some steps may already have run; ask me what state things are in, or send it again."
+}
+
+// notifyInterruptedTurns tells each sender whose turn on transport was
+// cut off by the last shutdown, once deliver can reach them. It takes
+// (and clears) the journal entries, so each notice is sent once.
+func notifyInterruptedTurns(ctx context.Context, j *sqlitestore.TurnJournal, transportName string, deliver func(ctx context.Context, to, body string) error, logger *slog.Logger) {
+	if j == nil {
+		return
+	}
+	turns, err := j.TakeInterrupted(ctx, transportName)
+	if err != nil {
+		logger.Warn("turn_journal.take_failed", slog.String("err", err.Error()))
+		return
+	}
+	for _, t := range turns {
+		if err := deliver(ctx, t.Sender, interruptedNotice(t.Preview)); err != nil {
+			logger.Warn("turn_journal.notify_failed", slog.String("to", t.Sender), slog.String("err", err.Error()))
+			continue
+		}
+		logger.Info("turn_journal.notified", slog.String("transport", transportName), slog.String("to", t.Sender))
+	}
 }

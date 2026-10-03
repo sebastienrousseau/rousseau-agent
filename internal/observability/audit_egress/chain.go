@@ -2,6 +2,7 @@ package audit_egress
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -77,6 +78,7 @@ type ChainedSink struct {
 	inner  Sink
 	store  ChainStore
 	logger *slog.Logger
+	macKey []byte
 
 	mu   sync.Mutex
 	seq  uint64
@@ -109,6 +111,14 @@ type ChainOption func(*ChainedSink)
 // call.
 func WithChainStore(s ChainStore) ChainOption {
 	return func(c *ChainedSink) { c.store = s }
+}
+
+// WithChainHMACKey adds a keyed MAC to every record (ChainInfo.MAC).
+// Keep the key outside what the daemon's tools can read (a podman
+// secret or a file mounted only into the daemon), and give it to the
+// SIEM-side verifier.
+func WithChainHMACKey(key []byte) ChainOption {
+	return func(c *ChainedSink) { c.macKey = append([]byte(nil), key...) }
 }
 
 // WithChainLogger installs a logger used for the (rare) store
@@ -176,6 +186,9 @@ func (c *ChainedSink) Emit(ctx context.Context, rec Record) error {
 	rec.Chain.Sequence = c.seq
 	rec.Chain.PrevHash = c.prev
 	rec.Chain.Hash = canonicalHash(rec)
+	if len(c.macKey) > 0 {
+		rec.Chain.MAC = chainMAC(c.macKey, rec.Chain.Hash)
+	}
 	c.seq++
 	c.prev = rec.Chain.Hash
 	if c.store != nil {
@@ -328,3 +341,26 @@ func canonicalDetail(d map[string]any) string {
 var timeForHash = func(t time.Time) time.Time { return t.UTC() }
 
 var _ = timeForHash // silence unused; keep hook available
+
+// chainMAC is HMAC-SHA256(key, hash), hex-encoded.
+func chainMAC(key []byte, hash string) string {
+	m := hmac.New(sha256.New, key)
+	_, _ = m.Write([]byte(hash))
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// VerifyChainMAC is VerifyChain plus the keyed check: every record
+// must carry a MAC of its Hash under key. It detects a chain that was
+// edited and fully re-hashed, which VerifyChain alone cannot.
+func VerifyChainMAC(records []Record, key []byte) error {
+	if err := VerifyChain(records); err != nil {
+		return err
+	}
+	for i, r := range records {
+		want := chainMAC(key, r.Chain.Hash)
+		if !hmac.Equal([]byte(want), []byte(r.Chain.MAC)) {
+			return fmt.Errorf("audit chain: MAC mismatch at index %d (sequence %d)", i, r.Chain.Sequence)
+		}
+	}
+	return nil
+}

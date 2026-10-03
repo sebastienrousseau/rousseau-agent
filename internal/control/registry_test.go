@@ -483,3 +483,21 @@ func TestRegistry_TryBeginReclaimsAfterEnd(t *testing.T) {
 	defer second.End()
 	assert.NotSame(t, first, second)
 }
+
+func TestTurn_DrainOrFinish(t *testing.T) {
+	reg, _ := newTestRegistry(nil)
+
+	_, steered := reg.Begin(context.Background(), "steered")
+	require.True(t, steered.Steer("also do X"))
+	assert.Equal(t, []string{"also do X"}, steered.DrainOrFinish(), "unconsumed steering is handed back")
+	assert.True(t, steered.Steer("still open"), "a turn that returned steering stays open")
+
+	_, idle := reg.Begin(context.Background(), "idle")
+	assert.Nil(t, idle.DrainOrFinish())
+	assert.False(t, idle.Steer("too late"), "finishing closes the turn to steering")
+
+	_, cancelled := reg.Begin(context.Background(), "cancelled")
+	require.True(t, cancelled.Steer("ignored"))
+	require.True(t, cancelled.Cancel(""))
+	assert.Nil(t, cancelled.DrainOrFinish(), "a cancelled turn drops its steering")
+}

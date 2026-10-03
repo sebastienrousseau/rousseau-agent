@@ -84,6 +84,9 @@ type DispatchInput struct {
 	// unit tests, dangerous in prod (privacy leak: the ✅ ack tells
 	// strangers the number is bot-monitored).
 	IsAllowed func(from string) bool
+	// SSOCommands lets /login and /logout through the IsAllowed gate
+	// so an unknown sender can bootstrap via SSO (see Config).
+	SSOCommands bool
 	// MediaPolicy governs which images are accepted (MIME allowlist,
 	// per-image and per-turn byte caps). Zero-value falls back to the
 	// media.Policy defaults documented on that package.
@@ -105,6 +108,16 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 	if res.Skip == SkipNone {
 		handleTextMessage(ctx, in, res, log)
 		return
+	}
+
+	// Media recovery below downloads, and may transcribe, before the
+	// text path's allowlist gate would run. Gate here first so a
+	// stranger cannot cost bandwidth, CPU or transcription spend.
+	if res.Skip == SkipEmptyText && hasMedia(in.Event) && in.IsAllowed != nil {
+		if from := resolveFrom(in.Event, in.OwnID).String(); !in.IsAllowed(from) {
+			log.Info("whatsapp.dropped_pre_download", slog.String("from", from))
+			return
+		}
 	}
 
 	// Voice notes are the only skip-reason we deliberately try to
@@ -181,6 +194,19 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 	}
 }
 
+// isSSOCommand reports whether body is a /login or /logout command.
+func isSSOCommand(body string) bool {
+	f := strings.Fields(body)
+	return len(f) > 0 && (f[0] == "/login" || f[0] == "/logout")
+}
+
+// hasMedia reports whether evt carries a message kind Dispatch would
+// download (voice note or image).
+func hasMedia(evt *events.Message) bool {
+	m := evt.Message
+	return m.GetAudioMessage() != nil || m.GetImageMessage() != nil
+}
+
 // resolveFrom mirrors the sender-normalisation in ResolveInbound. It
 // is used by the audio-transcription branch, which constructs its own
 // Resolved after downloading media. Must apply the same PN-preference
@@ -201,7 +227,8 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 	// senders because the daemon-side Router silently returns ("", nil)
 	// for rejected messages, which dispatch treated as an ordinary
 	// empty reply and acked with ✅.
-	if in.IsAllowed != nil && !in.IsAllowed(res.Msg.From) {
+	ssoBootstrap := in.SSOCommands && isSSOCommand(res.Msg.Body)
+	if in.IsAllowed != nil && !in.IsAllowed(res.Msg.From) && !ssoBootstrap {
 		log.Info("whatsapp.dropped_pre_reaction", slog.String("from", res.Msg.From))
 		return
 	}

@@ -334,6 +334,10 @@ type RouterConfig struct {
 	// Providers maps a key (referenced by Rules.Use and Default) to
 	// its concrete child-provider config.
 	Providers map[string]RouterChildConfig `mapstructure:"providers"`
+	// Classifier names the provider key (in Providers) that labels
+	// messages for rules with intents. Required when any rule sets
+	// intents; one extra small call per request.
+	Classifier string `mapstructure:"classifier"`
 }
 
 // RouterRuleConfig is one routing rule. Empty match fields disable the
@@ -345,7 +349,10 @@ type RouterRuleConfig struct {
 	ToolUseCountMax int    `mapstructure:"tool_use_count_max"`
 	ToolUseCountMin int    `mapstructure:"tool_use_count_min"`
 	SessionIDPrefix string `mapstructure:"session_id_prefix"`
-	Use             string `mapstructure:"use"`
+	// Intents routes by what the message is about, e.g.
+	// [smalltalk] to a cheap model; see router.classifier.
+	Intents []string `mapstructure:"intents"`
+	Use     string   `mapstructure:"use"`
 }
 
 // RouterChildConfig configures one child provider under
@@ -582,6 +589,13 @@ type AuditEgressConfig struct {
 	// Compliance-officer visible feature; recommended for SOC 2 /
 	// ISO 27001 / HIPAA audit-trail requirements.
 	Chained bool `mapstructure:"chained"`
+	// ChainHMACKeyFile, with Chained, adds a keyed MAC to every
+	// record (rousseau.audit.chain.mac) so an edited and re-hashed
+	// chain is detectable by a verifier holding the key. The file
+	// holds at least 32 bytes; mount it from a podman secret the
+	// agent's tools cannot read. A configured file that cannot be
+	// read stops startup.
+	ChainHMACKeyFile string `mapstructure:"chain_hmac_key_file"`
 }
 
 // SMSConfig configures the Twilio/Vonage SMS transport.
@@ -602,6 +616,9 @@ type IMessageConfig struct {
 	ChatGUID     string `mapstructure:"chat_guid"`     // outbound target
 	PollInterval string `mapstructure:"poll_interval"` // duration string, e.g. "2s"
 	ReplyHeader  string `mapstructure:"reply_header"`
+	// Allowlist holds iMessage handles (phone numbers or Apple ID
+	// addresses, as BlueBubbles reports them) allowed to reach the agent.
+	Allowlist []string `mapstructure:"allowlist"`
 }
 
 // EmailConfig configures the IMAP+SMTP email transport.
@@ -618,6 +635,11 @@ type EmailConfig struct {
 
 	From        string `mapstructure:"from"`
 	ReplyHeader string `mapstructure:"reply_header"`
+	// Allowlist holds sender addresses allowed to reach the agent,
+	// matched case-insensitively. Note that a From header is easy to
+	// forge; pair this with a mailbox that only accepts mail passing
+	// your provider's SPF/DKIM/DMARC checks.
+	Allowlist []string `mapstructure:"allowlist"`
 }
 
 // SlackConfig configures the Slack Socket Mode transport.
@@ -754,6 +776,12 @@ type ClaudeCLIConfig struct {
 	Bare bool `mapstructure:"bare"`
 	// ExtraArgs are appended to every invocation.
 	ExtraArgs []string `mapstructure:"extra_args"`
+	// DisablePolicyHook turns off the toolgate bridge. By default the
+	// daemon installs a PreToolUse hook so every tool claude runs goes
+	// through rousseau's approver and audit trail. Only disable it if
+	// you govern claude's tools by other means; the bridge cannot run
+	// alongside Bare (claude --bare skips hooks), so Bare requires it.
+	DisablePolicyHook bool `mapstructure:"disable_policy_hook"`
 }
 
 // LogConfig configures structured logging.
@@ -781,6 +809,11 @@ type StateConfig struct {
 	// Ignored when driver is "sqlite". Required when driver is
 	// "postgres".
 	DSN string `mapstructure:"dsn"`
+	// SessionTTL erases sessions not updated for this long (with
+	// their per-session rows and claude transcripts), checked every
+	// 6 hours. Zero (the default) keeps sessions until deleted.
+	// SQLite only for now.
+	SessionTTL time.Duration `mapstructure:"session_ttl"`
 }
 
 // AgentConfig configures the agent loop.
@@ -830,6 +863,20 @@ type AgentConfig struct {
 	// live Predictability numbers in `rousseau reliability`;
 	// leave off for token-sensitive deployments.
 	EnableConfidenceElicitation bool `mapstructure:"enable_confidence_elicitation"`
+	// SessionIdleTimeout starts a fresh chat session when a sender's
+	// current one has been idle longer than this, so a short reply
+	// days later is not taken as an answer to a stale question. The
+	// reply names the previous session for /resume. Default 12h;
+	// set to 0 to always continue the existing session.
+	SessionIdleTimeout time.Duration `mapstructure:"session_idle_timeout"`
+	// TurnTimeout bounds one chat turn end to end. On expiry the
+	// provider subprocess is stopped and the sender is told the turn
+	// was cut short. Default 30m; 0 disables the limit.
+	TurnTimeout time.Duration `mapstructure:"turn_timeout"`
+	// MaxConcurrentTurns caps agent turns running at once in this
+	// daemon; further turns queue. Each claudecli turn is a separate
+	// claude process. Default 4; 0 means unlimited.
+	MaxConcurrentTurns int `mapstructure:"max_concurrent_turns"`
 }
 
 // SkillBundlesConfig is the operator-facing view of the
@@ -906,6 +953,30 @@ type ApproverConfig struct {
 	// so a request must pass all three before the mode-selected
 	// (pattern / TUI) approver has its final say.
 	MultiParty MultiPartyConfig `mapstructure:"multi_party"`
+	// Risk adds a model-scored check after the deterministic layers:
+	// for the listed tools, a call they allow is judged by the model
+	// and denied when it is confidently risky. Same licence gate.
+	Risk RiskConfig `mapstructure:"risk"`
+}
+
+// RiskConfig configures the risk-scored approver (agent.RiskApprover).
+type RiskConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Tools to score, e.g. [bash, write, edit]; empty scores every
+	// tool (one extra model call per tool call).
+	Tools []string `mapstructure:"tools"`
+	// Threshold is the confidence at or above which a "risky" verdict
+	// denies the call. Default 0.8.
+	Threshold float64 `mapstructure:"threshold"`
+	// Model overrides the judge model on the claudecli provider (a
+	// small fast model keeps the added latency low). Empty uses the
+	// provider's model.
+	Model string `mapstructure:"model"`
+	// FailOpen lets calls through when the judge cannot answer. Off by
+	// default: a judge failure blocks the scored call.
+	FailOpen bool `mapstructure:"fail_open"`
+	// Timeout bounds one judgement. Default 60s.
+	Timeout time.Duration `mapstructure:"timeout"`
 }
 
 // RBACConfig configures the group-based RBAC wrapper.
@@ -997,11 +1068,26 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{}
-	if err := v.Unmarshal(cfg); err != nil {
-		return nil, fmt.Errorf("config: unmarshal: %w", err)
+	// Strict by default: a key that matches no field is an error. A
+	// misspelt "aprover:" used to be ignored silently, leaving the
+	// default allow-all policy in force with nothing in the logs.
+	// ROUSSEAU_CONFIG_ALLOW_UNKNOWN=1 restores the lenient decode for
+	// running an older binary against a newer config file.
+	if os.Getenv(envAllowUnknownKeys) == "1" {
+		if err := v.Unmarshal(cfg); err != nil {
+			return nil, fmt.Errorf("config: %s: %w", path, err)
+		}
+		return cfg, nil
+	}
+	if err := v.UnmarshalExact(cfg); err != nil {
+		return nil, fmt.Errorf("config: %s: %w (fix or remove the key; set %s=1 to ignore unknown keys)",
+			path, err, envAllowUnknownKeys)
 	}
 	return cfg, nil
 }
+
+// envAllowUnknownKeys opts out of strict config decoding.
+const envAllowUnknownKeys = "ROUSSEAU_CONFIG_ALLOW_UNKNOWN"
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("provider", "claudecli")
@@ -1011,12 +1097,18 @@ func setDefaults(v *viper.Viper) {
 	// Explicit default so viper.AutomaticEnv picks up ROUSSEAU_CLAUDECLI_BARE
 	// (viper only checks env for keys it knows about via SetDefault/BindEnv).
 	v.SetDefault("claudecli.bare", false)
+	// Bound explicitly (no default) so ROUSSEAU_CLAUDECLI_PERMISSION_MODE
+	// works; unattended transports refuse to start without a mode.
+	_ = v.BindEnv("claudecli.permission_mode") //nolint:errcheck // BindEnv only errors on zero args
 	v.SetDefault("openrouter.base_url", "https://openrouter.ai/api/v1")
 	v.SetDefault("ollama.base_url", "http://localhost:11434/v1")
 	v.SetDefault("ollama.api_key", "not-required")
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")
 	v.SetDefault("agent.max_iterations", 32)
+	v.SetDefault("agent.session_idle_timeout", "12h")
+	v.SetDefault("agent.turn_timeout", "30m")
+	v.SetDefault("agent.max_concurrent_turns", 4)
 	home, err := os.UserHomeDir()
 	if err == nil {
 		v.SetDefault("state.path", filepath.Join(home, ".local", "share", "rousseau", "sessions.db"))

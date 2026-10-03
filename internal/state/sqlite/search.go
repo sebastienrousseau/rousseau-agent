@@ -23,13 +23,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
 
 CREATE TRIGGER IF NOT EXISTS sessions_fts_ai AFTER INSERT ON sessions BEGIN
     INSERT INTO sessions_fts (session_id, title, body)
-    VALUES (NEW.id, NEW.title, NEW.payload);
+    VALUES (NEW.id, NEW.title, NEW.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS sessions_fts_au AFTER UPDATE ON sessions BEGIN
     DELETE FROM sessions_fts WHERE session_id = OLD.id;
     INSERT INTO sessions_fts (session_id, title, body)
-    VALUES (NEW.id, NEW.title, NEW.payload);
+    VALUES (NEW.id, NEW.title, NEW.search_text);
 END;
 
 CREATE TRIGGER IF NOT EXISTS sessions_fts_ad AFTER DELETE ON sessions BEGIN
@@ -61,12 +61,15 @@ type SearchOptions struct {
 // the search schema, then installs the schema + triggers if missing.
 // Safe to call every time the Store opens.
 func (s *Store) EnsureSearch(ctx context.Context) error {
+	if err := s.migrateSearchText(ctx); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx, searchSchema); err != nil {
 		return fmt.Errorf("sqlite: install search schema: %w", err)
 	}
 	const backfill = `
 INSERT INTO sessions_fts (session_id, title, body)
-SELECT s.id, s.title, s.payload
+SELECT s.id, s.title, s.search_text
 FROM sessions s
 LEFT JOIN sessions_fts f ON f.session_id = s.id
 WHERE f.session_id IS NULL
@@ -219,4 +222,77 @@ SELECT payload FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit)
 		out = append(out, sess)
 	}
 	return out, rows.Err()
+}
+
+// searchSchemaVersion is the PRAGMA user_version once the FTS index
+// holds extracted message text rather than raw JSON payloads.
+const searchSchemaVersion = 1
+
+// migrateSearchText upgrades a database whose FTS index was built from
+// raw payloads (JSON keys, base64 images): it fills search_text for
+// every session, drops the payload-indexing triggers so searchSchema
+// recreates them on search_text, and rebuilds the index. Runs once;
+// later opens see user_version and skip it.
+func (s *Store) migrateSearchText(ctx context.Context) error {
+	var version int
+	if err := s.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("sqlite: read user_version: %w", err)
+	}
+	if version >= searchSchemaVersion {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, payload FROM sessions`)
+	if err != nil {
+		return fmt.Errorf("sqlite: search migration: list: %w", err)
+	}
+	type update struct{ id, text string }
+	var updates []update
+	for rows.Next() {
+		var id, payload string
+		if err := rows.Scan(&id, &payload); err != nil {
+			rows.Close() //nolint:errcheck,gosec // primary error is returned
+			return fmt.Errorf("sqlite: search migration: scan: %w", err)
+		}
+		var sess agent.Session
+		if json.Unmarshal([]byte(payload), &sess) == nil {
+			updates = append(updates, update{id, searchText(&sess)})
+		}
+	}
+	rows.Close() //nolint:errcheck,gosec // iteration finished
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("sqlite: search migration: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: search migration: begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	for _, q := range []string{
+		`DROP TRIGGER IF EXISTS sessions_fts_ai`,
+		`DROP TRIGGER IF EXISTS sessions_fts_au`,
+	} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return fmt.Errorf("sqlite: search migration: %w", err)
+		}
+	}
+	for _, u := range updates {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET search_text = ? WHERE id = ?`, u.text, u.id); err != nil {
+			return fmt.Errorf("sqlite: search migration: backfill: %w", err)
+		}
+	}
+	var haveFTS int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE name = 'sessions_fts'`).Scan(&haveFTS); err != nil {
+		return fmt.Errorf("sqlite: search migration: %w", err)
+	}
+	if haveFTS > 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions_fts`); err != nil {
+			return fmt.Errorf("sqlite: search migration: clear index: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, searchSchemaVersion)); err != nil {
+		return fmt.Errorf("sqlite: search migration: version: %w", err)
+	}
+	return tx.Commit()
 }

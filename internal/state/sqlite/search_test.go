@@ -68,3 +68,65 @@ func TestSearch_HandlesFTS5PhraseSyntax(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, hits)
 }
+
+// TestSearch_IndexesMessageTextOnly pins that the FTS index holds the
+// conversation's text, not its JSON payload: JSON keys and base64
+// image bytes used to be indexed, bloating the index and making /find
+// match words like "role" in every session.
+func TestSearch_IndexesMessageTextOnly(t *testing.T) {
+	s := openSearchTestStore(t)
+	ctx := context.Background()
+	sess := agent.NewSession("chat")
+	sess.Append(agent.Message{Role: agent.RoleUser, Content: []agent.Content{
+		{Kind: agent.ContentText, Text: "why is my kubernetes pod pending"},
+		{Kind: agent.ContentImage, Image: &agent.Image{MediaType: "image/png", Data: []byte("QUJDREVGR0hJSktMTU5PUFFSU1RVVldY")}},
+	}})
+	require.NoError(t, s.Save(ctx, sess))
+
+	hits, err := s.Search(ctx, "kubernetes", SearchOptions{})
+	require.NoError(t, err)
+	require.Len(t, hits, 1)
+	for _, noise := range []string{"role", "content", "media_type", "UVVJTREVGR0hJSktMTU5PUFFSU1RVVldY"} {
+		hits, err := s.Search(ctx, noise, SearchOptions{})
+		require.NoError(t, err)
+		assert.Empty(t, hits, "%q must not be indexed", noise)
+	}
+}
+
+// TestSearch_MigratesPayloadIndexedDatabase pins the one-time upgrade
+// of a database indexed the old way (raw payload): on open, sessions
+// are re-indexed from their text.
+func TestSearch_MigratesPayloadIndexedDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/s.db"
+	s, err := Open(ctx, path)
+	require.NoError(t, err)
+	sess := agent.NewSession("chat")
+	sess.Append(agent.NewUserText("tell me about helm charts"))
+	require.NoError(t, s.Save(ctx, sess))
+	// Recreate the pre-migration state: payload in the index, no
+	// extracted text, schema version 0.
+	for _, q := range []string{
+		`UPDATE sessions SET search_text = ''`,
+		`DELETE FROM sessions_fts`,
+		`INSERT INTO sessions_fts (session_id, title, body) SELECT id, title, payload FROM sessions`,
+		`PRAGMA user_version = 0`,
+	} {
+		_, err := s.db.ExecContext(ctx, q)
+		require.NoError(t, err, q)
+	}
+	hits, err := s.Search(ctx, "role", SearchOptions{})
+	require.NoError(t, err)
+	require.NotEmpty(t, hits, "precondition: the old index matches JSON keys")
+	require.NoError(t, s.Close())
+
+	s, err = Open(ctx, path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
+	hits, err = s.Search(ctx, "role", SearchOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, hits, "migrated index no longer matches JSON keys")
+	hits, err = s.Search(ctx, "helm", SearchOptions{})
+	require.NoError(t, err)
+	assert.Len(t, hits, 1, "text is still found after the migration")
+}

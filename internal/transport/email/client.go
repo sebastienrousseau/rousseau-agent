@@ -80,6 +80,10 @@ type Client struct {
 	cfg     Config
 	logger  *slog.Logger
 	stopped atomic.Bool
+
+	// inflight runs each mail's turn off the poll loop (see
+	// transport.Inflight); nil (inline) outside Start.
+	inflight *transport.Inflight
 }
 
 // New constructs a Client.
@@ -121,6 +125,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 		return errors.New("email: handler is required")
 	}
 	c.logger.Info("email.started", slog.String("imap", c.cfg.IMAPAddr))
+	c.inflight = new(transport.Inflight)
+	defer c.inflight.Wait()
 
 	tick := time.NewTicker(c.cfg.PollInterval)
 	defer tick.Stop()
@@ -212,18 +218,25 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 			msg.At = m.Envelope.Date
 		}
 		c.logger.Info("email.incoming", slog.String("from", from), slog.String("subject", subject))
-		reply, hErr := handler.Handle(ctx, msg)
-		if hErr != nil {
-			c.logger.Error("email.handler_failed", slog.String("err", hErr.Error()))
-			continue
-		}
-		if reply != "" {
-			if err := c.Deliver(ctx, from, reply); err != nil {
-				c.logger.Error("email.send_failed", slog.String("err", err.Error()))
+		// The turn runs off the poll loop so one long turn does not hold
+		// up other senders' mail.
+		c.inflight.Do(func() {
+			reply, hErr := handler.Handle(ctx, msg)
+			if hErr != nil {
+				c.logger.Error("email.handler_failed", slog.String("err", hErr.Error()))
+				return
 			}
-		}
+			if reply != "" {
+				if err := c.Deliver(ctx, from, reply); err != nil {
+					c.logger.Error("email.send_failed", slog.String("err", err.Error()))
+				}
+			}
+		})
 	}
-	// Mark all handled messages as seen.
+	// Mark the batch seen. With concurrent handling this happens as soon
+	// as the turns are dispatched, so a long turn is not re-read (and
+	// re-run) by the next poll; the trade-off is that a crash mid-turn
+	// does not retry that mail.
 	store := client.Store(set, &imap.StoreFlags{
 		Op:    imap.StoreFlagsAdd,
 		Flags: []imap.Flag{imap.FlagSeen},
@@ -241,10 +254,11 @@ func envelopeFrom(m *imapclient.FetchMessageBuffer) string {
 		return ""
 	}
 	a := m.Envelope.From[0]
+	// Lower-cased so allowlist matching is case-insensitive.
 	if a.Host == "" {
-		return a.Mailbox
+		return strings.ToLower(a.Mailbox)
 	}
-	return a.Mailbox + "@" + a.Host
+	return strings.ToLower(a.Mailbox + "@" + a.Host)
 }
 
 // extractBody pulls plain-text out of a fetched IMAP message. Full

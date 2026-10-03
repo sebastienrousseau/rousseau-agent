@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -86,7 +87,7 @@ func TestSupervisor_ControlVerbsAnswerWithoutTheLLM(t *testing.T) {
 		progress.Emit(ctx, progress.PublisherFrom(ctx), progress.Event{
 			Kind: progress.KindToolStarted, Tool: "bash",
 		})
-		close(entered)
+		closeOnce(entered) // steered text now runs as a follow-up call
 		<-release
 		return "done", nil
 	}))
@@ -118,7 +119,7 @@ func TestSupervisor_CancelAbortsTheRunningTurn(t *testing.T) {
 	sup := newSupervisor()
 	entered := make(chan struct{})
 	h := sup.Wrap(HandlerFunc(func(ctx context.Context, _ IncomingMessage) (string, error) {
-		close(entered)
+		closeOnce(entered) // steered text now runs as a follow-up call
 		<-ctx.Done()
 		return "", ctx.Err()
 	}))
@@ -142,7 +143,7 @@ func TestSupervisor_SteersOrdinaryTextIntoTheRunningTurn(t *testing.T) {
 	release := make(chan struct{})
 	var steered []string
 	h := sup.Wrap(HandlerFunc(func(ctx context.Context, _ IncomingMessage) (string, error) {
-		close(entered)
+		closeOnce(entered) // steered text now runs as a follow-up call
 		<-release
 		steered = agent.ControlFrom(ctx).Drain()
 		return "done", nil
@@ -222,7 +223,7 @@ func TestSupervisor_UnknownSlashStillSteersDuringRunningTurn(t *testing.T) {
 	// Wrap a handler that blocks the running turn so we can race
 	// the /wat probe into it and observe steer semantics.
 	base := HandlerFunc(func(_ context.Context, _ IncomingMessage) (string, error) {
-		close(entered)
+		closeOnce(entered) // steered text now runs as a follow-up call
 		<-release
 		return "done", nil
 	})
@@ -289,9 +290,22 @@ func TestSupervisor_ConcurrentInboundsProduceOneTurn(t *testing.T) {
 
 	const n = 32
 	release := make(chan struct{})
-	var handlerCalls int64
+	var handlerCalls, inFlight, maxInFlight int64
+	var bodiesMu sync.Mutex
+	var bodies []string
 	h := sup.Wrap(HandlerFunc(func(ctx context.Context, msg IncomingMessage) (string, error) {
 		atomic.AddInt64(&handlerCalls, 1)
+		cur := atomic.AddInt64(&inFlight, 1)
+		defer atomic.AddInt64(&inFlight, -1)
+		for {
+			prev := atomic.LoadInt64(&maxInFlight)
+			if cur <= prev || atomic.CompareAndSwapInt64(&maxInFlight, prev, cur) {
+				break
+			}
+		}
+		bodiesMu.Lock()
+		bodies = append(bodies, msg.Body)
+		bodiesMu.Unlock()
 		// Block long enough that every racer has a chance to observe
 		// this turn on Lookup and fold in via Steer.
 		<-release
@@ -316,14 +330,22 @@ func TestSupervisor_ConcurrentInboundsProduceOneTurn(t *testing.T) {
 	close(release)
 	wg.Wait()
 
-	assert.EqualValues(t, 1, atomic.LoadInt64(&handlerCalls), "exactly one goroutine may reach the handler")
+	// One turn at a time: the claimer's call, then one follow-up call
+	// (same claimed turn, never concurrently) answering everything the
+	// racers steered in.
+	assert.EqualValues(t, 1, atomic.LoadInt64(&maxInFlight), "never two turns on one key at once")
+	assert.EqualValues(t, 2, atomic.LoadInt64(&handlerCalls), "claimer's turn plus one follow-up batch")
+	bodiesMu.Lock()
+	followUp := bodies[len(bodies)-1]
+	bodiesMu.Unlock()
 
 	var handlerReplies, steerReplies int
 	for i, reply := range replies {
 		require.NoError(t, errs[i])
 		switch reply {
-		case "reply":
+		case "reply\n\nreply":
 			handlerReplies++
+			assert.NotContains(t, strings.Split(followUp, "\n\n"), "message-"+strconv.Itoa(i), "the claimer's own text is not repeated")
 		case SteerAck:
 			steerReplies++
 		default:
@@ -332,6 +354,7 @@ func TestSupervisor_ConcurrentInboundsProduceOneTurn(t *testing.T) {
 	}
 	assert.Equal(t, 1, handlerReplies)
 	assert.Equal(t, n-1, steerReplies, "every loser must fold into the winner's turn")
+	assert.Equal(t, n-1, strings.Count(followUp, "message-"), "the follow-up carries every steered message")
 }
 
 // TestSupervisor_ReturnsEmptyOnBudgetExhaustion exercises the
@@ -355,4 +378,59 @@ func TestSupervisor_ReturnsEmptyOnBudgetExhaustion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, reply)
 	assert.False(t, called, "the handler must not run when the loop budget is exhausted before any attempt")
+}
+
+// TestSupervisor_UnconsumedSteerRunsAsFollowUp pins that a message
+// steered into a running turn is never lost. Providers that run the
+// whole turn themselves (claudecli) never reach the agent's steering
+// checkpoint, so the text used to be acknowledged ("Noted — folding
+// that in…") and then dropped. Leftovers now run as a follow-up turn
+// and its reply is appended.
+func TestSupervisor_UnconsumedSteerRunsAsFollowUp(t *testing.T) {
+	sup := newSupervisor()
+	steered := make(chan struct{})
+	var mu sync.Mutex
+	var bodies []string
+	h := sup.Wrap(HandlerFunc(func(_ context.Context, m IncomingMessage) (string, error) {
+		mu.Lock()
+		bodies = append(bodies, m.Body)
+		n := len(bodies)
+		mu.Unlock()
+		if n == 1 {
+			<-steered // the second message arrives mid-turn; ignore it, like claudecli
+			return "answer to first", nil
+		}
+		return "answer to " + m.Body, nil
+	}))
+
+	done := make(chan string, 1)
+	go func() {
+		r, _ := h.Handle(context.Background(), IncomingMessage{From: "u", Body: "first"}) //nolint:errcheck // reply is the assertion
+		done <- r
+	}()
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(bodies) == 1
+	}, time.Second, time.Millisecond)
+
+	ack, err := h.Handle(context.Background(), IncomingMessage{From: "u", Body: "second"})
+	require.NoError(t, err)
+	assert.Equal(t, SteerAck, ack)
+	close(steered)
+
+	reply := <-done
+	assert.Contains(t, reply, "answer to first")
+	assert.Contains(t, reply, "answer to second", "the steered message must be answered, not dropped")
+}
+
+// closeOnce closes ch unless it is already closed. Handlers in these
+// tests are called again for steered text the provider did not consume
+// (the follow-up turn), within the same claimed turn, so sequentially.
+func closeOnce(ch chan struct{}) {
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -360,4 +361,164 @@ func TestRouter_HandleImageAttachmentReachesRunner(t *testing.T) {
 	assert.Equal(t, agent.ContentImage, runner.seen[1].Kind)
 	require.NotNil(t, runner.seen[1].Image)
 	assert.Equal(t, "whatsapp", runner.seen[1].Image.Source, "transport name must attribute the image")
+}
+
+// TestRouter_IdleSessionRotates pins the stale-thread guard: a message
+// arriving after SessionIdleTimeout lands in a fresh session (so "yes"
+// cannot approve a days-old question), the reply names the previous
+// session, and /resume can still reach it.
+func TestRouter_IdleSessionRotates(t *testing.T) {
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{SessionIdleTimeout: time.Hour})
+	ctx := context.Background()
+
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "want the rating?"})
+	require.NoError(t, err)
+	oldID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // asserted below via store
+	require.NotEmpty(t, oldID)
+
+	// Within the window: same session, no notice.
+	r.now = func() time.Time { return time.Now().Add(59 * time.Minute) }
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "still here"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply)
+	sameID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // equality is the assertion
+	assert.Equal(t, oldID, sameID)
+
+	// Past the window: fresh session, notice names the old one.
+	r.now = func() time.Time { return time.Now().Add(3 * time.Hour) }
+	reply, err = r.Handle(ctx, IncomingMessage{From: "x", Body: "yes"})
+	require.NoError(t, err)
+	newID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // inequality is the assertion
+	assert.NotEqual(t, oldID, newID)
+	assert.Contains(t, reply, "/resume "+shortSessionID(oldID))
+	assert.True(t, strings.HasSuffix(reply, "ok"), reply)
+	fresh := store.sessions[newID].Messages
+	require.NotEmpty(t, fresh)
+	assert.Equal(t, "yes", fresh[0].Content[0].Text, "fresh session starts at the new message, not the stale thread")
+	assert.Contains(t, store.sessions, oldID, "previous session is kept for /resume")
+}
+
+func TestRouter_IdleRotationDisabledByZero(t *testing.T) {
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{})
+	ctx := context.Background()
+
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "a"})
+	require.NoError(t, err)
+	r.now = func() time.Time { return time.Now().Add(30 * 24 * time.Hour) }
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "b"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply)
+	assert.Len(t, store.sessions, 1)
+}
+
+// TestRouter_ResumeOfIdleSessionSticks pins that /resume counts as
+// activity: resuming a session older than SessionIdleTimeout must not
+// rotate away on the very next message (the notice would otherwise
+// point at a /resume that can never stick).
+func TestRouter_ResumeOfIdleSessionSticks(t *testing.T) {
+	store := newMemStore()
+	jid := newMemJID()
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, store, jid, silentLogger(), RouterOptions{SessionIdleTimeout: time.Hour})
+	ctx := context.Background()
+
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "old thread"})
+	require.NoError(t, err)
+	oldID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // asserted via equality below
+
+	r.now = func() time.Time { return time.Now().Add(3 * time.Hour) }
+	_, err = r.Handle(ctx, IncomingMessage{From: "x", Body: "new topic"}) // rotates
+	require.NoError(t, err)
+
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "/resume " + shortSessionID(oldID)})
+	require.NoError(t, err)
+	require.Contains(t, reply, "resumed session")
+
+	reply, err = r.Handle(ctx, IncomingMessage{From: "x", Body: "continue"})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", reply, "no rotation notice right after /resume")
+	gotID, _, _ := jid.Get(ctx, "x") //nolint:errcheck // equality is the assertion
+	assert.Equal(t, oldID, gotID)
+}
+
+func TestRouter_AllowedAndSSOEnabled(t *testing.T) {
+	r := NewRouter(&stubRunner{}, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{Allowlist: []string{"a"}})
+	assert.True(t, r.Allowed(context.Background(), "a"))
+	assert.False(t, r.Allowed(context.Background(), "b"))
+	assert.False(t, r.SSOEnabled(), "no SSO directory configured")
+}
+
+// TestRouter_SaveForksProviderHistory pins that /save hands the
+// provider the (source, snapshot) ids so providers that keep their own
+// history (claudecli) can copy it; a failure is reported, not hidden.
+func TestRouter_SaveForksProviderHistory(t *testing.T) {
+	var gotFrom, gotTo string
+	r := NewRouter(&stubRunner{reply: agent.NewAssistantText("ok")}, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{ForkSession: func(_ context.Context, from, to string) error {
+			gotFrom, gotTo = from, to
+			return nil
+		}})
+	ctx := context.Background()
+	_, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "hello"})
+	require.NoError(t, err)
+	current, _, _ := r.jidMap.Get(ctx, "x") //nolint:errcheck // equality is the assertion
+
+	reply, err := r.Handle(ctx, IncomingMessage{From: "x", Body: "/save mine"})
+	require.NoError(t, err)
+	assert.Equal(t, current, gotFrom)
+	assert.NotEmpty(t, gotTo)
+	assert.NotEqual(t, gotFrom, gotTo)
+	assert.Contains(t, reply, shortSessionID(gotTo))
+
+	r2 := NewRouter(&stubRunner{reply: agent.NewAssistantText("ok")}, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{ForkSession: func(context.Context, string, string) error { return errors.New("disk full") }})
+	_, err = r2.Handle(ctx, IncomingMessage{From: "x", Body: "hello"})
+	require.NoError(t, err)
+	reply, err = r2.Handle(ctx, IncomingMessage{From: "x", Body: "/save"})
+	require.NoError(t, err)
+	assert.Contains(t, reply, "without the model's history")
+}
+
+type memJournal struct {
+	mu    sync.Mutex
+	begun []string
+	ended []string
+}
+
+func (m *memJournal) Begin(_ context.Context, transport, sender, body string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.begun = append(m.begun, transport+"|"+sender+"|"+body)
+	return nil
+}
+
+func (m *memJournal) End(_ context.Context, transport, sender string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ended = append(m.ended, transport+"|"+sender)
+	return nil
+}
+
+// TestRouter_JournalsAgentTurns pins the interrupted-turn record: an
+// agent turn is journalled before it runs and cleared after, so a
+// restart in between can be reported to the sender. Synchronous
+// commands are not journalled.
+func TestRouter_JournalsAgentTurns(t *testing.T) {
+	j := &memJournal{}
+	runner := &stubRunner{reply: agent.NewAssistantText("ok")}
+	r := NewRouter(runner, newMemStore(), newMemJID(), silentLogger(),
+		RouterOptions{Transport: "whatsapp", TurnJournal: j})
+	_, err := r.Handle(context.Background(), IncomingMessage{From: "a", Body: "deploy staging"})
+	require.NoError(t, err)
+	_, err = r.Handle(context.Background(), IncomingMessage{From: "a", Body: "/version"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"whatsapp|a|deploy staging"}, j.begun)
+	assert.Equal(t, []string{"whatsapp|a"}, j.ended)
 }

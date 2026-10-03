@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -34,7 +36,9 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			"numbers using unofficial clients — do not run this on a number you rely on.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			setUnattendedPermissionDefault(opts, "whatsapp")
+			if err := requirePermissionMode(opts, "whatsapp"); err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 
 			if len(allowlist) == 0 {
@@ -47,11 +51,14 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				}
 			}
 
+			if err := requireSenderPolicy("whatsapp", allowlist, opts.AllowAnyone); err != nil {
+				return err
+			}
 			wiring, err := assembleDaemon(ctx, opts, allowlist)
 			if err != nil {
 				return err
 			}
-			defer func() { _ = wiring.Sessions.Close() }() //nolint:errcheck // best-effort cleanup
+			defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // best-effort: closes MCP clients, flushes audit (daemon.stop), then the store
 			wiring.StartBackgroundServers(ctx)
 
 			dsn, err := resolveWhatsAppDSN(storePath)
@@ -76,6 +83,10 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 				// number receive 👀 + ✅ reactions revealing that a
 				// bot watches this line.
 				Allowlist: allowlist,
+				// The router's decision (static list or SSO binding)
+				// replaces the static check, and /login can reach it.
+				IsAllowed:   wiring.SenderAllowed("whatsapp"),
+				SSOCommands: wiring.routerFor("whatsapp").SSOEnabled(),
 			}, opts.Logger)
 			if err != nil {
 				return err
@@ -89,8 +100,25 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 			}
 			defer shutdown()
 
+			startHeartbeat(ctx, opts, "whatsapp", func() (bool, bool) { return client.Connected(), true })
+			// Once linked, tell senders whose turn the last restart
+			// interrupted. Waits up to 5 minutes for the connection.
+			go func() {
+				deadline := time.Now().Add(5 * time.Minute)
+				for !client.Connected() {
+					if ctx.Err() != nil || time.Now().After(deadline) {
+						return
+					}
+					time.Sleep(time.Second)
+				}
+				notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", client.Deliver, opts.Logger)
+			}()
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
-			return client.Start(ctx, wiring.TransportHandler("whatsapp", opts.Logger))
+			err = client.Start(ctx, wiring.TransportHandler("whatsapp", opts.Logger))
+			if errors.Is(err, whatsapp.ErrNeedsOperator) {
+				return withExitCode(err, ExitNeedsOperator)
+			}
+			return err
 		},
 	}
 	cmd.Flags().StringVar(&storePath, "store", "", "path to whatsmeow device store (default: $XDG_DATA_HOME/rousseau/whatsapp.db)")
@@ -148,7 +176,7 @@ func resolveWhatsAppDSN(path string) (string, error) {
 		}
 		path = filepath.Join(home, ".local", "share", "rousseau", "whatsapp.db")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("create whatsapp store dir: %w", err)
 	}
 	// modernc.org/sqlite DSN pragmas explained in git history; see
