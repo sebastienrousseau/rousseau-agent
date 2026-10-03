@@ -125,7 +125,7 @@ the unit stopped:
 ```bash
 systemctl --user stop rousseau-agent
 migrate() {
-  podman run --rm --userns=keep-id \
+  podman run --rm --network=none --userns=keep-id \
     -v ~/.local/share/rousseau:/home/rousseau/.local/share/rousseau:Z \
     localhost/rousseau-agent:local migrate "$@"
 }
