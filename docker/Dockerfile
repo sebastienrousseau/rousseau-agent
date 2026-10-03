@@ -254,21 +254,24 @@ RUN MISE_YES=1 mise use -g python@3.12 go@1.26 rust@latest || true \
 # compile caches here (~500 MB).
 
 # Bootstrap chezmoi-managed dotfiles from the public GitHub source.
-# --apply materialises them under $HOME; --no-tty forbids stdin prompts;
-# --promptString supplies each value the dotfiles' .chezmoi.toml.tmpl
-# would otherwise ask for. Letting chezmoi generate its own config file
-# (rather than pre-seeding one) keeps the [age] / [merge] sections in
-# sync with the template's shape — otherwise it prints a "config file
-# template has changed" warning and refuses to apply.
-RUN chezmoi init --apply --no-tty --branch main \
+# --apply materialises them under $HOME; --no-tty forbids stdin prompts.
+# Without a TTY the dotfiles' config template takes its values from
+# CHEZMOI_<KEY> env vars (prompt flags are not consulted). Letting
+# chezmoi generate its own config file (rather than pre-seeding one)
+# keeps the [age] / [merge] sections in sync with the template's shape.
+#
+# No git identity is baked in: this image is published, and a baked-in
+# name/email would make every deployment commit as the maintainer.
+# Operators set theirs at runtime (git's GIT_CONFIG_COUNT/KEY/VALUE env
+# vars; see docker/README.md "Git identity"). Until then git refuses to
+# commit rather than committing as a placeholder.
+RUN CHEZMOI_PROFILE=container \
+    CHEZMOI_THEME=tokyonight-night \
+    CHEZMOI_GIT_SIGNINGKEY='~/.ssh/id_ed25519' \
+    CHEZMOI_GIT_SIGNINGFORMAT=ssh \
+    chezmoi init --apply --no-tty --branch main \
       --promptString age_identity= \
       --promptString age_recipient= \
-      --promptString profile=container \
-      --promptString theme=tokyonight-night \
-      --promptString git_name='Sebastien Rousseau' \
-      --promptString git_email=sebastian.rousseau@gmail.com \
-      --promptString git_signingkey=~/.ssh/id_ed25519 \
-      --promptString git_signingformat=ssh \
       sebastienrousseau \
       2>&1 | tail -30 \
  || echo "chezmoi bootstrap emitted warnings; container still usable"

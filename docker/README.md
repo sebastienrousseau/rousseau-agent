@@ -141,6 +141,30 @@ previous layout for an older image. To upgrade unattended instead, set
 `state.auto_migrate: true` (it takes the same backup and still stops on
 ambiguous senders).
 
+### Git identity
+
+The image carries no git identity, so the agent cannot commit until you
+give it one. Set it at runtime with a Quadlet drop-in (it survives image
+rebuilds), e.g. `~/.config/containers/systemd/rousseau-agent.container.d/30-git-identity.conf`:
+
+```ini
+[Container]
+Environment=GIT_CONFIG_COUNT=3
+Environment=GIT_CONFIG_KEY_0=user.name
+Environment="GIT_CONFIG_VALUE_0=Your Name"
+Environment=GIT_CONFIG_KEY_1=user.email
+Environment=GIT_CONFIG_VALUE_1=you@users.noreply.github.com
+Environment=GIT_CONFIG_KEY_2=gpg.ssh.allowedSignersFile
+Environment=GIT_CONFIG_VALUE_2=/home/rousseau/.ssh/allowed_signers
+```
+
+Commits are SSH-signed with the container's own key
+(`~/.local/share/rousseau/keys/ssh/id_ed25519` on the host). List it in
+that `allowed_signers` file under your email so the container verifies
+its own signatures (`merge.verifySignatures` is on), and add it to
+GitHub as a signing key for the "Verified" badge. Then
+`systemctl --user daemon-reload && systemctl --user restart rousseau-agent`.
+
 ## Claude Code config (container-owned)
 
 The container keeps its own Claude Code config in

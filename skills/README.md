@@ -1,6 +1,6 @@
 # Bundled skills
 
-Five starter skills shipped in the `rousseau-agent` container image at
+Four starter skills shipped in the `rousseau-agent` container image at
 `/etc/rousseau/skills/`. Every file is a Markdown document with an
 optional YAML front matter that declares:
 
