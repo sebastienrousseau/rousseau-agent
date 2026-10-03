@@ -226,8 +226,12 @@ func (t *Turn) End() {
 		close(t.resume)
 		t.resume = nil
 	}
-	t.mu.Unlock()
+	// Cancel before unlocking: a Checkpoint that runs between the two
+	// would otherwise see TurnDone with a live context and return nil,
+	// letting an ended turn carry on. cancel is a plain CancelFunc and
+	// takes no Turn lock.
 	t.cancel()
+	t.mu.Unlock()
 	t.reg.remove(t)
 }
 
