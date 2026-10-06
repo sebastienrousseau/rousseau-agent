@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // injected wraps an httptest.Server as an *http.Client so tests can
@@ -93,14 +93,14 @@ func TestComplete_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	resp, err := p.Complete(context.Background(), agent.Request{
+	resp, err := p.Complete(context.Background(), model.Request{
 		System:   "you help",
-		Messages: []agent.Message{agent.NewUserText("hello")},
+		Messages: []model.Message{model.NewUserText("hello")},
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1)
 	assert.Equal(t, "hi from vertex", resp.Message.Content[0].Text)
-	assert.Equal(t, agent.StopEndTurn, resp.StopReason)
+	assert.Equal(t, model.StopEndTurn, resp.StopReason)
 	assert.Equal(t, 8, resp.Usage.InputTokens)
 	assert.Equal(t, 4, resp.Usage.OutputTokens)
 
@@ -122,24 +122,24 @@ func TestComplete_ServerError(t *testing.T) {
 		HTTPClient: injectedClient(srv),
 	})
 	require.NoError(t, err)
-	_, err = p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err = p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 403")
 }
 
 func TestBuildVertexBody_ToolBlocks(t *testing.T) {
-	req := agent.Request{
-		Messages: []agent.Message{{
-			Role: agent.RoleAssistant, Content: []agent.Content{
-				{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	req := model.Request{
+		Messages: []model.Message{{
+			Role: model.RoleAssistant, Content: []model.Content{
+				{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 					ID: "tu-1", Name: "grep", Input: json.RawMessage(`{"pattern":"x"}`),
 				}},
 			},
 		}, {
-			Role: agent.RoleUser, Content: []agent.Content{
-				{Kind: agent.ContentToolResult, ToolResult: &agent.ToolResult{
+			Role: model.RoleUser, Content: []model.Content{
+				{Kind: model.ContentToolResult, ToolResult: &model.ToolResult{
 					ToolUseID: "tu-1", Output: "matched", IsError: false,
 				}},
 			},
@@ -153,9 +153,9 @@ func TestBuildVertexBody_ToolBlocks(t *testing.T) {
 }
 
 func TestBuildVertexBody_MalformedToolUseErrors(t *testing.T) {
-	req := agent.Request{Messages: []agent.Message{{
-		Role: agent.RoleAssistant, Content: []agent.Content{
-			{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	req := model.Request{Messages: []model.Message{{
+		Role: model.RoleAssistant, Content: []model.Content{
+			{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 				ID: "1", Name: "n", Input: json.RawMessage(`not json`),
 			}},
 		},
@@ -172,8 +172,8 @@ func TestParseVertexResponse_ToolUseInResponse(t *testing.T) {
 	resp, err := parseVertexResponse(raw)
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1)
-	assert.Equal(t, agent.ContentToolUse, resp.Message.Content[0].Kind)
-	assert.Equal(t, agent.StopToolUse, resp.StopReason)
+	assert.Equal(t, model.ContentToolUse, resp.Message.Content[0].Kind)
+	assert.Equal(t, model.StopToolUse, resp.StopReason)
 }
 
 func TestParseVertexResponse_MalformedJSON(t *testing.T) {
@@ -182,10 +182,10 @@ func TestParseVertexResponse_MalformedJSON(t *testing.T) {
 }
 
 func TestMapStop(t *testing.T) {
-	assert.Equal(t, agent.StopEndTurn, mapStop("end_turn"))
-	assert.Equal(t, agent.StopToolUse, mapStop("tool_use"))
-	assert.Equal(t, agent.StopMaxTokens, mapStop("max_tokens"))
-	assert.Equal(t, agent.StopOther, mapStop("weird"))
+	assert.Equal(t, model.StopEndTurn, mapStop("end_turn"))
+	assert.Equal(t, model.StopToolUse, mapStop("tool_use"))
+	assert.Equal(t, model.StopMaxTokens, mapStop("max_tokens"))
+	assert.Equal(t, model.StopOther, mapStop("weird"))
 }
 
 func TestTruncate(t *testing.T) {

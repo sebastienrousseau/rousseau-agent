@@ -1,4 +1,4 @@
-// Package openai implements agent.Provider on top of the
+// Package openai implements model.Provider on top of the
 // OpenAI-compatible Chat Completions API. BaseURL configuration means
 // the same code serves OpenAI, OpenRouter, together.ai, deepinfra,
 // ollama's OpenAI shim, and local LM Studio.
@@ -15,7 +15,7 @@ import (
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -45,7 +45,7 @@ type Config struct {
 	Name string
 }
 
-// Provider is an agent.Provider backed by the OpenAI Chat Completions
+// Provider is an model.Provider backed by the OpenAI Chat Completions
 // API. Streaming lives in stream.go.
 type Provider struct {
 	client sdk.Client
@@ -74,10 +74,10 @@ func New(cfg Config) (*Provider, error) {
 func (p *Provider) Name() string { return p.cfg.Name }
 
 // Complete runs a non-streaming completion via chat/completions.
-func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
+func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Response, error) {
 	msgs, err := toSDKMessages(req.System, req.Messages)
 	if err != nil {
-		return agent.Response{}, err
+		return model.Response{}, err
 	}
 	params := sdk.ChatCompletionNewParams{
 		Model:    p.cfg.Model,
@@ -91,14 +91,14 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 	}
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return agent.Response{}, fmt.Errorf("openai: complete: %w", err)
+		return model.Response{}, fmt.Errorf("openai: complete: %w", err)
 	}
 	return fromSDKResponse(resp)
 }
 
 // -- conversions -------------------------------------------------------
 
-func toSDKMessages(system string, in []agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
+func toSDKMessages(system string, in []model.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
 	out := make([]sdk.ChatCompletionMessageParamUnion, 0, len(in)+1)
 	if system != "" {
 		out = append(out, sdk.SystemMessage(system))
@@ -113,11 +113,11 @@ func toSDKMessages(system string, in []agent.Message) ([]sdk.ChatCompletionMessa
 	return out, nil
 }
 
-func toSDKMessage(m agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
+func toSDKMessage(m model.Message) ([]sdk.ChatCompletionMessageParamUnion, error) {
 	switch m.Role {
-	case agent.RoleUser:
+	case model.RoleUser:
 		return []sdk.ChatCompletionMessageParamUnion{userMessage(m.Content)}, nil
-	case agent.RoleAssistant:
+	case model.RoleAssistant:
 		text := collectText(m.Content)
 		toolCalls := collectToolUses(m.Content)
 		if len(toolCalls) == 0 {
@@ -134,7 +134,7 @@ func toSDKMessage(m agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error
 		return []sdk.ChatCompletionMessageParamUnion{
 			{OfAssistant: &msg},
 		}, nil
-	case agent.RoleSystem:
+	case model.RoleSystem:
 		return []sdk.ChatCompletionMessageParamUnion{
 			sdk.SystemMessage(collectText(m.Content)),
 		}, nil
@@ -142,7 +142,7 @@ func toSDKMessage(m agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error
 	// Tool results — one message per tool_result block.
 	var out []sdk.ChatCompletionMessageParamUnion
 	for _, c := range m.Content {
-		if c.Kind == agent.ContentToolResult && c.ToolResult != nil {
+		if c.Kind == model.ContentToolResult && c.ToolResult != nil {
 			out = append(out, sdk.ToolMessage(c.ToolResult.Output, c.ToolResult.ToolUseID))
 		}
 	}
@@ -157,11 +157,11 @@ func toSDKMessage(m agent.Message) ([]sdk.ChatCompletionMessageParamUnion, error
 // (text + image_url parts); otherwise a plain string message is
 // returned for compatibility with older OpenAI-compatible endpoints
 // that don't support the parts shape.
-func userMessage(cs []agent.Content) sdk.ChatCompletionMessageParamUnion {
+func userMessage(cs []model.Content) sdk.ChatCompletionMessageParamUnion {
 	// Fast path: no images → plain string content.
 	hasImage := false
 	for _, c := range cs {
-		if c.Kind == agent.ContentImage {
+		if c.Kind == model.ContentImage {
 			hasImage = true
 			break
 		}
@@ -173,11 +173,11 @@ func userMessage(cs []agent.Content) sdk.ChatCompletionMessageParamUnion {
 	parts := make([]sdk.ChatCompletionContentPartUnionParam, 0, len(cs))
 	for _, c := range cs {
 		switch c.Kind {
-		case agent.ContentText:
+		case model.ContentText:
 			if c.Text != "" {
 				parts = append(parts, sdk.TextContentPart(c.Text))
 			}
-		case agent.ContentImage:
+		case model.ContentImage:
 			if c.Image == nil {
 				continue
 			}
@@ -190,10 +190,10 @@ func userMessage(cs []agent.Content) sdk.ChatCompletionMessageParamUnion {
 	return sdk.UserMessage(parts)
 }
 
-func collectText(cs []agent.Content) string {
+func collectText(cs []model.Content) string {
 	var s string
 	for _, c := range cs {
-		if c.Kind == agent.ContentText && c.Text != "" {
+		if c.Kind == model.ContentText && c.Text != "" {
 			if s != "" {
 				s += "\n"
 			}
@@ -203,10 +203,10 @@ func collectText(cs []agent.Content) string {
 	return s
 }
 
-func collectToolUses(cs []agent.Content) []sdk.ChatCompletionMessageToolCallParam {
+func collectToolUses(cs []model.Content) []sdk.ChatCompletionMessageToolCallParam {
 	var out []sdk.ChatCompletionMessageToolCallParam
 	for _, c := range cs {
-		if c.Kind != agent.ContentToolUse || c.ToolUse == nil {
+		if c.Kind != model.ContentToolUse || c.ToolUse == nil {
 			continue
 		}
 		out = append(out, sdk.ChatCompletionMessageToolCallParam{
@@ -234,22 +234,22 @@ func toSDKTools(in []tools.Definition) []sdk.ChatCompletionToolParam {
 	return out
 }
 
-func fromSDKResponse(resp *sdk.ChatCompletion) (agent.Response, error) {
+func fromSDKResponse(resp *sdk.ChatCompletion) (model.Response, error) {
 	if resp == nil || len(resp.Choices) == 0 {
-		return agent.Response{}, errors.New("openai: empty response")
+		return model.Response{}, errors.New("openai: empty response")
 	}
 	choice := resp.Choices[0]
 	msg := choice.Message
 
-	blocks := make([]agent.Content, 0, 1+len(msg.ToolCalls))
+	blocks := make([]model.Content, 0, 1+len(msg.ToolCalls))
 	if msg.Content != "" {
-		blocks = append(blocks, agent.Content{Kind: agent.ContentText, Text: msg.Content})
+		blocks = append(blocks, model.Content{Kind: model.ContentText, Text: msg.Content})
 	}
 	for _, tc := range msg.ToolCalls {
 		fn := tc.Function
-		blocks = append(blocks, agent.Content{
-			Kind: agent.ContentToolUse,
-			ToolUse: &agent.ToolUse{
+		blocks = append(blocks, model.Content{
+			Kind: model.ContentToolUse,
+			ToolUse: &model.ToolUse{
 				ID:    tc.ID,
 				Name:  fn.Name,
 				Input: json.RawMessage(fn.Arguments),
@@ -257,28 +257,28 @@ func fromSDKResponse(resp *sdk.ChatCompletion) (agent.Response, error) {
 		})
 	}
 
-	return agent.Response{
-		Message: agent.Message{
-			Role:    agent.RoleAssistant,
+	return model.Response{
+		Message: model.Message{
+			Role:    model.RoleAssistant,
 			Content: blocks,
 		},
 		StopReason: mapFinishReason(choice.FinishReason),
-		Usage: agent.Usage{
+		Usage: model.Usage{
 			InputTokens:  int(resp.Usage.PromptTokens),
 			OutputTokens: int(resp.Usage.CompletionTokens),
 		},
 	}, nil
 }
 
-func mapFinishReason(s string) agent.StopReason {
+func mapFinishReason(s string) model.StopReason {
 	switch s {
 	case "stop":
-		return agent.StopEndTurn
+		return model.StopEndTurn
 	case "tool_calls":
-		return agent.StopToolUse
+		return model.StopToolUse
 	case "length":
-		return agent.StopMaxTokens
+		return model.StopMaxTokens
 	default:
-		return agent.StopOther
+		return model.StopOther
 	}
 }

@@ -7,12 +7,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 func TestToVertexContent_Image(t *testing.T) {
 	raw := []byte{0x89, 0x50, 0x4E, 0x47}
-	msg := agent.NewUserImage("image/png", raw, "test")
+	msg := model.NewUserImage("image/png", raw, "test")
 	blocks, err := toVertexContent(msg.Content)
 	require.NoError(t, err)
 	require.Len(t, blocks, 1)
@@ -26,6 +26,6 @@ func TestToVertexContent_Image(t *testing.T) {
 }
 
 func TestToVertexContent_NilImageRejected(t *testing.T) {
-	_, err := toVertexContent([]agent.Content{{Kind: agent.ContentImage}})
+	_, err := toVertexContent([]model.Content{{Kind: model.ContentImage}})
 	assert.ErrorContains(t, err, "image content missing payload")
 }

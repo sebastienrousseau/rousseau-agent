@@ -10,7 +10,7 @@ import (
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // hasCacheMarker checks whether a marshaled MessageParam mentions
@@ -24,17 +24,17 @@ func hasCacheMarker(t *testing.T, m sdk.MessageParam) bool {
 }
 
 func TestApplyCacheMarkers_ZeroIsNoOp(t *testing.T) {
-	msgs, err := toSDKMessages([]agent.Message{agent.NewUserText("hello")})
+	msgs, err := toSDKMessages([]model.Message{model.NewUserText("hello")})
 	require.NoError(t, err)
 	applyCacheMarkers(msgs, 0)
 	assert.False(t, hasCacheMarker(t, msgs[0]))
 }
 
 func TestApplyCacheMarkers_MarksLastN(t *testing.T) {
-	msgs, err := toSDKMessages([]agent.Message{
-		agent.NewUserText("one"),
-		agent.NewAssistantText("two"),
-		agent.NewUserText("three"),
+	msgs, err := toSDKMessages([]model.Message{
+		model.NewUserText("one"),
+		model.NewAssistantText("two"),
+		model.NewUserText("three"),
 	})
 	require.NoError(t, err)
 	require.Len(t, msgs, 3)
@@ -47,7 +47,7 @@ func TestApplyCacheMarkers_MarksLastN(t *testing.T) {
 }
 
 func TestApplyCacheMarkers_CapsAtLength(t *testing.T) {
-	msgs, err := toSDKMessages([]agent.Message{agent.NewUserText("hi")})
+	msgs, err := toSDKMessages([]model.Message{model.NewUserText("hi")})
 	require.NoError(t, err)
 	assert.NotPanics(t, func() { applyCacheMarkers(msgs, 1000) })
 	assert.True(t, hasCacheMarker(t, msgs[0]))

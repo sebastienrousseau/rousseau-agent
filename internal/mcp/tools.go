@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
@@ -18,7 +18,7 @@ import (
 type SessionsBackend interface {
 	Search(ctx context.Context, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error)
 	List(ctx context.Context, limit int) ([]state.Summary, error)
-	Load(ctx context.Context, id string) (*agent.Session, error)
+	Load(ctx context.Context, id string) (*model.Session, error)
 	CronList(ctx context.Context) ([]sqlitestore.CronJob, error)
 }
 
@@ -29,7 +29,7 @@ type SessionsBackend interface {
 type SessionsSource interface {
 	Search(ctx context.Context, query string, opts sqlitestore.SearchOptions) ([]sqlitestore.SearchHit, error)
 	List(ctx context.Context, limit int) ([]state.Summary, error)
-	Load(ctx context.Context, id string) (*agent.Session, error)
+	Load(ctx context.Context, id string) (*model.Session, error)
 }
 
 // CronSource is the minimum surface StoreBackend needs from a
@@ -83,7 +83,7 @@ func (b *storeBackend) List(ctx context.Context, limit int) ([]state.Summary, er
 }
 
 // Load satisfies SessionsBackend.
-func (b *storeBackend) Load(ctx context.Context, id string) (*agent.Session, error) {
+func (b *storeBackend) Load(ctx context.Context, id string) (*model.Session, error) {
 	return b.sessions.Load(ctx, id)
 }
 

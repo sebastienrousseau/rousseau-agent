@@ -8,11 +8,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 func TestUserMessage_TextOnlyIsPlainString(t *testing.T) {
-	m := userMessage([]agent.Content{{Kind: agent.ContentText, Text: "hi"}})
+	m := userMessage([]model.Content{{Kind: model.ContentText, Text: "hi"}})
 	// Serialise and confirm the shape is the string variant.
 	raw, err := json.Marshal(m)
 	require.NoError(t, err)
@@ -20,9 +20,9 @@ func TestUserMessage_TextOnlyIsPlainString(t *testing.T) {
 }
 
 func TestUserMessage_WithImageEmitsParts(t *testing.T) {
-	m := userMessage([]agent.Content{
-		{Kind: agent.ContentText, Text: "what's this"},
-		{Kind: agent.ContentImage, Image: &agent.Image{
+	m := userMessage([]model.Content{
+		{Kind: model.ContentText, Text: "what's this"},
+		{Kind: model.ContentImage, Image: &model.Image{
 			MediaType: "image/png",
 			Data:      []byte{0x89, 0x50, 0x4E, 0x47},
 			Source:    "whatsapp",
@@ -37,8 +37,8 @@ func TestUserMessage_WithImageEmitsParts(t *testing.T) {
 }
 
 func TestUserMessage_ImageOnlyStillEmitsParts(t *testing.T) {
-	m := userMessage([]agent.Content{
-		{Kind: agent.ContentImage, Image: &agent.Image{
+	m := userMessage([]model.Content{
+		{Kind: model.ContentImage, Image: &model.Image{
 			MediaType: "image/jpeg", Data: []byte{0xFF, 0xD8},
 		}},
 	})

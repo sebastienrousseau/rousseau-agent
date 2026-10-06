@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // openCostStore opens a SessionCostStore against the CI/dev
@@ -58,7 +58,7 @@ func TestIntegration_SessionCosts_RecordAndSum(t *testing.T) {
 		SessionID: "s1",
 		Provider:  "anthropic",
 		Model:     "claude-sonnet-4-6",
-		Usage: agent.Usage{
+		Usage: model.Usage{
 			InputTokens:              1000,
 			OutputTokens:             500,
 			CacheReadInputTokens:     2000,
@@ -70,7 +70,7 @@ func TestIntegration_SessionCosts_RecordAndSum(t *testing.T) {
 		SessionID: "s1",
 		Provider:  "anthropic",
 		Model:     "claude-sonnet-4-6",
-		Usage:     agent.Usage{InputTokens: 500, OutputTokens: 200},
+		Usage:     model.Usage{InputTokens: 500, OutputTokens: 200},
 		CostUSD:   0.005,
 	}))
 

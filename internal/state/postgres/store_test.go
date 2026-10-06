@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 )
 
@@ -72,8 +72,8 @@ func TestIntegration_SaveLoadRoundtrip(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	s := agent.NewSession("first")
-	s.Append(agent.NewUserText("hello"))
+	s := model.NewSession("first")
+	s.Append(model.NewUserText("hello"))
 
 	require.NoError(t, store.Save(ctx, s))
 
@@ -96,7 +96,7 @@ func TestIntegration_ListOrdersNewestFirst(t *testing.T) {
 	ctx := context.Background()
 
 	for _, title := range []string{"a", "b", "c"} {
-		s := agent.NewSession(title)
+		s := model.NewSession(title)
 		require.NoError(t, store.Save(ctx, s))
 	}
 	sums, err := store.List(ctx, 0)
@@ -111,7 +111,7 @@ func TestIntegration_ListRespectsLimit(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 	for i := 0; i < 5; i++ {
-		require.NoError(t, store.Save(ctx, agent.NewSession("s")))
+		require.NoError(t, store.Save(ctx, model.NewSession("s")))
 	}
 	sums, err := store.List(ctx, 2)
 	require.NoError(t, err)
@@ -134,12 +134,12 @@ func TestIntegration_UpsertReplacesRow(t *testing.T) {
 	store := openTest(t)
 	ctx := context.Background()
 
-	s := agent.NewSession("v1")
-	s.Append(agent.NewUserText("first"))
+	s := model.NewSession("v1")
+	s.Append(model.NewUserText("first"))
 	require.NoError(t, store.Save(ctx, s))
 
 	s.Title = "v2"
-	s.Append(agent.NewUserText("second"))
+	s.Append(model.NewUserText("second"))
 	require.NoError(t, store.Save(ctx, s))
 
 	got, err := store.Load(ctx, s.ID)
@@ -162,7 +162,7 @@ func TestIntegration_ConcurrentWritesDoNotDeadlock(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			s := agent.NewSession("concurrent")
+			s := model.NewSession("concurrent")
 			if err := store.Save(ctx, s); err != nil {
 				errs <- err
 			}

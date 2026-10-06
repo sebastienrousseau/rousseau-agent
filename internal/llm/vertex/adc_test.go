@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // isolateCloudEnv points every ambient Google-credential lookup at a
@@ -121,8 +121,8 @@ func TestComplete_ResponseBodyReadError(t *testing.T) {
 		cfg:  Config{MaxTokens: 64},
 		url:  "https://us-central1-aiplatform.googleapis.com/v1/x:rawPredict",
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vertex: read")
@@ -140,10 +140,10 @@ func TestComplete_BodyBuildErrorShortCircuits(t *testing.T) {
 		cfg: Config{MaxTokens: 64},
 		url: "https://example.invalid/x:rawPredict",
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{{
-			Role:    agent.RoleUser,
-			Content: []agent.Content{{Kind: agent.ContentKind("hologram")}},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{{
+			Role:    model.RoleUser,
+			Content: []model.Content{{Kind: model.ContentKind("hologram")}},
 		}},
 	})
 	require.Error(t, err)
@@ -166,8 +166,8 @@ func TestComplete_InvalidURLFailsRequestBuild(t *testing.T) {
 		cfg: Config{MaxTokens: 64},
 		url: "https://example.invalid/\x7f:rawPredict",
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "vertex: build request")
@@ -177,13 +177,13 @@ func TestComplete_InvalidURLFailsRequestBuild(t *testing.T) {
 // the history are hoisted out of the messages array (Vertex takes the
 // system prompt as a top-level field, not a message).
 func TestBuildVertexBody_DropsSystemRoleMessages(t *testing.T) {
-	raw, err := buildVertexBody(agent.Request{
+	raw, err := buildVertexBody(model.Request{
 		System: "top-level system",
-		Messages: []agent.Message{
-			{Role: agent.RoleSystem, Content: []agent.Content{
-				{Kind: agent.ContentText, Text: "inline system that must be dropped"},
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: []model.Content{
+				{Kind: model.ContentText, Text: "inline system that must be dropped"},
 			}},
-			agent.NewUserText("hello"),
+			model.NewUserText("hello"),
 		},
 	}, 128)
 	require.NoError(t, err)

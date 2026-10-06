@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // Encoded is a message as stored: its JSON, the hash of that JSON, and
@@ -23,7 +23,7 @@ type Encoded struct {
 }
 
 // Encode marshals m and hashes the bytes.
-func Encode(m agent.Message) (Encoded, error) {
+func Encode(m model.Message) (Encoded, error) {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return Encoded{}, fmt.Errorf("marshal message: %w", err)
@@ -33,7 +33,7 @@ func Encode(m agent.Message) (Encoded, error) {
 }
 
 // EncodeAll encodes every message of a conversation.
-func EncodeAll(msgs []agent.Message) ([]Encoded, error) {
+func EncodeAll(msgs []model.Message) ([]Encoded, error) {
 	out := make([]Encoded, len(msgs))
 	for i, m := range msgs {
 		e, err := Encode(m)
@@ -47,10 +47,10 @@ func EncodeAll(msgs []agent.Message) ([]Encoded, error) {
 
 // Text is the text of a message's text blocks, one per line; JSON keys
 // and image bytes are deliberately left out of the index.
-func Text(m agent.Message) string {
+func Text(m model.Message) string {
 	var b strings.Builder
 	for _, c := range m.Content {
-		if c.Kind == agent.ContentText && c.Text != "" {
+		if c.Kind == model.ContentText && c.Text != "" {
 			b.WriteString(c.Text)
 			b.WriteByte('\n')
 		}

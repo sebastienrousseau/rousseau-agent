@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	sqlitesearch "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
@@ -122,7 +122,7 @@ LIMIT $2
 // Handy for CLI commands that render a picker. Matches the
 // SQLite driver's helper so `rousseau session list` can talk
 // to either driver.
-func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*agent.Session, error) {
+func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*model.Session, error) {
 	if limit == 0 {
 		limit = 10
 	}
@@ -130,7 +130,7 @@ func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*agent.Session
 	if err != nil {
 		return nil, fmt.Errorf("postgres: recent: %w", err)
 	}
-	out := make([]*agent.Session, 0, len(sums))
+	out := make([]*model.Session, 0, len(sums))
 	for _, sum := range sums {
 		sess, err := s.Load(ctx, sum.ID)
 		if err != nil {

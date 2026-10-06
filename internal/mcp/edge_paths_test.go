@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
@@ -37,7 +37,7 @@ func (e *errBackend) Search(context.Context, string, sqlitestore.SearchOptions) 
 	return nil, nil
 }
 func (e *errBackend) List(context.Context, int) ([]state.Summary, error) { return nil, e.listErr }
-func (e *errBackend) Load(context.Context, string) (*agent.Session, error) {
+func (e *errBackend) Load(context.Context, string) (*model.Session, error) {
 	return nil, errors.New("unused")
 }
 func (e *errBackend) CronList(context.Context) ([]sqlitestore.CronJob, error) {

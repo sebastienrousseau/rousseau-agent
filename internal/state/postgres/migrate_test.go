@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // v1Schema is the Postgres session store as v0.0.12 leaves it.
@@ -52,7 +52,7 @@ func isolatedDSN(t *testing.T) string {
 	return base + sep + "search_path=" + schemaName
 }
 
-func writePGV1(t *testing.T, dsn string, senders ...string) map[string]*agent.Session {
+func writePGV1(t *testing.T, dsn string, senders ...string) map[string]*model.Session {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)
 	require.NoError(t, err)
@@ -60,17 +60,17 @@ func writePGV1(t *testing.T, dsn string, senders ...string) map[string]*agent.Se
 	ctx := context.Background()
 	_, err = db.ExecContext(ctx, v1Schema)
 	require.NoError(t, err)
-	out := map[string]*agent.Session{}
+	out := map[string]*model.Session{}
 	at := time.Date(2026, 9, 1, 12, 0, 0, 123456000, time.UTC)
 	// An empty session, as v1 stored one ("messages":null).
 	_, err = db.ExecContext(ctx, `INSERT INTO sessions (id, title, payload, message_count, created_at, updated_at)
 VALUES ('empty', 'empty', '{"id":"empty","title":"empty","messages":null}', 0, now(), now())`)
 	require.NoError(t, err)
 	for i, sender := range senders {
-		sess := &agent.Session{ID: fmt.Sprintf("s%d", i), Title: "chat " + sender, Sender: sender, CreatedAt: at, UpdatedAt: at}
-		sess.Messages = []agent.Message{
-			{Role: agent.RoleUser, CreatedAt: at, Content: []agent.Content{{Kind: agent.ContentText, Text: "helm chart for " + sender}}},
-			{Role: agent.RoleAssistant, CreatedAt: at, Content: []agent.Content{{Kind: agent.ContentText, Text: "bump it"}}},
+		sess := &model.Session{ID: fmt.Sprintf("s%d", i), Title: "chat " + sender, Sender: sender, CreatedAt: at, UpdatedAt: at}
+		sess.Messages = []model.Message{
+			{Role: model.RoleUser, CreatedAt: at, Content: []model.Content{{Kind: model.ContentText, Text: "helm chart for " + sender}}},
+			{Role: model.RoleAssistant, CreatedAt: at, Content: []model.Content{{Kind: model.ContentText, Text: "bump it"}}},
 		}
 		payload, err := json.Marshal(sess)
 		require.NoError(t, err)
@@ -133,9 +133,9 @@ func TestPGMigrate_V1ToV2AndBack(t *testing.T) {
 	sess := want["s0"]
 	got, err := s.Load(ctx, sess.ID)
 	require.NoError(t, err)
-	got.Messages = append([]agent.Message{agent.NewUserText("[summary]")}, got.Messages[1:]...)
+	got.Messages = append([]model.Message{model.NewUserText("[summary]")}, got.Messages[1:]...)
 	require.NoError(t, s.Save(ctx, got), "a compressor rewrite after migration")
-	got.Append(agent.NewUserText("and now?"))
+	got.Append(model.NewUserText("and now?"))
 	require.NoError(t, s.Save(ctx, got))
 	reloaded, err := s.Load(ctx, sess.ID)
 	require.NoError(t, err)

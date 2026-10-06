@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 func TestComplete_WithSystemAndTools(t *testing.T) {
@@ -29,9 +29,9 @@ func TestComplete_WithSystemAndTools(t *testing.T) {
 		HTTPClient: injectedClient(srv),
 	})
 	require.NoError(t, err)
-	_, err = p.Complete(context.Background(), agent.Request{
+	_, err = p.Complete(context.Background(), model.Request{
 		System:   "You are careful.",
-		Messages: []agent.Message{agent.NewUserText("hello")},
+		Messages: []model.Message{model.NewUserText("hello")},
 	})
 	require.NoError(t, err)
 	var raw map[string]any
@@ -48,18 +48,18 @@ func TestComplete_HTTPBuildError(t *testing.T) {
 	// A cancelled ctx forces the request build to bail before Do.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = p.Complete(ctx, agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err = p.Complete(ctx, model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	assert.Error(t, err)
 }
 
 func TestToVertexContent_ToolBlocks(t *testing.T) {
-	cs := []agent.Content{
-		{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	cs := []model.Content{
+		{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 			ID: "t", Name: "read", Input: json.RawMessage(`{"path":"/x"}`),
 		}},
-		{Kind: agent.ContentToolResult, ToolResult: &agent.ToolResult{
+		{Kind: model.ContentToolResult, ToolResult: &model.ToolResult{
 			ToolUseID: "t", Output: "ok",
 		}},
 	}
@@ -70,9 +70,9 @@ func TestToVertexContent_ToolBlocks(t *testing.T) {
 }
 
 func TestToVertexContent_MalformedToolInput(t *testing.T) {
-	_, err := toVertexContent([]agent.Content{{
-		Kind: agent.ContentToolUse,
-		ToolUse: &agent.ToolUse{
+	_, err := toVertexContent([]model.Content{{
+		Kind: model.ContentToolUse,
+		ToolUse: &model.ToolUse{
 			ID: "t", Name: "read",
 			Input: json.RawMessage(`not json`),
 		},
@@ -81,14 +81,14 @@ func TestToVertexContent_MalformedToolInput(t *testing.T) {
 }
 
 func TestToVertexContent_MissingPayloadRejected(t *testing.T) {
-	_, err := toVertexContent([]agent.Content{{Kind: agent.ContentToolUse}})
+	_, err := toVertexContent([]model.Content{{Kind: model.ContentToolUse}})
 	assert.ErrorContains(t, err, "tool_use content")
-	_, err = toVertexContent([]agent.Content{{Kind: agent.ContentToolResult}})
+	_, err = toVertexContent([]model.Content{{Kind: model.ContentToolResult}})
 	assert.ErrorContains(t, err, "tool_result content")
 }
 
 func TestToVertexContent_UnsupportedKind(t *testing.T) {
-	_, err := toVertexContent([]agent.Content{{Kind: agent.ContentKind("mystery")}})
+	_, err := toVertexContent([]model.Content{{Kind: model.ContentKind("mystery")}})
 	assert.ErrorContains(t, err, "unsupported")
 }
 
@@ -103,8 +103,8 @@ func TestParseVertexResponse_EmptyTextSkipped(t *testing.T) {
 }
 
 func TestBuildVertexBody_DefaultMaxTokens(t *testing.T) {
-	body, err := buildVertexBody(agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	body, err := buildVertexBody(model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	}, 0)
 	require.NoError(t, err)
 	var raw map[string]any
@@ -114,8 +114,8 @@ func TestBuildVertexBody_DefaultMaxTokens(t *testing.T) {
 }
 
 func TestBuildVertexBody_ExplicitMaxTokens(t *testing.T) {
-	body, err := buildVertexBody(agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	body, err := buildVertexBody(model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	}, 512)
 	require.NoError(t, err)
 	var raw map[string]any

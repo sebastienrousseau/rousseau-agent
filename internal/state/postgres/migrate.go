@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/senderkey"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state/history"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
@@ -71,7 +71,7 @@ func Migrate(ctx context.Context, dsn string, opts MigrateOptions) (MigrateRepor
 		return rep, fmt.Errorf("postgres: migrate: %w", err)
 	}
 	if opts.DryRun {
-		err := eachPayload(ctx, db, func(_ string, sess *agent.Session) error {
+		err := eachPayload(ctx, db, func(_ string, sess *model.Session) error {
 			rep.Messages += len(sess.Messages)
 			return nil
 		})
@@ -96,7 +96,7 @@ func Migrate(ctx context.Context, dsn string, opts MigrateOptions) (MigrateRepor
 		return rep, fmt.Errorf("postgres: migrate: schema: %w", err)
 	}
 	originals := map[string][]byte{}
-	err = eachPayload(ctx, tx, func(id string, sess *agent.Session) error {
+	err = eachPayload(ctx, tx, func(id string, sess *model.Session) error {
 		orig, err := json.Marshal(nilIfEmpty(sess.Messages))
 		if err != nil {
 			return fmt.Errorf("postgres: migrate: session %s: %w", id, err)
@@ -331,7 +331,7 @@ func queryStrings(ctx context.Context, db querier, q string, args ...any) ([]str
 	return out, rows.Err()
 }
 
-func eachPayload(ctx context.Context, db querier, fn func(id string, sess *agent.Session) error) error {
+func eachPayload(ctx context.Context, db querier, fn func(id string, sess *model.Session) error) error {
 	type rec struct{ id, payload string }
 	rows, err := db.QueryContext(ctx, `SELECT id, payload FROM sessions ORDER BY id`)
 	if err != nil {
@@ -351,7 +351,7 @@ func eachPayload(ctx context.Context, db querier, fn func(id string, sess *agent
 		return fmt.Errorf("postgres: migrate: list sessions: %w", err)
 	}
 	for _, r := range recs {
-		sess := &agent.Session{}
+		sess := &model.Session{}
 		if err := json.Unmarshal([]byte(r.payload), sess); err != nil {
 			return fmt.Errorf("postgres: migrate: session %s: unreadable payload: %w", r.id, err)
 		}
@@ -364,7 +364,7 @@ func eachPayload(ctx context.Context, db querier, fn func(id string, sess *agent
 
 // nilIfEmpty makes an empty message list compare equal to a nil one:
 // v1 payloads hold either "messages":null or "messages":[].
-func nilIfEmpty(m []agent.Message) []agent.Message {
+func nilIfEmpty(m []model.Message) []model.Message {
 	if len(m) == 0 {
 		return nil
 	}

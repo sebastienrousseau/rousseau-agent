@@ -6,14 +6,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 func enc(t *testing.T, words ...string) []Encoded {
 	t.Helper()
-	var msgs []agent.Message
+	var msgs []model.Message
 	for _, w := range words {
-		msgs = append(msgs, agent.Message{Role: agent.RoleUser, Content: []agent.Content{{Kind: agent.ContentText, Text: w}}})
+		msgs = append(msgs, model.Message{Role: model.RoleUser, Content: []model.Content{{Kind: model.ContentText, Text: w}}})
 	}
 	out, err := EncodeAll(msgs)
 	require.NoError(t, err)
@@ -63,14 +63,14 @@ func TestHeadJSONAndText(t *testing.T) {
 	assert.Equal(t, "[]", HeadJSON(msgs, Alignment{}))
 	assert.Equal(t, "["+string(msgs[0].JSON)+"]", HeadJSON(msgs, Alignment{Head: 1}))
 
-	m := agent.Message{Content: []agent.Content{
-		{Kind: agent.ContentText, Text: "hello"},
-		{Kind: agent.ContentImage, Image: &agent.Image{MediaType: "image/png", Data: []byte{1}}},
-		{Kind: agent.ContentText, Text: "world"},
+	m := model.Message{Content: []model.Content{
+		{Kind: model.ContentText, Text: "hello"},
+		{Kind: model.ContentImage, Image: &model.Image{MediaType: "image/png", Data: []byte{1}}},
+		{Kind: model.ContentText, Text: "world"},
 	}}
 	assert.Equal(t, "hello\nworld\n", Text(m))
 
-	_, err := Encode(agent.Message{Content: []agent.Content{{Kind: agent.ContentToolUse,
-		ToolUse: &agent.ToolUse{Input: []byte("{bad")}}}})
+	_, err := Encode(model.Message{Content: []model.Content{{Kind: model.ContentToolUse,
+		ToolUse: &model.ToolUse{Input: []byte("{bad")}}}})
 	assert.ErrorContains(t, err, "marshal message")
 }

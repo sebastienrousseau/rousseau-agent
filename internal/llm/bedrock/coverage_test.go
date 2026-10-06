@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // fakeBedrock implements InvokeAPI for tests.
@@ -38,9 +38,9 @@ func canonicalResponse() []byte {
 func TestComplete_WithSystemPrompt(t *testing.T) {
 	fb := &fakeBedrock{respBody: canonicalResponse()}
 	p := &Provider{client: fb, cfg: Config{Region: "us-east-1", Model: "m", MaxTokens: 100}}
-	_, err := p.Complete(context.Background(), agent.Request{
+	_, err := p.Complete(context.Background(), model.Request{
 		System:   "You are careful.",
-		Messages: []agent.Message{agent.NewUserText("hello")},
+		Messages: []model.Message{model.NewUserText("hello")},
 	})
 	if err != nil {
 		assert.Contains(t, err.Error(), "AWS config")
@@ -53,8 +53,8 @@ func TestComplete_WithSystemPrompt(t *testing.T) {
 func TestComplete_UpstreamErrorSurfaces(t *testing.T) {
 	fb := &fakeBedrock{err: errors.New("throttled")}
 	p := &Provider{client: fb, cfg: Config{Region: "us-east-1", Model: "m"}}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	assert.ErrorContains(t, err, "throttled")
 }
@@ -62,19 +62,19 @@ func TestComplete_UpstreamErrorSurfaces(t *testing.T) {
 func TestComplete_MalformedResponse(t *testing.T) {
 	fb := &fakeBedrock{respBody: []byte(`not json`)}
 	p := &Provider{client: fb, cfg: Config{Region: "us-east-1", Model: "m"}}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse")
 }
 
 func TestToBedrockContent_ToolBlocks(t *testing.T) {
-	cs := []agent.Content{
-		{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	cs := []model.Content{
+		{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 			ID: "t1", Name: "read", Input: json.RawMessage(`{"path":"/x"}`),
 		}},
-		{Kind: agent.ContentToolResult, ToolResult: &agent.ToolResult{
+		{Kind: model.ContentToolResult, ToolResult: &model.ToolResult{
 			ToolUseID: "t1", Output: "ok", IsError: false,
 		}},
 	}
@@ -88,9 +88,9 @@ func TestToBedrockContent_ToolBlocks(t *testing.T) {
 }
 
 func TestToBedrockContent_MalformedToolUseInputErrors(t *testing.T) {
-	_, err := toBedrockContent([]agent.Content{{
-		Kind: agent.ContentToolUse,
-		ToolUse: &agent.ToolUse{
+	_, err := toBedrockContent([]model.Content{{
+		Kind: model.ContentToolUse,
+		ToolUse: &model.ToolUse{
 			ID: "t1", Name: "read",
 			Input: json.RawMessage(`not json`),
 		},
@@ -99,14 +99,14 @@ func TestToBedrockContent_MalformedToolUseInputErrors(t *testing.T) {
 }
 
 func TestToBedrockContent_MissingPayloadRejected(t *testing.T) {
-	_, err := toBedrockContent([]agent.Content{{Kind: agent.ContentToolUse}})
+	_, err := toBedrockContent([]model.Content{{Kind: model.ContentToolUse}})
 	assert.ErrorContains(t, err, "tool_use content")
-	_, err = toBedrockContent([]agent.Content{{Kind: agent.ContentToolResult}})
+	_, err = toBedrockContent([]model.Content{{Kind: model.ContentToolResult}})
 	assert.ErrorContains(t, err, "tool_result content")
 }
 
 func TestToBedrockContent_UnsupportedKind(t *testing.T) {
-	_, err := toBedrockContent([]agent.Content{{Kind: agent.ContentKind("mystery")}})
+	_, err := toBedrockContent([]model.Content{{Kind: model.ContentKind("mystery")}})
 	assert.ErrorContains(t, err, "unsupported")
 }
 
@@ -129,7 +129,7 @@ func TestParseBedrockResponse_ToolUseWithBadInput(t *testing.T) {
 		assert.Contains(t, err.Error(), "AWS config")
 	}
 	assert.Len(t, resp.Message.Content, 2)
-	assert.Equal(t, agent.StopToolUse, resp.StopReason)
+	assert.Equal(t, model.StopToolUse, resp.StopReason)
 }
 
 func TestParseBedrockResponse_EmptyTextSkipped(t *testing.T) {
@@ -144,12 +144,12 @@ func TestParseBedrockResponse_EmptyTextSkipped(t *testing.T) {
 }
 
 func TestMapStop_AllVariants(t *testing.T) {
-	cases := map[string]agent.StopReason{
-		"end_turn":   agent.StopEndTurn,
-		"tool_use":   agent.StopToolUse,
-		"max_tokens": agent.StopMaxTokens,
-		"unknown":    agent.StopOther,
-		"":           agent.StopOther,
+	cases := map[string]model.StopReason{
+		"end_turn":   model.StopEndTurn,
+		"tool_use":   model.StopToolUse,
+		"max_tokens": model.StopMaxTokens,
+		"unknown":    model.StopOther,
+		"":           model.StopOther,
 	}
 	for input, want := range cases {
 		assert.Equal(t, want, mapStop(input), input)

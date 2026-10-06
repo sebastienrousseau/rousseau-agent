@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -38,45 +38,45 @@ func TestName(t *testing.T) {
 }
 
 func TestMapStopReason(t *testing.T) {
-	assert.Equal(t, agent.StopEndTurn, mapStopReason("end_turn"))
-	assert.Equal(t, agent.StopToolUse, mapStopReason("tool_use"))
-	assert.Equal(t, agent.StopMaxTokens, mapStopReason("max_tokens"))
-	assert.Equal(t, agent.StopOther, mapStopReason("something_unknown"))
-	assert.Equal(t, agent.StopOther, mapStopReason(""))
+	assert.Equal(t, model.StopEndTurn, mapStopReason("end_turn"))
+	assert.Equal(t, model.StopToolUse, mapStopReason("tool_use"))
+	assert.Equal(t, model.StopMaxTokens, mapStopReason("max_tokens"))
+	assert.Equal(t, model.StopOther, mapStopReason("something_unknown"))
+	assert.Equal(t, model.StopOther, mapStopReason(""))
 }
 
 func TestToSDKMessages_SkipsSystem(t *testing.T) {
-	got, err := toSDKMessages([]agent.Message{
-		{Role: agent.RoleSystem, Content: []agent.Content{{Kind: agent.ContentText, Text: "sys"}}},
-		{Role: agent.RoleUser, Content: []agent.Content{{Kind: agent.ContentText, Text: "hi"}}},
+	got, err := toSDKMessages([]model.Message{
+		{Role: model.RoleSystem, Content: []model.Content{{Kind: model.ContentText, Text: "sys"}}},
+		{Role: model.RoleUser, Content: []model.Content{{Kind: model.ContentText, Text: "hi"}}},
 	})
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 }
 
 func TestToSDKMessages_RejectsUnknownRole(t *testing.T) {
-	_, err := toSDKMessages([]agent.Message{
-		{Role: agent.Role("weird"), Content: []agent.Content{{Kind: agent.ContentText, Text: "x"}}},
+	_, err := toSDKMessages([]model.Message{
+		{Role: model.Role("weird"), Content: []model.Content{{Kind: model.ContentText, Text: "x"}}},
 	})
 	assert.Error(t, err)
 }
 
 func TestToSDKMessages_BubblesContentError(t *testing.T) {
-	_, err := toSDKMessages([]agent.Message{
-		{Role: agent.RoleAssistant, Content: []agent.Content{
-			{Kind: agent.ContentToolUse}, // missing ToolUse payload
+	_, err := toSDKMessages([]model.Message{
+		{Role: model.RoleAssistant, Content: []model.Content{
+			{Kind: model.ContentToolUse}, // missing ToolUse payload
 		}},
 	})
 	assert.Error(t, err)
 }
 
 func TestToSDKContent_AllKinds(t *testing.T) {
-	got, err := toSDKContent([]agent.Content{
-		{Kind: agent.ContentText, Text: "hi"},
-		{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	got, err := toSDKContent([]model.Content{
+		{Kind: model.ContentText, Text: "hi"},
+		{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 			ID: "1", Name: "n", Input: json.RawMessage(`{}`),
 		}},
-		{Kind: agent.ContentToolResult, ToolResult: &agent.ToolResult{
+		{Kind: model.ContentToolResult, ToolResult: &model.ToolResult{
 			ToolUseID: "1", Output: "ok",
 		}},
 	})
@@ -85,12 +85,12 @@ func TestToSDKContent_AllKinds(t *testing.T) {
 }
 
 func TestToSDKContent_UnknownKind(t *testing.T) {
-	_, err := toSDKContent([]agent.Content{{Kind: agent.ContentKind("weird")}})
+	_, err := toSDKContent([]model.Content{{Kind: model.ContentKind("weird")}})
 	assert.Error(t, err)
 }
 
 func TestToSDKContent_ToolResultMissingPayload(t *testing.T) {
-	_, err := toSDKContent([]agent.Content{{Kind: agent.ContentToolResult}})
+	_, err := toSDKContent([]model.Content{{Kind: model.ContentToolResult}})
 	assert.Error(t, err)
 }
 

@@ -1,4 +1,4 @@
-// Package vertex implements agent.Provider on top of Google Vertex
+// Package vertex implements model.Provider on top of Google Vertex
 // AI's Anthropic-on-Vertex REST endpoint.
 //
 // Wire format is the standard Anthropic messages JSON (same as
@@ -22,7 +22,7 @@ import (
 
 	"golang.org/x/oauth2/google"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // Config configures the Vertex provider.
@@ -46,7 +46,7 @@ type Config struct {
 	HTTPClient *http.Client
 }
 
-// Provider is an agent.Provider backed by Vertex AI.
+// Provider is an model.Provider backed by Vertex AI.
 type Provider struct {
 	http *http.Client
 	cfg  Config
@@ -109,29 +109,29 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 func (*Provider) Name() string { return "vertex" }
 
 // Complete runs a non-streaming completion.
-func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
+func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Response, error) {
 	body, err := buildVertexBody(req, p.cfg.MaxTokens)
 	if err != nil {
-		return agent.Response{}, err
+		return model.Response{}, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url, bytes.NewReader(body))
 	if err != nil {
-		return agent.Response{}, fmt.Errorf("vertex: build request: %w", err)
+		return model.Response{}, fmt.Errorf("vertex: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := p.http.Do(httpReq)
 	if err != nil {
-		return agent.Response{}, fmt.Errorf("vertex: post: %w", err)
+		return model.Response{}, fmt.Errorf("vertex: post: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
-		return agent.Response{}, fmt.Errorf("vertex: read: %w", err)
+		return model.Response{}, fmt.Errorf("vertex: read: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return agent.Response{}, fmt.Errorf("vertex: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400))
+		return model.Response{}, fmt.Errorf("vertex: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400))
 	}
 	return parseVertexResponse(rb)
 }
@@ -139,10 +139,10 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 // -- wire (mirrors Bedrock's Anthropic shape, minus the
 // anthropic_version field which Vertex encodes differently) ------------
 
-func buildVertexBody(req agent.Request, maxTokens int64) ([]byte, error) {
+func buildVertexBody(req model.Request, maxTokens int64) ([]byte, error) {
 	msgs := make([]vertexMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		if m.Role == agent.RoleSystem {
+		if m.Role == model.RoleSystem {
 			continue
 		}
 		content, err := toVertexContent(m.Content)
@@ -159,13 +159,13 @@ func buildVertexBody(req agent.Request, maxTokens int64) ([]byte, error) {
 	})
 }
 
-func toVertexContent(cs []agent.Content) ([]vertexContent, error) {
+func toVertexContent(cs []model.Content) ([]vertexContent, error) {
 	out := make([]vertexContent, 0, len(cs))
 	for _, c := range cs {
 		switch c.Kind {
-		case agent.ContentText:
+		case model.ContentText:
 			out = append(out, vertexContent{Type: "text", Text: c.Text})
-		case agent.ContentImage:
+		case model.ContentImage:
 			if c.Image == nil {
 				return nil, errors.New("vertex: image content missing payload")
 			}
@@ -177,7 +177,7 @@ func toVertexContent(cs []agent.Content) ([]vertexContent, error) {
 					Data:      base64.StdEncoding.EncodeToString(c.Image.Data),
 				},
 			})
-		case agent.ContentToolUse:
+		case model.ContentToolUse:
 			if c.ToolUse == nil {
 				return nil, errors.New("vertex: tool_use content missing payload")
 			}
@@ -190,7 +190,7 @@ func toVertexContent(cs []agent.Content) ([]vertexContent, error) {
 			out = append(out, vertexContent{
 				Type: "tool_use", ID: c.ToolUse.ID, Name: c.ToolUse.Name, Input: input,
 			})
-		case agent.ContentToolResult:
+		case model.ContentToolResult:
 			if c.ToolResult == nil {
 				return nil, errors.New("vertex: tool_result content missing payload")
 			}
@@ -205,50 +205,50 @@ func toVertexContent(cs []agent.Content) ([]vertexContent, error) {
 	return out, nil
 }
 
-func parseVertexResponse(body []byte) (agent.Response, error) {
+func parseVertexResponse(body []byte) (model.Response, error) {
 	var raw vertexResponse
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return agent.Response{}, fmt.Errorf("vertex: parse: %w", err)
+		return model.Response{}, fmt.Errorf("vertex: parse: %w", err)
 	}
-	blocks := make([]agent.Content, 0, len(raw.Content))
+	blocks := make([]model.Content, 0, len(raw.Content))
 	for _, c := range raw.Content {
 		switch c.Type {
 		case "text":
 			if c.Text == "" {
 				continue
 			}
-			blocks = append(blocks, agent.Content{Kind: agent.ContentText, Text: c.Text})
+			blocks = append(blocks, model.Content{Kind: model.ContentText, Text: c.Text})
 		case "tool_use":
 			input, err := json.Marshal(c.Input)
 			if err != nil {
-				return agent.Response{}, fmt.Errorf("vertex: tool_use input: %w", err)
+				return model.Response{}, fmt.Errorf("vertex: tool_use input: %w", err)
 			}
-			blocks = append(blocks, agent.Content{
-				Kind:    agent.ContentToolUse,
-				ToolUse: &agent.ToolUse{ID: c.ID, Name: c.Name, Input: input},
+			blocks = append(blocks, model.Content{
+				Kind:    model.ContentToolUse,
+				ToolUse: &model.ToolUse{ID: c.ID, Name: c.Name, Input: input},
 			})
 		}
 	}
-	return agent.Response{
-		Message:    agent.Message{Role: agent.RoleAssistant, Content: blocks},
+	return model.Response{
+		Message:    model.Message{Role: model.RoleAssistant, Content: blocks},
 		StopReason: mapStop(raw.StopReason),
-		Usage: agent.Usage{
+		Usage: model.Usage{
 			InputTokens:  raw.Usage.InputTokens,
 			OutputTokens: raw.Usage.OutputTokens,
 		},
 	}, nil
 }
 
-func mapStop(s string) agent.StopReason {
+func mapStop(s string) model.StopReason {
 	switch s {
 	case "end_turn":
-		return agent.StopEndTurn
+		return model.StopEndTurn
 	case "tool_use":
-		return agent.StopToolUse
+		return model.StopToolUse
 	case "max_tokens":
-		return agent.StopMaxTokens
+		return model.StopMaxTokens
 	default:
-		return agent.StopOther
+		return model.StopOther
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state/history"
 )
@@ -127,7 +127,7 @@ func (s *Store) ensureVersion(ctx context.Context) error {
 // Save writes a Session, appending only the messages after the stored
 // view; a rewritten view keeps every stored row (see history.Align).
 // Concurrent saves of one session serialise on an advisory lock.
-func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
+func (s *Store) Save(ctx context.Context, sess *model.Session) error {
 	meta := *sess
 	meta.Messages = nil
 	payload, err := json.Marshal(&meta)
@@ -239,11 +239,11 @@ func storedHashes(ctx context.Context, db querier, id string) ([]int64, []string
 }
 
 // Load returns the Session identified by id, or state.ErrNotFound.
-func (s *Store) Load(ctx context.Context, id string) (*agent.Session, error) {
+func (s *Store) Load(ctx context.Context, id string) (*model.Session, error) {
 	return loadSession(ctx, s.db, id)
 }
 
-func loadSession(ctx context.Context, db querier, id string) (*agent.Session, error) {
+func loadSession(ctx context.Context, db querier, id string) (*model.Session, error) {
 	var payload, headJSON, sender string
 	var base int64
 	err := db.QueryRowContext(ctx,
@@ -254,11 +254,11 @@ func loadSession(ctx context.Context, db querier, id string) (*agent.Session, er
 	if err != nil {
 		return nil, fmt.Errorf("postgres: load session: %w", err)
 	}
-	sess := &agent.Session{}
+	sess := &model.Session{}
 	if err := json.Unmarshal([]byte(payload), sess); err != nil {
 		return nil, fmt.Errorf("postgres: unmarshal session: %w", err)
 	}
-	var msgs []agent.Message
+	var msgs []model.Message
 	if err := json.Unmarshal([]byte(headJSON), &msgs); err != nil {
 		return nil, fmt.Errorf("postgres: unmarshal head: %w", err)
 	}
@@ -273,7 +273,7 @@ func loadSession(ctx context.Context, db querier, id string) (*agent.Session, er
 		if err := rows.Scan(&raw); err != nil {
 			return nil, fmt.Errorf("postgres: scan message: %w", err)
 		}
-		var m agent.Message
+		var m model.Message
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			return nil, fmt.Errorf("postgres: unmarshal message: %w", err)
 		}

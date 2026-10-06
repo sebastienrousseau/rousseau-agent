@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // fakeProvider is a controllable Provider used to drive the breaker's
@@ -26,23 +26,23 @@ type fakeProvider struct {
 
 func (f *fakeProvider) Name() string { return f.name }
 
-func (f *fakeProvider) Complete(ctx context.Context, _ agent.Request) (agent.Response, error) {
+func (f *fakeProvider) Complete(ctx context.Context, _ model.Request) (model.Response, error) {
 	f.calls.Add(1)
 	if f.failNext.Load() > 0 {
 		f.failNext.Add(-1)
 		if f.err != nil {
-			return agent.Response{}, f.err
+			return model.Response{}, f.err
 		}
-		return agent.Response{}, errors.New("boom")
+		return model.Response{}, errors.New("boom")
 	}
-	return agent.Response{}, nil
+	return model.Response{}, nil
 }
 
 func TestBreaker_ClosedOnSuccess(t *testing.T) {
 	fp := &fakeProvider{name: "fp"}
 	b := NewBreakerProvider(fp, BreakerConfig{})
 	for i := 0; i < 10; i++ {
-		_, err := b.Complete(context.Background(), agent.Request{})
+		_, err := b.Complete(context.Background(), model.Request{})
 		assert.NoError(t, err)
 	}
 	assert.Equal(t, int64(10), fp.calls.Load())
@@ -55,12 +55,12 @@ func TestBreaker_TripsAfterConsecutiveFailures(t *testing.T) {
 
 	// First 3 calls hit the provider, then the breaker trips.
 	for i := 0; i < 5; i++ {
-		_, _ = b.Complete(context.Background(), agent.Request{}) //nolint:errcheck // exercising failure count
+		_, _ = b.Complete(context.Background(), model.Request{}) //nolint:errcheck // exercising failure count
 	}
 	// After tripping, further calls return ErrOpenState without
 	// touching the provider.
 	before := fp.calls.Load()
-	_, err := b.Complete(context.Background(), agent.Request{})
+	_, err := b.Complete(context.Background(), model.Request{})
 	assert.ErrorIs(t, err, gobreaker.ErrOpenState)
 	assert.Equal(t, before, fp.calls.Load(), "provider must not be called while Open")
 }
@@ -72,18 +72,18 @@ func TestBreaker_HalfOpenTransitionsToClosedOnSuccess(t *testing.T) {
 
 	// Trip the breaker.
 	for i := 0; i < 3; i++ {
-		_, _ = b.Complete(context.Background(), agent.Request{}) //nolint:errcheck // exercising breaker states
+		_, _ = b.Complete(context.Background(), model.Request{}) //nolint:errcheck // exercising breaker states
 	}
 	// Wait past Timeout so we enter HalfOpen on the next call.
 	time.Sleep(30 * time.Millisecond)
 
 	// The provider is now healthy (failNext is 0) — the probe succeeds
 	// and the breaker returns to Closed.
-	_, err := b.Complete(context.Background(), agent.Request{})
+	_, err := b.Complete(context.Background(), model.Request{})
 	require.NoError(t, err)
 
 	// Follow-up calls stay in Closed.
-	_, err = b.Complete(context.Background(), agent.Request{})
+	_, err = b.Complete(context.Background(), model.Request{})
 	assert.NoError(t, err)
 }
 
@@ -96,7 +96,7 @@ func TestBreaker_NonRetryableDoesNotTrip(t *testing.T) {
 	// Drive 10 non-retryable failures — the breaker must stay Closed
 	// (each attempt hits the provider).
 	for i := 0; i < 10; i++ {
-		_, err := b.Complete(context.Background(), agent.Request{})
+		_, err := b.Complete(context.Background(), model.Request{})
 		require.Error(t, err)
 	}
 	assert.Equal(t, int64(10), fp.calls.Load(), "non-retryable errors must not open the breaker")
@@ -109,7 +109,7 @@ func TestBreaker_ContextCancelDoesNotTrip(t *testing.T) {
 	b := NewBreakerProvider(fp, BreakerConfig{MaxFailures: 3})
 
 	for i := 0; i < 10; i++ {
-		_, _ = b.Complete(context.Background(), agent.Request{}) //nolint:errcheck // exercising breaker states
+		_, _ = b.Complete(context.Background(), model.Request{}) //nolint:errcheck // exercising breaker states
 	}
 	assert.Equal(t, int64(10), fp.calls.Load(), "ctx errors must not open the breaker")
 }

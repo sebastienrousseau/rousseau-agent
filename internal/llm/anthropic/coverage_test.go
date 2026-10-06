@@ -15,7 +15,7 @@ import (
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -40,10 +40,10 @@ func TestComplete_WithSystemAndCache(t *testing.T) {
 		),
 		cfg: Config{APIKey: "sk-test", Model: "claude-sonnet-4-6", MaxTokens: 4096},
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
+	_, err := p.Complete(context.Background(), model.Request{
 		System:            "You are careful.",
 		CacheableMessages: 1,
-		Messages:          []agent.Message{agent.NewUserText("hello")},
+		Messages:          []model.Message{model.NewUserText("hello")},
 	})
 	require.NoError(t, err)
 }
@@ -62,8 +62,8 @@ func TestComplete_WithToolDefinitions(t *testing.T) {
 		client: sdk.NewClient(option.WithAPIKey("k"), option.WithBaseURL(server.URL)),
 		cfg:    Config{APIKey: "k", Model: "m", MaxTokens: 100},
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("go")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("go")},
 		Tools: []tools.Definition{
 			{Name: "read", Description: "read a file", InputSchema: map[string]any{
 				"type": "object", "properties": map[string]any{"path": map[string]any{"type": "string"}},
@@ -82,8 +82,8 @@ func TestComplete_UpstreamErrorSurfaces(t *testing.T) {
 		client: sdk.NewClient(option.WithAPIKey("k"), option.WithBaseURL(server.URL)),
 		cfg:    Config{APIKey: "k", Model: "m", MaxTokens: 100},
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "complete")
@@ -92,15 +92,15 @@ func TestComplete_UpstreamErrorSurfaces(t *testing.T) {
 // TestToSDKMessages_HandlesToolBlocks drives the branches of
 // toSDKMessages that previously showed 0%.
 func TestToSDKMessages_HandlesToolBlocks(t *testing.T) {
-	msgs := []agent.Message{
-		{Role: agent.RoleAssistant, Content: []agent.Content{
-			{Kind: agent.ContentText, Text: "let me look"},
-			{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	msgs := []model.Message{
+		{Role: model.RoleAssistant, Content: []model.Content{
+			{Kind: model.ContentText, Text: "let me look"},
+			{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 				ID: "t1", Name: "read", Input: json.RawMessage(`{"path":"/x"}`),
 			}},
 		}},
-		{Role: agent.RoleUser, Content: []agent.Content{
-			{Kind: agent.ContentToolResult, ToolResult: &agent.ToolResult{
+		{Role: model.RoleUser, Content: []model.Content{
+			{Kind: model.ContentToolResult, ToolResult: &model.ToolResult{
 				ToolUseID: "t1", Output: "hello", IsError: false,
 			}},
 		}},
@@ -112,7 +112,7 @@ func TestToSDKMessages_HandlesToolBlocks(t *testing.T) {
 
 // TestToSDKContent_UnsupportedKind covers the default-error branch.
 func TestToSDKContent_UnsupportedKind(t *testing.T) {
-	_, err := toSDKContent([]agent.Content{{Kind: agent.ContentKind("mystery")}})
+	_, err := toSDKContent([]model.Content{{Kind: model.ContentKind("mystery")}})
 	assert.Error(t, err)
 }
 
@@ -132,22 +132,22 @@ func TestFromSDKResponse_MultiBlock(t *testing.T) {
 		client: sdk.NewClient(option.WithAPIKey("k"), option.WithBaseURL(server.URL)),
 		cfg:    Config{APIKey: "k", Model: "m", MaxTokens: 100},
 	}
-	resp, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("go")},
+	resp, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("go")},
 	})
 	require.NoError(t, err)
 	assert.Len(t, resp.Message.Content, 2)
-	assert.Equal(t, agent.StopToolUse, resp.StopReason)
+	assert.Equal(t, model.StopToolUse, resp.StopReason)
 }
 
 // TestMapStopReason_AllVariants pins every branch.
 func TestMapStopReason_AllVariants(t *testing.T) {
-	cases := map[string]agent.StopReason{
-		"end_turn":   agent.StopEndTurn,
-		"tool_use":   agent.StopToolUse,
-		"max_tokens": agent.StopMaxTokens,
-		"unknown":    agent.StopOther,
-		"":           agent.StopOther,
+	cases := map[string]model.StopReason{
+		"end_turn":   model.StopEndTurn,
+		"tool_use":   model.StopToolUse,
+		"max_tokens": model.StopMaxTokens,
+		"unknown":    model.StopOther,
+		"":           model.StopOther,
 	}
 	for input, want := range cases {
 		assert.Equal(t, want, mapStopReason(input), input)
@@ -181,10 +181,10 @@ func TestComplete_ConversionErrorShortCircuits(t *testing.T) {
 		client: sdk.NewClient(option.WithAPIKey("k"), option.WithBaseURL(server.URL)),
 		cfg:    Config{APIKey: "k", Model: "m", MaxTokens: 100},
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{{
-			Role:    agent.RoleUser,
-			Content: []agent.Content{{Kind: agent.ContentImage}}, // nil Image payload
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{{
+			Role:    model.RoleUser,
+			Content: []model.Content{{Kind: model.ContentImage}}, // nil Image payload
 		}},
 	})
 	require.Error(t, err)
@@ -192,7 +192,7 @@ func TestComplete_ConversionErrorShortCircuits(t *testing.T) {
 }
 
 // TestComplete_UnsupportedResponseBlockErrors covers the response-side
-// conversion failure: a `thinking` block has no agent.Content analogue,
+// conversion failure: a `thinking` block has no model.Content analogue,
 // so Complete refuses the reply rather than silently dropping it.
 func TestComplete_UnsupportedResponseBlockErrors(t *testing.T) {
 	const raw = `{"id":"m","type":"message","role":"assistant","content":[
@@ -208,8 +208,8 @@ func TestComplete_UnsupportedResponseBlockErrors(t *testing.T) {
 		client: sdk.NewClient(option.WithAPIKey("k"), option.WithBaseURL(server.URL)),
 		cfg:    Config{APIKey: "k", Model: "m", MaxTokens: 100},
 	}
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("go")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("go")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported content block")

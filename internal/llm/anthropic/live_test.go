@@ -13,7 +13,7 @@ import (
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 const completeFixture = `{
@@ -46,13 +46,13 @@ func TestComplete_MockedHTTP(t *testing.T) {
 		cfg: Config{APIKey: "sk-test", Model: "claude-sonnet-4-6", MaxTokens: 4096},
 	}
 
-	resp, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hello")},
+	resp, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hello")},
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1)
 	assert.Equal(t, "hi from anthropic", resp.Message.Content[0].Text)
-	assert.Equal(t, agent.StopEndTurn, resp.StopReason)
+	assert.Equal(t, model.StopEndTurn, resp.StopReason)
 	assert.Equal(t, 5, resp.Usage.InputTokens)
 	assert.Equal(t, 3, resp.Usage.OutputTokens)
 }
@@ -101,8 +101,8 @@ func TestStream_MockedHTTP(t *testing.T) {
 		cfg: Config{APIKey: "sk-test", Model: "claude-sonnet-4-6", MaxTokens: 4096},
 	}
 
-	events, reports, err := p.Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hello")},
+	events, reports, err := p.Stream(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hello")},
 	})
 	require.NoError(t, err)
 
@@ -111,11 +111,11 @@ func TestStream_MockedHTTP(t *testing.T) {
 	var haveResult bool
 	for e := range events {
 		switch e.Kind {
-		case agent.StreamStart:
+		case model.StreamStart:
 			haveStart = true
-		case agent.StreamTextDelta:
+		case model.StreamTextDelta:
 			deltas = append(deltas, e.Delta)
-		case agent.StreamResult:
+		case model.StreamResult:
 			haveResult = true
 		}
 	}
@@ -126,5 +126,5 @@ func TestStream_MockedHTTP(t *testing.T) {
 	assert.Equal(t, []string{"hel", "lo"}, deltas)
 	require.Len(t, report.Response.Message.Content, 1)
 	assert.Equal(t, "hello", report.Response.Message.Content[0].Text)
-	assert.Equal(t, agent.StopEndTurn, report.Response.StopReason)
+	assert.Equal(t, model.StopEndTurn, report.Response.StopReason)
 }

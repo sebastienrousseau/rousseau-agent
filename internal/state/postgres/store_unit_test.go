@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 )
 
@@ -133,8 +133,8 @@ func TestOpen_RefusesAStoreThatNeedsMigration(t *testing.T) {
 
 func TestSave_NewSessionWritesTheRowThenItsMessages(t *testing.T) {
 	store, mock := newMockStore(t)
-	sess := agent.NewSession("hello")
-	sess.Append(agent.NewUserText("hi"))
+	sess := model.NewSession("hello")
+	sess.Append(model.NewUserText("hi"))
 
 	mock.ExpectBegin()
 	mock.ExpectExec(q(`SELECT pg_advisory_xact_lock(hashtext($1))`)).WithArgs(sess.ID).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -153,7 +153,7 @@ func TestSave_NewSessionWritesTheRowThenItsMessages(t *testing.T) {
 
 func TestSave_LockError(t *testing.T) {
 	store, mock := newMockStore(t)
-	sess := agent.NewSession("hello")
+	sess := model.NewSession("hello")
 
 	mock.ExpectBegin()
 	mock.ExpectExec("pg_advisory_xact_lock").WillReturnError(errors.New("exec boom"))
@@ -171,10 +171,10 @@ const loadQuery = `SELECT payload, head, base_seq, sender FROM sessions WHERE id
 
 func TestLoad_HappyPath(t *testing.T) {
 	store, mock := newMockStore(t)
-	want := agent.NewSession("loaded")
+	want := model.NewSession("loaded")
 	payload, err := json.Marshal(want)
 	require.NoError(t, err)
-	m, err := json.Marshal(agent.NewUserText("body"))
+	m, err := json.Marshal(model.NewUserText("body"))
 	require.NoError(t, err)
 
 	mock.ExpectQuery(q(loadQuery)).
