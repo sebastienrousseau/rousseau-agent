@@ -383,7 +383,7 @@ func (c *Client) downloadFile(ctx context.Context, url string) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("slack: file GET: HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	return io.ReadAll(io.LimitReader(resp.Body, maxFileBody))
 }
 
 // Deliver sends a plain text message to a Slack channel id. Suitable
@@ -434,7 +434,7 @@ func (c *Client) post(ctx context.Context, method, token string, payload any, re
 		return fmt.Errorf("slack: %s: %w", method, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return fmt.Errorf("slack: %s: read: %w", method, err)
 	}

@@ -76,6 +76,12 @@ type Client struct {
 	logger  *slog.Logger
 	timeout time.Duration
 
+	// writeMu serialises frames onto stdin. Pipe writes are atomic
+	// only up to PIPE_BUF (4 KiB on Linux); two concurrent tool calls
+	// with larger arguments would otherwise interleave bytes and the
+	// server would reject or mis-parse both.
+	writeMu sync.Mutex
+
 	// Request/response correlation
 	nextID  atomic.Int64
 	pending sync.Map // map[int64]chan mcp.Envelope
@@ -334,6 +340,8 @@ func (c *Client) write(env mcp.Envelope) error {
 		return fmt.Errorf("mcp/client %s: marshal: %w", c.name, err)
 	}
 	blob = append(blob, '\n')
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	_, err = c.stdin.Write(blob)
 	return err
 }

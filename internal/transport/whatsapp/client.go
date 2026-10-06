@@ -80,6 +80,11 @@ type Client struct {
 	// "go f()". It stays inline by default so unit tests that build a
 	// Client directly keep their synchronous, race-free assertions.
 	dispatch func(func())
+	// inflight tracks the goroutines dispatch starts so Stop can
+	// drain them, matching the other transports: a turn that is
+	// mid-reply at SIGTERM finishes and persists instead of being
+	// cut off. Nil until Start.
+	inflight *transport.Inflight
 	// fatal carries a session-ending condition (server-side logout)
 	// from the event goroutine to Start, which returns it so the
 	// process exits non-zero and the supervisor restarts it into a
@@ -211,7 +216,8 @@ func (c *Client) Start(ctx context.Context, handler transport.Handler) error {
 	// receive goroutine, so a running turn no longer stalls delivery
 	// of the next message.
 	c.mu.Lock()
-	c.dispatch = func(f func()) { go f() }
+	c.inflight = &transport.Inflight{}
+	c.dispatch = c.inflight.Go
 	c.mu.Unlock()
 	wm.AddEventHandler(c.onEvent)
 
@@ -304,18 +310,24 @@ func (c *Client) Deliver(ctx context.Context, target, body string) error {
 	return sender.SendText(ctx, jid, PrependHeader(body, c.cfg.ReplyHeader))
 }
 
-// Stop disconnects the whatsmeow client. Safe to call multiple times.
+// Stop disconnects the whatsmeow client, drains in-flight message
+// work, then closes the progress bus. Safe to call multiple times.
+// The mutex is released before Disconnect so inbound events that
+// race the shutdown are not stalled behind network I/O.
 func (c *Client) Stop() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.stopped {
+		c.mu.Unlock()
 		return nil
 	}
 	c.stopped = true
 	c.setLinked(false)
-	if c.wm != nil {
-		c.wm.Disconnect()
+	wm, inflight := c.wm, c.inflight
+	c.mu.Unlock()
+	if wm != nil {
+		wm.Disconnect()
 	}
+	inflight.Wait()
 	c.bus.Close()
 	return nil
 }

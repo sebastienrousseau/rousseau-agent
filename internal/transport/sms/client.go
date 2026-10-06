@@ -172,7 +172,7 @@ func (c *Client) send(req *http.Request, provider string) error {
 		return fmt.Errorf("sms: %s: %w", provider, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return fmt.Errorf("sms: %s: read: %w", provider, err)
 	}

@@ -379,7 +379,7 @@ func (c *Client) call(ctx context.Context, method string, payload any, result an
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return fmt.Errorf("telegram: %s: read body: %w", method, err)
 	}
