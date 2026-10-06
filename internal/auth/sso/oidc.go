@@ -266,11 +266,8 @@ func (d *OIDCDirectory) resolveKey(ctx context.Context, kid string) (jwkKey, err
 	// schedule), but a second forced refresh within jwksMinRefresh is
 	// refused: otherwise `/login` spam with made-up kids turns every
 	// attempt into an IdP round-trip.
-	if !ok && !fetched.IsZero() { // a cold cache is a first fetch, not a forced one
-		if !d.jwksForcedAt.IsZero() && time.Since(d.jwksForcedAt) < jwksMinRefresh {
-			return jwkKey{}, fmt.Errorf("%w: kid %q not in JWKS (refresh rate-limited)", ErrTokenInvalid, kid)
-		}
-		d.jwksForcedAt = time.Now()
+	if !ok && !d.noteForcedRefresh(fetched) {
+		return jwkKey{}, fmt.Errorf("%w: kid %q not in JWKS (refresh rate-limited)", ErrTokenInvalid, kid)
 	}
 
 	if err := d.refreshJWKS(ctx); err != nil {
@@ -283,6 +280,21 @@ func (d *OIDCDirectory) resolveKey(ctx context.Context, kid string) (jwkKey, err
 		return jwkKey{}, fmt.Errorf("%w: kid %q not in JWKS", ErrTokenInvalid, kid)
 	}
 	return k, nil
+}
+
+// noteForcedRefresh records a refresh forced by an unknown kid and
+// reports whether it may proceed. A cold cache (fetched is zero) is
+// a first fetch, not a forced one, and always proceeds. Caller must
+// hold jwksFetching.
+func (d *OIDCDirectory) noteForcedRefresh(fetched time.Time) bool {
+	if fetched.IsZero() {
+		return true
+	}
+	if !d.jwksForcedAt.IsZero() && time.Since(d.jwksForcedAt) < jwksMinRefresh {
+		return false
+	}
+	d.jwksForcedAt = time.Now()
+	return true
 }
 
 // refreshJWKS discovers the JWKS URI (if needed) then fetches +
