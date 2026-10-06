@@ -153,14 +153,33 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 // Compression happens in place; long sessions keep fitting the model's
 // context without the caller having to intervene.
 func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
+	return a.run(ctx, s, completer{op: "complete", fn: a.completeOnce})
+}
+
+// completer is one provider round-trip strategy: Turn completes,
+// TurnStream streams when the provider can and completes otherwise.
+// Everything else about a turn (compression, control gates, cache
+// hints, telemetry, cost recording, the tool phase, reliability
+// samples) is shared through run and turnWithStats, so the two entry
+// points cannot drift again.
+type completer struct {
+	// op labels the provider metrics and span ("complete" / "stream").
+	op string
+	fn func(ctx context.Context, req Request, iteration int) (Response, error)
+}
+
+// run brackets the shared loop with the turn span, progress events
+// and reliability samples.
+func (a *Agent) run(ctx context.Context, s *Session, c completer) (Message, error) {
 	ctx, span := observability.StartSpan(ctx, "agent.turn",
 		attribute.String("session.id", s.ID),
-		attribute.String("provider", a.provider.Name()))
+		attribute.String("provider", a.provider.Name()),
+		attribute.String("agent.op", c.op))
 	defer span.End()
 	start := time.Now()
 	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
 	stats := &turnStats{}
-	msg, err := a.turnWithStats(ctx, s, stats)
+	msg, err := a.turnWithStats(ctx, s, stats, c)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -174,16 +193,22 @@ func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
 	return msg, err
 }
 
-// completeSpan wraps one provider round-trip in a child span so a
-// trace shows each model call with its iteration, stop reason and
-// token usage.
-func (a *Agent) completeSpan(ctx context.Context, req Request, iteration int) (Response, error) {
-	ctx, span := observability.StartSpan(ctx, "provider.complete",
+// completeOnce is the non-streaming round-trip.
+func (a *Agent) completeOnce(ctx context.Context, req Request, iteration int) (Response, error) {
+	return a.roundTrip(ctx, "provider.complete", req, iteration, func(ctx context.Context) (Response, error) {
+		return a.provider.Complete(ctx, req)
+	})
+}
+
+// roundTrip wraps one provider call in a child span so a trace shows
+// each model call with its iteration, stop reason and token usage.
+func (a *Agent) roundTrip(ctx context.Context, name string, req Request, iteration int, call func(context.Context) (Response, error)) (Response, error) {
+	ctx, span := observability.StartSpan(ctx, name,
 		attribute.String("provider", a.provider.Name()),
 		attribute.Int("agent.iteration", iteration),
 		attribute.Int("llm.messages", len(req.Messages)))
 	defer span.End()
-	resp, err := a.provider.Complete(ctx, req)
+	resp, err := call(ctx)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -390,7 +415,7 @@ func faultObservedFromError(err error) string {
 // stats may be nil — most callers pass nil; the outer Turn passes
 // a fresh struct. The nil check is per-callsite for zero
 // per-iteration overhead when accumulation is off.
-func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats) (Message, error) {
+func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats, c completer) (Message, error) {
 	if len(s.Messages) == 0 {
 		return Message{}, ErrEmptySession
 	}
@@ -433,8 +458,8 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats)
 
 		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})
 		start := time.Now()
-		resp, err := a.completeSpan(ctx, req, i+1)
-		observability.ObserveProviderLatency(a.provider.Name(), "complete", start)
+		resp, err := c.fn(ctx, req, i+1)
+		observability.ObserveProviderLatency(a.provider.Name(), c.op, start)
 		if err != nil {
 			observability.ProviderErrors.WithLabelValues(a.provider.Name(), "other").Inc()
 			return Message{}, fmt.Errorf("provider: %w", err)
