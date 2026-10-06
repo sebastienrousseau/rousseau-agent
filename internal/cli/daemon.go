@@ -3,10 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +17,6 @@ import (
 	a2aclient "github.com/sebastienrousseau/rousseau-agent/internal/a2a/client"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/approval"
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/scim"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
@@ -35,7 +37,6 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/toolgate"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
-	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -428,29 +429,8 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		}
 	}
 
-	registry := tools.NewRegistry()
-	registry.MustRegister(builtin.NewReadTool())
-	registry.MustRegister(builtin.NewWriteTool())
-	registry.MustRegister(builtin.NewEditTool())
-	registry.MustRegister(builtin.NewGrepTool(0, 0))
-	bash, err := buildBashTool(opts.Config.Tools.Bash)
+	registry, err := buildDaemonToolRegistry(opts)
 	if err != nil {
-		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
-		return nil, fmt.Errorf("cli: build bash tool: %w", err)
-	}
-	registry.MustRegister(bash)
-	// spawn_subagent exposes the sub-agent parallelism primitive
-	// (subagent.Spawn) to the model. Zero-value Policy uses the
-	// defaults documented on subagent.Policy (MaxConcurrent=4,
-	// PerTaskTimeout=5m, no aggregate token budget). Operators wanting
-	// tighter limits can pass a non-zero Policy here.
-	registry.MustRegister(builtin.NewSpawnSubagentTool(subagent.Policy{}))
-
-	// Register every enabled tool-integration suite. Each suite is
-	// opt-in via the integrations block in the config; a nil
-	// integrations config leaves the registry unchanged.
-	intCfg := integrationsFromConfig(cfg)
-	if err := integrations.RegisterAll(registry, intCfg, opts.Logger); err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
@@ -486,6 +466,10 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// the same checker (a single load means one consistent
 	// tier picture regardless of which entry point is used).
 	checker := license.Load(license.Source{}, opts.Logger)
+	// Publish licence state so an expiry that silently drops SSO,
+	// audit egress and governance to the core tier is alertable.
+	licInfo := checker.Info()
+	observability.ObserveLicense(licInfo.Valid, licInfo.ExpiresAt)
 
 	approver, err := buildApprover(cfg.Agent.Approver)
 	if err != nil {
@@ -526,7 +510,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// Its schema-apply is idempotent so a subsequent restart
 	// without chained=true leaves the row untouched (harmless).
 	var chainStore audit_egress.ChainStore
-	if cfg.Observability.AuditEgress.Chained {
+	if cfg.Observability.AuditEgress.Chained && cfg.Observability.AuditEgress.Kind != "" {
 		cs, csErr := openAuditChainState(ctx, concrete)
 		if csErr != nil {
 			_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
@@ -578,6 +562,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
+		ToolTimeout:    cfg.Agent.ToolTimeout,
 		SystemPrompt:   systemPrompt(cfg.Agent.SystemPrompt),
 		Approver:       approver,
 		Compressor:     buildCompressor(cfg.Agent.Compression, provider),
@@ -797,19 +782,28 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chain
 	if _, isNop := inner.(audit_egress.Nop); isNop {
 		return inner, nil
 	}
+	if otlp, ok := inner.(*audit_egress.OTLPHTTPSink); ok {
+		// AlreadyRegistered only happens when a test assembles twice
+		// in one process; the first collector keeps serving.
+		if err := observability.Registry.Register(otlp.Collector()); err != nil {
+			logger.Debug("audit_egress.metrics_register", slog.String("err", err.Error()))
+		}
+	}
 	sink := inner
 	if cfg.Chained {
 		opts := []audit_egress.ChainOption{audit_egress.WithChainLogger(logger)}
 		if chainStore != nil {
 			opts = append(opts, audit_egress.WithChainStore(chainStore))
 		}
-		if cfg.ChainHMACKeyFile != "" {
-			key, err := readChainKey(cfg.ChainHMACKeyFile)
-			if err != nil {
-				return nil, err
-			}
-			opts = append(opts, audit_egress.WithChainHMACKey(key))
+		// An unkeyed chain only detects accidental corruption; a
+		// keyed one detects rewriting. With no key file configured,
+		// generate one under the state dir on first run (mode 0600),
+		// the same first-run path the OAuth master key uses.
+		key, err := resolveChainKey(cfg.ChainHMACKeyFile, logger)
+		if err != nil {
+			return nil, err
 		}
+		opts = append(opts, audit_egress.WithChainHMACKey(key))
 		sink = audit_egress.NewChainedSink(inner, opts...)
 	}
 	// Boot event — best-effort. A failed Emit here is not a
@@ -1134,6 +1128,48 @@ func shellQuote(s string) string {
 
 // readChainKey loads the audit chain HMAC key. Surrounding whitespace
 // is trimmed (keys are often written with a trailing newline).
+// resolveChainKey returns the audit-chain HMAC key: the configured
+// file when set, otherwise $XDG_STATE_HOME/rousseau/audit-chain.key,
+// generated with 32 random bytes on first use.
+func resolveChainKey(configured string, logger *slog.Logger) ([]byte, error) {
+	if configured != "" {
+		return readChainKey(configured)
+	}
+	path, err := defaultChainKeyPath()
+	if err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+	if key, err := readChainKey(path); err == nil {
+		return key, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, fmt.Errorf("audit chain key: generate: %w", err)
+	}
+	key := []byte(hex.EncodeToString(raw))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+	if err := os.WriteFile(path, key, 0o600); err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+	logger.Info("audit_egress.chain_key_generated", slog.String("path", path))
+	return key, nil
+}
+
+func defaultChainKeyPath() (string, error) {
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return filepath.Join(d, "rousseau", "audit-chain.key"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "state", "rousseau", "audit-chain.key"), nil
+}
+
 func readChainKey(path string) ([]byte, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // operator-configured path
 	if err != nil {

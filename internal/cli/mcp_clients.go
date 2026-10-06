@@ -58,6 +58,7 @@ func startMCPClients(ctx context.Context, cfg config.MCPConfig, registry *tools.
 			Command:        spec.Command,
 			Args:           spec.Args,
 			Env:            spec.Env,
+			EnvPassthrough: spec.EnvPassthrough,
 			StartTimeout:   time.Duration(spec.StartTimeoutSeconds) * time.Second,
 			RequestTimeout: time.Duration(spec.RequestTimeoutSeconds) * time.Second,
 			Logger:         logger,

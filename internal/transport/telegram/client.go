@@ -167,7 +167,9 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 	if text == "" && u.Message.Caption != "" && len(u.Message.Photo) > 0 {
 		text = u.Message.Caption
 	}
-	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(strconv.FormatInt(u.Message.Chat.ID, 10))
+	sender := senderID(u.Message)
+	chatID := strconv.FormatInt(u.Message.Chat.ID, 10)
+	mediaOK := c.cfg.IsAllowed == nil || c.cfg.IsAllowed(sender)
 	if text == "" && mediaOK {
 		text = c.transcribeAudio(ctx, u.Message)
 	}
@@ -179,14 +181,17 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 		return
 	}
 
+	// From is the sending user (identity); the reply goes back to the
+	// chat the message arrived in, which differs in groups.
 	msg := transport.IncomingMessage{
-		From:        strconv.FormatInt(u.Message.Chat.ID, 10),
+		From:        sender,
 		Body:        text,
 		At:          time.Unix(u.Message.Date, 0),
 		Attachments: attachments,
 	}
 	c.logger.Info("telegram.incoming",
 		slog.String("from", msg.From),
+		slog.String("chat", chatID),
 		slog.Int("attachments", len(attachments)))
 	reply, err := handler.Handle(ctx, msg)
 	if err != nil {
@@ -196,7 +201,7 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 	if reply == "" {
 		return
 	}
-	if err := c.Deliver(ctx, msg.From, reply); err != nil {
+	if err := c.Deliver(ctx, chatID, reply); err != nil {
 		c.logger.Error("telegram.send_failed", slog.String("err", err.Error()))
 	}
 }
@@ -379,7 +384,7 @@ func (c *Client) call(ctx context.Context, method string, payload any, result an
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return fmt.Errorf("telegram: %s: read body: %w", method, err)
 	}
@@ -408,6 +413,7 @@ type telegramMessage struct {
 	Text      string              `json:"text"`
 	Caption   string              `json:"caption,omitempty"`
 	Chat      telegramChat        `json:"chat"`
+	From      *telegramUser       `json:"from,omitempty"`
 	Voice     *telegramVoice      `json:"voice,omitempty"`
 	Audio     *telegramAudio      `json:"audio,omitempty"`
 	Photo     []telegramPhotoSize `json:"photo,omitempty"`
@@ -446,6 +452,26 @@ type telegramChat struct {
 	ID       int64  `json:"id"`
 	Type     string `json:"type"`
 	Username string `json:"username"`
+}
+
+// telegramUser is the Bot API User object: the account that sent a
+// message, as opposed to the chat it arrived in. In a private chat
+// the two IDs coincide; in a group every member shares the chat ID,
+// so identity must come from here.
+type telegramUser struct {
+	ID       int64  `json:"id"`
+	IsBot    bool   `json:"is_bot"`
+	Username string `json:"username"`
+}
+
+// senderID returns the identity the allow-list, RBAC and audit keys
+// resolve on: the sending user, falling back to the chat for channel
+// posts and other updates the Bot API delivers without a From.
+func senderID(m *telegramMessage) string {
+	if m.From != nil && m.From.ID != 0 {
+		return strconv.FormatInt(m.From.ID, 10)
+	}
+	return strconv.FormatInt(m.Chat.ID, 10)
 }
 
 func truncate(s string, n int) string {

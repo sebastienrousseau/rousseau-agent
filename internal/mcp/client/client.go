@@ -25,6 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/envscrub"
 	"github.com/sebastienrousseau/rousseau-agent/internal/mcp"
 )
 
@@ -39,10 +40,15 @@ type Config struct {
 	Command string
 	// Args are the command-line arguments.
 	Args []string
-	// Env are extra environment variables set on the subprocess in
-	// addition to the parent process's environment. Set an entry to
-	// "" to unset that variable (matches exec.Cmd semantics).
+	// Env are extra environment variables set on the subprocess on
+	// top of the scrubbed baseline (envscrub.DefaultAllow plus
+	// EnvPassthrough). Set an entry to "" to unset that variable.
 	Env map[string]string
+	// EnvPassthrough names extra daemon environment variables (or
+	// "NAME*" prefixes) the server may inherit. The daemon's full
+	// environment is never inherited: it carries every secret the
+	// daemon was started with.
+	EnvPassthrough []string
 	// StartTimeout bounds how long we wait for the initialize handshake
 	// to complete before killing the subprocess. Zero uses 30s.
 	StartTimeout time.Duration
@@ -69,6 +75,12 @@ type Client struct {
 	stdin   io.WriteCloser
 	logger  *slog.Logger
 	timeout time.Duration
+
+	// writeMu serialises frames onto stdin. Pipe writes are atomic
+	// only up to PIPE_BUF (4 KiB on Linux); two concurrent tool calls
+	// with larger arguments would otherwise interleave bytes and the
+	// server would reject or mis-parse both.
+	writeMu sync.Mutex
 
 	// Request/response correlation
 	nextID  atomic.Int64
@@ -114,7 +126,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	// boundary as any subprocess in the tool registry. Callers vet
 	// what MCP servers they enable via config.
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
-	cmd.Env = mergeEnv(os.Environ(), cfg.Env)
+	cmd.Env = mergeEnv(envscrub.Scrub(os.Environ(), cfg.EnvPassthrough), cfg.Env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -328,6 +340,8 @@ func (c *Client) write(env mcp.Envelope) error {
 		return fmt.Errorf("mcp/client %s: marshal: %w", c.name, err)
 	}
 	blob = append(blob, '\n')
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	_, err = c.stdin.Write(blob)
 	return err
 }

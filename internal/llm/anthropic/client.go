@@ -185,9 +185,7 @@ func toSDKTools(in []tools.Definition, cacheTools bool) []sdk.ToolUnionParam {
 		toolParam := &sdk.ToolParam{
 			Name:        t.Name,
 			Description: sdk.String(t.Description),
-			InputSchema: sdk.ToolInputSchemaParam{
-				Properties: t.InputSchema["properties"],
-			},
+			InputSchema: toSDKInputSchema(t.InputSchema),
 		}
 		if cacheTools && i == len(in)-1 {
 			toolParam.CacheControl = cacheEphemeral1h
@@ -195,6 +193,48 @@ func toSDKTools(in []tools.Definition, cacheTools bool) []sdk.ToolUnionParam {
 		out = append(out, sdk.ToolUnionParam{OfTool: toolParam})
 	}
 	return out
+}
+
+// toSDKInputSchema maps a tool's JSON-Schema object onto the SDK's
+// typed param. "properties" and "required" have dedicated fields;
+// every other keyword the registry emits (additionalProperties,
+// $defs, description, …) rides along in ExtraFields so the model
+// sees the same contract the tool enforces at execution time. Before
+// this only "properties" crossed the wire, so the model was never
+// told which arguments were mandatory and strict tools surfaced as
+// avoidable tool errors.
+func toSDKInputSchema(schema map[string]any) sdk.ToolInputSchemaParam {
+	out := sdk.ToolInputSchemaParam{Properties: schema["properties"]}
+	out.Required = requiredStrings(schema["required"])
+	for k, v := range schema {
+		switch k {
+		case "properties", "required", "type":
+			continue
+		}
+		if out.ExtraFields == nil {
+			out.ExtraFields = map[string]any{}
+		}
+		out.ExtraFields[k] = v
+	}
+	return out
+}
+
+// requiredStrings coerces the "required" keyword, which tools declare
+// as either []string or []any, into the SDK's []string.
+func requiredStrings(v any) []string {
+	switch r := v.(type) {
+	case []string:
+		return r
+	case []any:
+		out := make([]string, 0, len(r))
+		for _, e := range r {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func fromSDKResponse(resp *sdk.Message) (agent.Message, error) {

@@ -23,4 +23,8 @@ var (
 	// ErrToolRejected is returned when the user declines a pending tool
 	// call.
 	ErrToolRejected = errors.New("agent: tool call rejected by user")
+
+	// ErrToolTimeout is wrapped into a tool_result when a single tool
+	// execution exceeds Options.ToolTimeout.
+	ErrToolTimeout = errors.New("agent: tool execution timed out")
 )

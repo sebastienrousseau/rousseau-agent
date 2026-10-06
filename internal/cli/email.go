@@ -4,12 +4,25 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport/email"
 )
+
+// warnUnauthenticatedEmail reminds the operator that an allow-list
+// keyed on the From header is advisory until the MTA's
+// Authentication-Results gate is on.
+func warnUnauthenticatedEmail(required bool, logger *slog.Logger) {
+	if required {
+		return
+	}
+	logger.Warn("email.allowlist_unauthenticated",
+		slog.String("effect", "the From header is trivially forged, so the allow-list is advisory"),
+		slog.String("fix", "set email.require_authentication_results: true once your MTA adds Authentication-Results"))
+}
 
 func newEmailCmd(opts *Options) *cobra.Command {
 	var (
@@ -92,10 +105,13 @@ func newEmailCmd(opts *Options) *cobra.Command {
 
 				From:        fromAddr,
 				ReplyHeader: cfg.Email.ReplyHeader,
+
+				RequireAuthResults: cfg.Email.RequireAuthenticationResults,
 			}, opts.Logger)
 			if err != nil {
 				return err
 			}
+			warnUnauthenticatedEmail(cfg.Email.RequireAuthenticationResults, opts.Logger)
 
 			shutdown, err := wiring.startCron(ctx, func(dctx context.Context, target, body string) error {
 				return client.Deliver(dctx, target, body)

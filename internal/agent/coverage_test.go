@@ -126,8 +126,17 @@ func TestTurn_UnknownToolErrors(t *testing.T) {
 		Options{MaxIterations: 4, Approver: newAllowAllApprover()})
 	sess := NewSession("t")
 	sess.Append(NewUserText("call unknown"))
+	// The unknown tool is fed back as an error tool_result and the
+	// loop continues; the stub then runs out of responses, which is
+	// the error that surfaces here — not ErrToolNotFound.
 	_, err := ag.Turn(context.Background(), sess)
-	assert.ErrorIs(t, err, ErrToolNotFound)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrToolNotFound)
+	require.Len(t, sess.Messages, 3)
+	res := sess.Messages[2].Content[0].ToolResult
+	require.NotNil(t, res)
+	assert.True(t, res.IsError)
+	assert.Equal(t, "t1", res.ToolUseID)
 }
 
 // TestTurn_ToolExecutionErrorAppendsResult covers the tool-error

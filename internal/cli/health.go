@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/health"
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 )
 
 const (
@@ -35,6 +36,18 @@ func rousseauDataDir() (string, error) {
 // logs: the health check then reports "no heartbeat", which is the
 // right signal.
 func startHeartbeat(ctx context.Context, opts *Options, transportName string, conn health.ConnectedFunc) {
+	// The HTTP readiness probe (/readyz on the metrics listener)
+	// reads the same link state the heartbeat records.
+	observability.SetReadinessCheck(func() error {
+		if conn == nil {
+			return nil
+		}
+		connected, ok := conn()
+		if ok && !connected {
+			return fmt.Errorf("%s transport is not connected", transportName)
+		}
+		return nil
+	})
 	dir, err := rousseauDataDir()
 	if err != nil {
 		opts.Logger.Warn("health.heartbeat_disabled", "err", err.Error())

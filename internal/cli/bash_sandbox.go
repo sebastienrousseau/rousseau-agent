@@ -1,12 +1,44 @@
 package cli
 
 import (
+	"fmt"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/fsguard"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/sandbox"
 )
+
+// buildFSGuard turns tools.fs into the guard every file tool shares.
+func buildFSGuard(cfg config.FSConfig) (*fsguard.Guard, error) {
+	g, err := fsguard.New(cfg.Root, cfg.Deny)
+	if err != nil {
+		return nil, fmt.Errorf("cli: tools.fs: %w", err)
+	}
+	return g, nil
+}
+
+// registerFileTools registers read, write, edit and grep bound to one
+// guard. Both the daemon and the chat TUI go through here so the
+// deny list and workspace root apply identically.
+func registerFileTools(registry *tools.Registry, g *fsguard.Guard) {
+	rt := builtin.NewReadTool()
+	rt.Guard = g
+	wt := builtin.NewWriteTool()
+	wt.Guard = g
+	et := builtin.NewEditTool()
+	et.Guard = g
+	gt := builtin.NewGrepTool(0, 0)
+	gt.Guard = g
+	registry.MustRegister(rt)
+	registry.MustRegister(wt)
+	registry.MustRegister(et)
+	registry.MustRegister(gt)
+}
 
 // defaultBashTimeout is the fallback when config.Bash.TimeoutSeconds
 // is zero. Matches the pre-config default in builtin.NewBashTool.
@@ -39,10 +71,64 @@ func buildBashTool(cfg config.BashConfig) (*builtin.BashTool, error) {
 	if err != nil {
 		return nil, err
 	}
-	if backend == nil {
-		return builtin.NewBashTool(timeout), nil
+	tool := builtin.NewBashToolWithSandbox(timeout, backend)
+	tool.EnvPassthrough = cfg.EnvPassthrough
+	return tool, nil
+}
+
+// buildDaemonToolRegistry assembles the daemon's tool registry: the
+// guarded file tools, the (policy-checked) bash tool, spawn_subagent
+// and every enabled integration suite. Split out of assembleDaemon
+// so the daemon constructor stays a sequence of subsystem builders.
+func buildDaemonToolRegistry(opts *Options) (*tools.Registry, error) {
+	cfg := opts.Config
+	registry := tools.NewRegistry()
+	guard, err := buildFSGuard(cfg.Tools.FS)
+	if err != nil {
+		return nil, err
 	}
-	return builtin.NewBashToolWithSandbox(timeout, backend), nil
+	registerFileTools(registry, guard)
+	if err := requireSandboxPolicy(cfg.Tools.Bash, "daemon"); err != nil {
+		return nil, err
+	}
+	bash, err := buildBashTool(cfg.Tools.Bash)
+	if err != nil {
+		return nil, fmt.Errorf("cli: build bash tool: %w", err)
+	}
+	registry.MustRegister(bash)
+	// spawn_subagent exposes the sub-agent parallelism primitive
+	// (subagent.Spawn) to the model. Zero-value Policy uses the
+	// defaults documented on subagent.Policy (MaxConcurrent=4,
+	// PerTaskTimeout=5m, no aggregate token budget). Operators wanting
+	// tighter limits can pass a non-zero Policy here.
+	registry.MustRegister(builtin.NewSpawnSubagentTool(subagent.Policy{}))
+
+	// Register every enabled tool-integration suite. Each suite is
+	// opt-in via the integrations block in the config; a nil
+	// integrations config leaves the registry unchanged.
+	if err := integrations.RegisterAll(registry, integrationsFromConfig(cfg), opts.Logger); err != nil {
+		return nil, err
+	}
+	return registry, nil
+}
+
+// requireSandboxPolicy refuses to run an unattended daemon whose bash
+// tool executes with no isolation unless the operator opted in. An
+// allowlisted chat message can drive bash; without a sandbox that is
+// a shell on the host with the daemon's privileges, which should be a
+// deliberate choice, not the silent default.
+func requireSandboxPolicy(cfg config.BashConfig, transportName string) error {
+	kind := cfg.Sandbox.Kind
+	if kind != "" && kind != "none" {
+		return nil
+	}
+	if cfg.Sandbox.AllowUnsandboxed {
+		return nil
+	}
+	return fmt.Errorf("%s: tools.bash.sandbox.kind is unset, so the bash tool would run commands "+
+		"directly on the host. Set tools.bash.sandbox.kind to \"nsjail\" or \"gvisor\", or set "+
+		"tools.bash.sandbox.allow_unsandboxed: true to accept host execution explicitly",
+		transportName)
 }
 
 // buildBashSandbox turns the config into a sandbox.Backend. Returns

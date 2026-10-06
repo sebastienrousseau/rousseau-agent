@@ -53,6 +53,13 @@ func ControlFrom(ctx context.Context) TurnControl {
 // gate runs the context's TurnControl checkpoint, if any. Unsupervised
 // turns (no TurnControl on the context) return nil immediately.
 func gate(ctx context.Context) error {
+	// A cancelled context aborts at the safe point even when no
+	// TurnControl is attached (library callers, cron, sub-agents), so
+	// the loop never starts another tool or round-trip for a caller
+	// that has gone away.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	tc := ControlFrom(ctx)
 	if tc == nil {
 		return nil

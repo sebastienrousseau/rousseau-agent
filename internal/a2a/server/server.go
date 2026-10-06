@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -60,9 +61,28 @@ type Server struct {
 	// Zero-value skips signing — cards are served unsigned.
 	SigningKey ed25519.PrivateKey
 
+	// TaskRetention is how long a terminal task stays queryable
+	// before it is evicted from memory. Zero uses 10 minutes. Without
+	// eviction every accepted task (payload plus up to 256 updates)
+	// lived for the process lifetime.
+	TaskRetention time.Duration
+
 	mu    sync.Mutex
 	tasks map[string]*taskState
+	// baseCtx is the Serve context; task handlers derive from it so
+	// shutdown cancels them. Nil (tests calling spawnTask directly)
+	// falls back to context.Background.
+	baseCtx context.Context
+	// running joins task goroutines on shutdown.
+	running sync.WaitGroup
 }
+
+// defaultTaskRetention is the terminal-task eviction delay.
+const defaultTaskRetention = 10 * time.Minute
+
+// shutdownJoinTimeout bounds how long Serve waits for running task
+// handlers after cancelling them.
+const shutdownJoinTimeout = 5 * time.Second
 
 // New constructs a Server. Returns an error when Handler is nil.
 func New(card a2a.CapabilityCard, h Handler, auth []string) (*Server, error) {
@@ -94,6 +114,12 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener) error {
 }
 
 func (s *Server) serveListener(ctx context.Context, ln net.Listener) error {
+	taskCtx, cancelTasks := context.WithCancel(ctx)
+	defer cancelTasks()
+	s.mu.Lock()
+	s.baseCtx = taskCtx
+	s.mu.Unlock()
+
 	srv := &http.Server{
 		Handler:           s.mux(),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -102,10 +128,12 @@ func (s *Server) serveListener(ctx context.Context, ln net.Listener) error {
 	go func() { done <- srv.Serve(ln) }()
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownJoinTimeout)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx) //nolint:errcheck // best-effort
 		<-done
+		cancelTasks()
+		s.joinTasks(shutdownCtx)
 		return nil
 	case err := <-done:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -170,6 +198,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "task must set prompt or skill_name")
 		return
 	}
+	task.Peer = peerFromContext(r.Context())
 
 	state := s.spawnTask(task)
 	writeJSON(w, http.StatusAccepted, map[string]string{
@@ -256,18 +285,44 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		if _, ok := tokens[strings.TrimPrefix(hdr, "Bearer ")]; !ok {
+		tok := strings.TrimPrefix(hdr, "Bearer ")
+		if _, ok := tokens[tok]; !ok {
 			writeErr(w, http.StatusForbidden, "invalid bearer token")
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, PeerID(tok))))
 	}
+}
+
+// peerKey is the context key for the authenticated peer identity.
+type peerKey struct{}
+
+// PeerID derives a stable, non-reversible identity from a bearer
+// token: "tok:" plus the first 16 hex chars of its SHA-256. Operators
+// bind RBAC and audit rules to this value; it cannot be forged by a
+// caller that does not hold the token.
+func PeerID(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "tok:" + hex.EncodeToString(sum[:8])
+}
+
+// peerFromContext returns the authenticated peer id, or "" when the
+// server runs without auth.
+func peerFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(peerKey{}).(string)
+	return id
 }
 
 // spawnTask records a new task, launches its Handler in a goroutine,
 // and returns the taskState so the caller can compose the response.
 func (s *Server) spawnTask(task a2a.Task) *taskState {
-	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	base := s.baseCtx
+	s.mu.Unlock()
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
 	state := &taskState{
 		id:     task.TaskID,
 		task:   task,
@@ -278,7 +333,10 @@ func (s *Server) spawnTask(task a2a.Task) *taskState {
 	s.tasks[state.id] = state
 	s.mu.Unlock()
 
+	s.running.Add(1)
 	go func() {
+		defer s.running.Done()
+		defer s.scheduleEvict(state.id)
 		emit := func(upd a2a.TaskUpdate) {
 			if upd.TaskID == "" {
 				upd.TaskID = state.id
@@ -305,6 +363,36 @@ func (s *Server) spawnTask(task a2a.Task) *taskState {
 	}()
 
 	return state
+}
+
+// scheduleEvict drops a finished task from the map after
+// TaskRetention so peers can still poll its terminal state for a
+// while without the server retaining every task forever.
+func (s *Server) scheduleEvict(id string) {
+	retention := s.TaskRetention
+	if retention <= 0 {
+		retention = defaultTaskRetention
+	}
+	time.AfterFunc(retention, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if st, ok := s.tasks[id]; ok && st.isTerminal() {
+			delete(s.tasks, id)
+		}
+	})
+}
+
+// joinTasks waits for running task handlers until ctx expires.
+func (s *Server) joinTasks(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		s.running.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 func (s *Server) lookup(id string) *taskState {

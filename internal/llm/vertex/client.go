@@ -126,7 +126,7 @@ func (p *Provider) Complete(ctx context.Context, req agent.Request) (agent.Respo
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return agent.Response{}, fmt.Errorf("vertex: read: %w", err)
 	}

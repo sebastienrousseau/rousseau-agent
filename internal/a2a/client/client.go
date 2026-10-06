@@ -17,6 +17,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/sebastienrousseau/rousseau-agent/internal/a2a"
 )
 
@@ -233,6 +236,9 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body io.Re
 	if c.cfg.AuthHeader != "" {
 		req.Header.Set("Authorization", c.cfg.AuthHeader)
 	}
+	// Carry the caller's trace context (W3C traceparent) so a task
+	// delegated to a peer shows up under the originating turn's trace.
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 	return req, nil
 }
 

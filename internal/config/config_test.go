@@ -13,8 +13,7 @@ import (
 
 func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
-	require.NoError(t, err)
+	cfg := loadWithoutFile(t)
 	assert.Equal(t, "claude-sonnet-4-6", cfg.Anthropic.Model)
 	assert.Equal(t, int64(4096), cfg.Anthropic.MaxTokens)
 	assert.Equal(t, "info", cfg.Log.Level)
@@ -55,8 +54,7 @@ state:
 
 func TestLoad_EnvOverride(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "from-env")
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
-	require.NoError(t, err)
+	cfg := loadWithoutFile(t)
 	assert.Equal(t, "from-env", cfg.Anthropic.APIKey)
 }
 
@@ -123,8 +121,7 @@ func TestIsNotExist_Variants(t *testing.T) {
 
 func TestLoad_SessionIdleTimeout(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
-	require.NoError(t, err)
+	cfg := loadWithoutFile(t)
 	assert.Equal(t, 12*time.Hour, cfg.Agent.SessionIdleTimeout, "default")
 
 	for yaml, want := range map[string]time.Duration{
@@ -141,14 +138,13 @@ func TestLoad_SessionIdleTimeout(t *testing.T) {
 
 func TestLoad_TurnTimeout(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	cfg, err := Load(filepath.Join(t.TempDir(), "missing.yaml"))
-	require.NoError(t, err)
+	cfg := loadWithoutFile(t)
 	assert.Equal(t, 30*time.Minute, cfg.Agent.TurnTimeout, "default")
 	assert.Equal(t, 4, cfg.Agent.MaxConcurrentTurns, "default")
 
 	path := filepath.Join(t.TempDir(), "cfg.yaml")
 	require.NoError(t, os.WriteFile(path, []byte("agent:\n  turn_timeout: 0\n"), 0o600))
-	cfg, err = Load(path)
+	cfg, err := Load(path)
 	require.NoError(t, err)
 	assert.Zero(t, cfg.Agent.TurnTimeout, "explicit opt-out")
 }

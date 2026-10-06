@@ -5,17 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/fsguard"
 )
 
 // EditTool performs an exact-string replacement inside a file.
 // old_string MUST be unique in the file — this is a deliberate constraint
 // borrowed from Claude Code's Edit tool. It prevents accidental
 // mass-replacement and forces the model to disambiguate.
-type EditTool struct{}
+type EditTool struct {
+	// Guard decides which paths may be edited. Nil uses
+	// fsguard.Default (deny list, no workspace root).
+	Guard *fsguard.Guard
+}
 
 // NewEditTool constructs an EditTool.
 func NewEditTool() *EditTool { return &EditTool{} }
@@ -62,11 +66,9 @@ func (t *EditTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return "", fmt.Errorf("edit: parse input: %w", err)
 	}
-	if in.Path == "" {
-		return "", fmt.Errorf("edit: path is required")
-	}
-	if !filepath.IsAbs(in.Path) {
-		return "", fmt.Errorf("edit: path must be absolute, got %q", in.Path)
+	path, err := resolvePath(t.Guard, "edit", in.Path)
+	if err != nil {
+		return "", err
 	}
 	if in.OldString == "" {
 		return "", fmt.Errorf("edit: old_string is required")
@@ -75,7 +77,7 @@ func (t *EditTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 		return "", fmt.Errorf("edit: old_string and new_string are identical")
 	}
 
-	b, err := os.ReadFile(in.Path)
+	b, err := os.ReadFile(path) //nolint:gosec // path vetted by fsguard
 	if err != nil {
 		return "", fmt.Errorf("edit: read: %w", err)
 	}
@@ -92,7 +94,7 @@ func (t *EditTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 	}
 
 	updated := strings.Replace(original, in.OldString, in.NewString, 1)
-	if err := os.WriteFile(in.Path, []byte(updated), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil { //nolint:gosec // path vetted by fsguard; preserves the tool's documented mode
 		return "", fmt.Errorf("edit: write: %w", err)
 	}
 	return fmt.Sprintf("edited %s (1 replacement)", in.Path), nil

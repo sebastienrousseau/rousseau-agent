@@ -175,7 +175,7 @@ func (c *Client) Deliver(ctx context.Context, chatGUID, body string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		rb, _ := io.ReadAll(resp.Body) //nolint:errcheck // best-effort read of error body
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody)) //nolint:errcheck // best-effort read of error body
 		return fmt.Errorf("imessage: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400))
 	}
 	return nil
@@ -305,7 +305,7 @@ func (c *Client) fetchMessages(ctx context.Context, limit int) ([]messageRecord,
 		return nil, fmt.Errorf("imessage: get: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		return nil, fmt.Errorf("imessage: read: %w", err)
 	}

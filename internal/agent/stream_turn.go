@@ -57,10 +57,11 @@ func (a *Agent) turnStream(ctx context.Context, s *Session, events chan<- Stream
 		}
 
 		req := Request{
-			SessionID: s.ID,
-			System:    a.systemPrompt(ctx, s),
-			Messages:  s.Messages,
-			Tools:     toolDefs,
+			SessionID:         s.ID,
+			System:            a.systemPrompt(ctx, s),
+			Messages:          s.Messages,
+			Tools:             toolDefs,
+			CacheableMessages: len(s.Messages), // same rationale as turnWithStats
 		}
 
 		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})
@@ -92,11 +93,13 @@ func (a *Agent) turnStream(ctx context.Context, s *Session, events chan<- Stream
 			a.logger)
 
 		results, err := a.runTools(toolCtx, resp.Message, s.ID)
-		if err != nil {
-			return Message{}, err
-		}
+		// Same as turnWithStats: keep the session well-formed even
+		// when the tool phase was cancelled.
 		if len(results) > 0 {
 			s.Append(Message{Role: RoleUser, Content: results})
+		}
+		if err != nil {
+			return Message{}, err
 		}
 	}
 

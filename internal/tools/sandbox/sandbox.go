@@ -5,15 +5,19 @@
 //
 //   - [None] — direct exec, no isolation (matches pre-sandbox
 //     behaviour; the default so nothing breaks on upgrade).
-//   - `gvisor` — runsc-wrapped exec with a user-namespaced fs view.
-//     Requires runsc on $PATH. Implementation is scaffolded in
-//     gvisor.go with a build tag; the runtime is a follow-up ticket.
+//   - `gvisor` — `runsc do` wrapped exec. Requires runsc on $PATH.
+//     This is SYSCALL isolation only: `runsc do` runs the command
+//     against the host filesystem (the --root flag names runsc's
+//     state directory, not a chroot), so the file tools' fsguard and
+//     the bash env scrub remain the filesystem and secret boundary.
 //   - `firecracker` — pooled microVM per-invocation. Not scaffolded
 //     yet; documented in docs/security/sandbox.md as the top-tier
 //     option for hostile-code use cases.
-//   - `nsjail` — kernel-namespace jail via nsjail binary. Middle
-//     ground: cheaper than gVisor, stronger than plain container.
-//     Scaffolded for symmetry, follow-up ticket for runtime.
+//   - `nsjail` — kernel-namespace jail via nsjail binary with a
+//     minimal read-only root built from bind mounts. Middle ground:
+//     cheaper than gVisor, stronger than plain container. The argv
+//     is unit-tested; TestSmoke_* exercise the real binaries when
+//     they are on $PATH and skip otherwise.
 //
 // Backends do NOT provide network isolation by themselves — the
 // caller is expected to run the daemon inside a network namespace

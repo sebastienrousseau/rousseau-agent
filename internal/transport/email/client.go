@@ -44,6 +44,11 @@ type Config struct {
 	From string
 	// ReplyHeader is prepended to every outbound message body.
 	ReplyHeader string
+	// RequireAuthResults drops inbound mail unless the receiving
+	// MTA's Authentication-Results header reports dkim=pass with a
+	// signing domain matching the From address. Without it the
+	// allow-list keys on a header anyone can forge.
+	RequireAuthResults bool
 
 	// IMAPClientFactory is optional test injection; nil uses
 	// imapclient.DialTLS.
@@ -187,8 +192,14 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 	set := imap.SeqSetNum(nums...)
 
 	fetch := client.Fetch(set, &imap.FetchOptions{
-		Envelope:      true,
-		BodySection:   []*imap.FetchItemBodySection{{}},
+		Envelope: true,
+		// The full body first (extractBody reads the first non-header
+		// section), then just the Authentication-Results header the
+		// DKIM gate inspects.
+		BodySection: []*imap.FetchItemBodySection{
+			{},
+			{Specifier: imap.PartSpecifierHeader, HeaderFields: []string{authResultsHeader}, Peek: true},
+		},
 		BodyStructure: &imap.FetchItemBodyStructure{},
 	})
 	defer func() { _ = fetch.Close() }() //nolint:errcheck // best-effort close
@@ -197,16 +208,8 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 		return fmt.Errorf("email: fetch: %w", err)
 	}
 	for _, m := range messages {
-		from := envelopeFrom(m)
-		subject := ""
-		if m.Envelope != nil {
-			subject = m.Envelope.Subject
-		}
-		body := extractBody(m)
-		if body == "" {
-			body = subject
-		}
-		if body == "" || from == "" {
+		from, subject, body, ok := c.admit(m)
+		if !ok {
 			continue
 		}
 		msg := transport.IncomingMessage{
@@ -249,6 +252,31 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 
 // -- helpers -----------------------------------------------------------
 
+// admit decides whether a fetched message reaches the handler and
+// returns its sender, subject and body. Empty senders or bodies are
+// skipped; with RequireAuthResults, mail the MTA did not authenticate
+// for the From domain is dropped with a warning.
+func (c *Client) admit(m *imapclient.FetchMessageBuffer) (from, subject, body string, ok bool) {
+	from = envelopeFrom(m)
+	if m.Envelope != nil {
+		subject = m.Envelope.Subject
+	}
+	body = extractBody(m)
+	if body == "" {
+		body = subject
+	}
+	if body == "" || from == "" {
+		return "", "", "", false
+	}
+	if c.cfg.RequireAuthResults && !authResultsPass(m, from) {
+		c.logger.Warn("email.dropped_unauthenticated",
+			slog.String("from", from),
+			slog.String("reason", "no Authentication-Results dkim=pass for the From domain"))
+		return "", "", "", false
+	}
+	return from, subject, body, true
+}
+
 func envelopeFrom(m *imapclient.FetchMessageBuffer) string {
 	if m == nil || m.Envelope == nil || len(m.Envelope.From) == 0 {
 		return ""
@@ -269,7 +297,7 @@ func extractBody(m *imapclient.FetchMessageBuffer) string {
 		return ""
 	}
 	for _, section := range m.BodySection {
-		if len(section.Bytes) == 0 {
+		if len(section.Bytes) == 0 || isHeaderSection(section.Section) {
 			continue
 		}
 		text := string(section.Bytes)

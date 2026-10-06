@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/envscrub"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/sandbox"
 )
@@ -31,6 +33,16 @@ type BashTool struct {
 	// (pre-sandbox behaviour). Set via [NewBashToolWithSandbox] or
 	// by assigning after construction.
 	Sandbox sandbox.Backend
+	// EnvPassthrough names extra environment variables (or "NAME*"
+	// prefixes) the command may see on top of envscrub.DefaultAllow.
+	// The daemon's own environment is never inherited whole: it
+	// carries every provider, licence and transport secret.
+	EnvPassthrough []string
+}
+
+// env returns the scrubbed environment handed to every command.
+func (t *BashTool) env() []string {
+	return envscrub.Scrub(os.Environ(), t.EnvPassthrough)
 }
 
 // NewBashTool constructs a BashTool with the given timeout and no
@@ -106,6 +118,7 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 // sandboxing gets exactly today's behaviour, byte for byte.
 func (t *BashTool) runDirect(ctx context.Context, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+	cmd.Env = t.env()
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -128,6 +141,7 @@ func (t *BashTool) runSandboxed(ctx context.Context, command string) (string, er
 	res, err := t.Sandbox.Run(ctx, sandbox.Command{
 		Path: "/bin/sh",
 		Args: []string{"-c", command},
+		Env:  t.env(),
 	})
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

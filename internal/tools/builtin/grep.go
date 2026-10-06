@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/fsguard"
 )
 
 // GrepTool scans files under a root path for a regular expression and
@@ -24,6 +25,9 @@ type GrepTool struct {
 	// MaxFileBytes caps how large a single file may be to scan.
 	// Zero uses 4 MiB.
 	MaxFileBytes int64
+	// Guard decides which directories may be searched. Nil uses
+	// fsguard.Default (deny list, no workspace root).
+	Guard *fsguard.Guard
 }
 
 // NewGrepTool constructs a GrepTool with the given limits. Zero uses the
@@ -88,11 +92,9 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 	if in.Pattern == "" {
 		return "", fmt.Errorf("grep: pattern is required")
 	}
-	if in.Path == "" {
-		return "", fmt.Errorf("grep: path is required")
-	}
-	if !filepath.IsAbs(in.Path) {
-		return "", fmt.Errorf("grep: path must be absolute, got %q", in.Path)
+	root, err := resolvePath(t.Guard, "grep", in.Path)
+	if err != nil {
+		return "", err
 	}
 
 	pat := in.Pattern
@@ -107,7 +109,7 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 	var out strings.Builder
 	matches := 0
 
-	walkErr := filepath.WalkDir(in.Path, func(p string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // skip inaccessible entries; grep should degrade gracefully
 		}

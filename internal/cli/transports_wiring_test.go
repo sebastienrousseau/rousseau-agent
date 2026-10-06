@@ -64,6 +64,7 @@ func daemonOptsCancellingOn(t *testing.T, msg string) (*Options, context.Context
 			Anthropic: config.AnthropicConfig{APIKey: "sk-test", Model: "claude"},
 			State:     config.StateConfig{Path: filepath.Join(t.TempDir(), "sessions.db")},
 			Log:       config.LogConfig{Level: "error"},
+			Tools:     unsandboxedTools(),
 			// Pin the skills dir at an empty temp dir so the daemon
 			// never loads whatever the developer has under $HOME.
 			Agent: config.AgentConfig{SkillsDir: t.TempDir()},

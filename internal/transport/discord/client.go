@@ -354,7 +354,7 @@ func (c *Client) postMessage(ctx context.Context, channelID, body string) error 
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
-		rb, _ := io.ReadAll(resp.Body) //nolint:errcheck // best-effort read of error body
+		rb, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody)) //nolint:errcheck // best-effort read of error body
 		return fmt.Errorf("discord: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400))
 	}
 	return nil

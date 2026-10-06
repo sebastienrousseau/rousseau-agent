@@ -60,8 +60,15 @@ type SkillDescriptor struct {
 // echoes it back on every update.
 type Task struct {
 	TaskID string `json:"task_id"`
-	// FromAgent is the sender's AgentID.
+	// FromAgent is the sender's self-declared AgentID. It is a label
+	// for humans; nothing on the wire proves it. Use Peer for any
+	// authorisation or audit decision.
 	FromAgent string `json:"from_agent"`
+	// Peer is the server-derived identity of the authenticated
+	// caller (a fingerprint of the bearer token that was presented),
+	// never taken from the request body. Empty when the server runs
+	// without auth.
+	Peer string `json:"-"`
 	// SkillName is the target skill on the receiving agent.
 	// Empty means "route to the agent's default handler."
 	SkillName string `json:"skill_name,omitempty"`

@@ -121,6 +121,10 @@ func TestTurn_ToolUseThenEnd(t *testing.T) {
 	assert.Equal(t, "pong", s.Messages[2].Content[0].ToolResult.Output)
 }
 
+// A hallucinated tool name is fed back to the model as an error
+// tool_result (like a denial) so the turn continues and the session
+// stays well-formed; it used to abort the whole turn with a dangling
+// tool_use the next turn would be rejected for.
 func TestTurn_ToolNotFound(t *testing.T) {
 	prov := &stubProvider{
 		responses: []Response{
@@ -134,13 +138,81 @@ func TestTurn_ToolNotFound(t *testing.T) {
 				},
 				StopReason: StopToolUse,
 			},
+			{
+				Message:    Message{Role: RoleAssistant, Content: []Content{{Kind: ContentText, Text: "sorry"}}},
+				StopReason: StopEndTurn,
+			},
 		},
 	}
-	a := New(prov, tools.NewRegistry(), silentLogger(), Options{})
+	reg := tools.NewRegistry()
+	reg.MustRegister(&stubTool{name: "real"})
+	a := New(prov, reg, silentLogger(), Options{})
 	s := NewSession("x")
 	s.Append(NewUserText("hello"))
-	_, err := a.Turn(context.Background(), s)
-	assert.ErrorIs(t, err, ErrToolNotFound)
+	final, err := a.Turn(context.Background(), s)
+	require.NoError(t, err)
+	assert.Equal(t, "sorry", final.Content[0].Text)
+
+	require.Len(t, s.Messages, 4)
+	res := s.Messages[2].Content[0].ToolResult
+	require.NotNil(t, res)
+	assert.Equal(t, "x", res.ToolUseID)
+	assert.True(t, res.IsError)
+	assert.Contains(t, res.Output, ErrToolNotFound.Error())
+	assert.Contains(t, res.Output, "real", "lists the tools that do exist")
+}
+
+// Cancellation between two tool calls must still leave one
+// tool_result per tool_use in the session.
+func TestTurn_CancelBetweenToolsKeepsSessionWellFormed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	prov := &stubProvider{
+		responses: []Response{
+			{
+				Message: Message{
+					Role: RoleAssistant,
+					Content: []Content{
+						{Kind: ContentToolUse, ToolUse: &ToolUse{ID: "a", Name: "first", Input: json.RawMessage(`{}`)}},
+						{Kind: ContentToolUse, ToolUse: &ToolUse{ID: "b", Name: "second", Input: json.RawMessage(`{}`)}},
+					},
+				},
+				StopReason: StopToolUse,
+			},
+		},
+	}
+	reg := tools.NewRegistry()
+	reg.MustRegister(&cancellingTool{name: "first", cancel: cancel})
+	reg.MustRegister(&stubTool{name: "second", out: "never"})
+	a := New(prov, reg, silentLogger(), Options{})
+	s := NewSession("x")
+	s.Append(NewUserText("hello"))
+
+	_, err := a.Turn(ctx, s)
+	require.ErrorIs(t, err, context.Canceled)
+
+	require.Len(t, s.Messages, 3, "user, assistant tool_use, user tool_results")
+	results := s.Messages[2].Content
+	require.Len(t, results, 2)
+	assert.Equal(t, "a", results[0].ToolResult.ToolUseID)
+	assert.False(t, results[0].ToolResult.IsError, "first tool ran")
+	assert.Equal(t, "b", results[1].ToolResult.ToolUseID)
+	assert.True(t, results[1].ToolResult.IsError)
+	assert.Contains(t, results[1].ToolResult.Output, "cancelled")
+}
+
+// cancellingTool cancels the turn context from inside Execute, which
+// is what a /cancel landing mid-tool-phase looks like to the loop.
+type cancellingTool struct {
+	name   string
+	cancel context.CancelFunc
+}
+
+func (c *cancellingTool) Name() string                { return c.name }
+func (c *cancellingTool) Description() string         { return "cancels" }
+func (c *cancellingTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
+func (c *cancellingTool) Execute(context.Context, json.RawMessage) (string, error) {
+	c.cancel()
+	return "ran", nil
 }
 
 func TestTurn_MaxIterations(t *testing.T) {

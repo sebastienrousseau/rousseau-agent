@@ -206,6 +206,19 @@ type SSOTransportMapping struct {
 // `bash` has knobs (sandbox selection); more tools may follow.
 type ToolsConfig struct {
 	Bash BashConfig `mapstructure:"bash"`
+	FS   FSConfig   `mapstructure:"fs"`
+}
+
+// FSConfig bounds the file tools (read, write, edit, grep). See
+// internal/tools/fsguard for the rules.
+type FSConfig struct {
+	// Root confines every file tool to this directory and below.
+	// Empty means any path not on the deny list.
+	Root string `mapstructure:"root"`
+	// Deny adds absolute paths to the built-in deny list (the
+	// daemon's own config and state, SSH / GPG / cloud credentials,
+	// /proc, /sys, /dev).
+	Deny []string `mapstructure:"deny"`
 }
 
 // BashConfig configures the bash built-in tool. Zero value is the
@@ -213,6 +226,11 @@ type ToolsConfig struct {
 type BashConfig struct {
 	// TimeoutSeconds caps a single command. Zero uses 60s.
 	TimeoutSeconds int `mapstructure:"timeout_seconds"`
+	// EnvPassthrough names extra environment variables (or "NAME*"
+	// prefixes) commands may inherit from the daemon on top of the
+	// scrubbed baseline (PATH, HOME, locale, TERM, TMPDIR, …).
+	// Provider, licence and transport secrets are never passed.
+	EnvPassthrough []string `mapstructure:"env_passthrough"`
 	// Sandbox selects the execution backend. Zero value uses "none"
 	// (direct exec) to keep pre-existing configs working. Set
 	// `kind: gvisor` / `kind: nsjail` / `kind: firecracker` to
@@ -227,6 +245,11 @@ type BashSandboxConfig struct {
 	// Kind is the backend to use: "" or "none" (default, no
 	// isolation), "gvisor", "nsjail", "firecracker".
 	Kind string `mapstructure:"kind"`
+	// AllowUnsandboxed is the explicit opt-in an unattended daemon
+	// needs to run bash with Kind "none". Without it the daemon
+	// refuses to start, the same way it refuses an unset
+	// claudecli.permission_mode. The chat TUI is unaffected.
+	AllowUnsandboxed bool `mapstructure:"allow_unsandboxed"`
 	// NoNetwork enables the backend's network isolation. Ignored
 	// when Kind is "none". Defaults ON for isolating backends —
 	// see cli/bash_sandbox.go for the default resolution.
@@ -403,9 +426,13 @@ type MCPClientConfig struct {
 	// Args are the command-line arguments passed to Command.
 	Args []string `mapstructure:"args"`
 	// Env are extra environment variables layered on top of the
-	// daemon's own environment. Set an entry to "" to unset a
-	// variable the parent process has.
+	// scrubbed baseline environment. Set an entry to "" to unset a
+	// variable.
 	Env map[string]string `mapstructure:"env"`
+	// EnvPassthrough names extra daemon environment variables (or
+	// "NAME*" prefixes) the server may inherit. The daemon's secrets
+	// are never inherited implicitly.
+	EnvPassthrough []string `mapstructure:"env_passthrough"`
 	// StartTimeoutSeconds bounds the initialize-handshake window.
 	// Zero uses the client default (30s).
 	StartTimeoutSeconds int `mapstructure:"start_timeout_seconds"`
@@ -636,10 +663,16 @@ type EmailConfig struct {
 	From        string `mapstructure:"from"`
 	ReplyHeader string `mapstructure:"reply_header"`
 	// Allowlist holds sender addresses allowed to reach the agent,
-	// matched case-insensitively. Note that a From header is easy to
-	// forge; pair this with a mailbox that only accepts mail passing
-	// your provider's SPF/DKIM/DMARC checks.
+	// matched case-insensitively. A From header is trivially forged;
+	// set RequireAuthenticationResults so the allow-list is only
+	// consulted for mail your inbound MTA authenticated.
 	Allowlist []string `mapstructure:"allowlist"`
+	// RequireAuthenticationResults drops any message whose
+	// Authentication-Results header (added by the receiving MTA)
+	// does not carry dkim=pass for the From domain. Off by default
+	// because not every MTA adds the header; the daemon logs a
+	// warning at startup when it is off.
+	RequireAuthenticationResults bool `mapstructure:"require_authentication_results"`
 }
 
 // SlackConfig configures the Slack Socket Mode transport.
@@ -879,6 +912,10 @@ type AgentConfig struct {
 	// provider subprocess is stopped and the sender is told the turn
 	// was cut short. Default 30m; 0 disables the limit.
 	TurnTimeout time.Duration `mapstructure:"turn_timeout"`
+	// ToolTimeout bounds one tool execution inside a turn so a hung
+	// bash or MCP call cannot consume the whole turn budget. Default
+	// 10m.
+	ToolTimeout time.Duration `mapstructure:"tool_timeout"`
 	// MaxConcurrentTurns caps agent turns running at once in this
 	// daemon; further turns queue. Each claudecli turn is a separate
 	// claude process. Default 4; 0 means unlimited.
@@ -1057,39 +1094,69 @@ func Load(path string) (*Config, error) {
 		v.Set("anthropic.api_key", key)
 	}
 
+	path, err := readConfigFile(v, path)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := &Config{}
+	if err := decodeConfig(v, cfg, path); err != nil {
+		return nil, err
+	}
+	if err := expandEnvRefs(cfg); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// readConfigFile reads path into v and returns the path actually
+// used. Only the implicit default path may be absent. An operator who
+// named a file that does not exist gets an error, not a daemon
+// silently running on defaults (allow-all approver, no governance).
+func readConfigFile(v *viper.Viper, path string) (string, error) {
+	explicit := path != ""
 	if path == "" {
 		home, err := os.UserHomeDir()
 		if err == nil {
 			path = filepath.Join(home, ".config", "rousseau", "config.yaml")
 		}
 	}
-	if path != "" {
-		v.SetConfigFile(path)
-		if err := v.ReadInConfig(); err != nil {
-			var pathErr *os.PathError
-			if !isNotExist(err, &pathErr) {
-				return nil, fmt.Errorf("config: read %s: %w", path, err)
-			}
-		}
+	if path == "" {
+		return path, nil
 	}
+	v.SetConfigFile(path)
+	err := v.ReadInConfig()
+	if err == nil {
+		return path, nil
+	}
+	var pathErr *os.PathError
+	if !isNotExist(err, &pathErr) {
+		return path, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	if explicit {
+		return path, fmt.Errorf("config: %s does not exist (given via --config); create it or drop the flag to use the default path", path)
+	}
+	return path, nil
+}
 
-	cfg := &Config{}
-	// Strict by default: a key that matches no field is an error. A
-	// misspelt "aprover:" used to be ignored silently, leaving the
-	// default allow-all policy in force with nothing in the logs.
-	// ROUSSEAU_CONFIG_ALLOW_UNKNOWN=1 restores the lenient decode for
-	// running an older binary against a newer config file.
+// decodeConfig unmarshals v into cfg. Strict by default: a key that
+// matches no field is an error. A misspelt "aprover:" used to be
+// ignored silently, leaving the default allow-all policy in force
+// with nothing in the logs. ROUSSEAU_CONFIG_ALLOW_UNKNOWN=1 restores
+// the lenient decode for running an older binary against a newer
+// config file.
+func decodeConfig(v *viper.Viper, cfg *Config, path string) error {
 	if os.Getenv(envAllowUnknownKeys) == "1" {
 		if err := v.Unmarshal(cfg); err != nil {
-			return nil, fmt.Errorf("config: %s: %w", path, err)
+			return fmt.Errorf("config: %s: %w", path, err)
 		}
-		return cfg, nil
+		return nil
 	}
 	if err := v.UnmarshalExact(cfg); err != nil {
-		return nil, fmt.Errorf("config: %s: %w (fix or remove the key; set %s=1 to ignore unknown keys)",
+		return fmt.Errorf("config: %s: %w (fix or remove the key; set %s=1 to ignore unknown keys)",
 			path, err, envAllowUnknownKeys)
 	}
-	return cfg, nil
+	return nil
 }
 
 // envAllowUnknownKeys opts out of strict config decoding.
@@ -1114,7 +1181,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.max_iterations", 32)
 	v.SetDefault("agent.session_idle_timeout", "12h")
 	v.SetDefault("agent.turn_timeout", "30m")
+	v.SetDefault("agent.tool_timeout", "10m")
 	v.SetDefault("agent.max_concurrent_turns", 4)
+	// Tamper evidence is the point of an audit trail; an operator who
+	// enables egress gets the hash chain unless they turn it off.
+	v.SetDefault("observability.audit_egress.chained", true)
 	home, err := os.UserHomeDir()
 	if err == nil {
 		v.SetDefault("state.path", filepath.Join(home, ".local", "share", "rousseau", "sessions.db"))

@@ -55,7 +55,9 @@ func NewRoot(opts *Options) *cobra.Command {
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			cfg, err := config.Load(opts.ConfigPath)
 			if err != nil {
-				return err
+				// A config the operator must fix: exit 78 so systemd
+				// stops the unit instead of crash-looping on it.
+				return needsOperator(err)
 			}
 			opts.Config = cfg
 			opts.Logger = newLogger(cfg.Log.Level, cfg.Log.Format, os.Stderr)

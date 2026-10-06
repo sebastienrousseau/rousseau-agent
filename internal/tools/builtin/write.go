@@ -8,12 +8,17 @@ import (
 	"path/filepath"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/fsguard"
 )
 
 // WriteTool writes a UTF-8 text file to disk, creating parent directories
 // as needed. It is intentionally a full-file overwrite; incremental edits
 // go through EditTool.
-type WriteTool struct{}
+type WriteTool struct {
+	// Guard decides which paths may be written. Nil uses
+	// fsguard.Default (deny list, no workspace root).
+	Guard *fsguard.Guard
+}
 
 // NewWriteTool constructs a WriteTool.
 func NewWriteTool() *WriteTool { return &WriteTool{} }
@@ -55,16 +60,14 @@ func (t *WriteTool) Execute(_ context.Context, raw json.RawMessage) (string, err
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return "", fmt.Errorf("write: parse input: %w", err)
 	}
-	if in.Path == "" {
-		return "", fmt.Errorf("write: path is required")
+	path, err := resolvePath(t.Guard, "write", in.Path)
+	if err != nil {
+		return "", err
 	}
-	if !filepath.IsAbs(in.Path) {
-		return "", fmt.Errorf("write: path must be absolute, got %q", in.Path)
-	}
-	if err := os.MkdirAll(filepath.Dir(in.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("write: mkdir: %w", err)
 	}
-	if err := os.WriteFile(in.Path, []byte(in.Content), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(in.Content), 0o644); err != nil { //nolint:gosec // path vetted by fsguard; tool output is not secret
 		return "", fmt.Errorf("write: %w", err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(in.Content), in.Path), nil

@@ -111,7 +111,15 @@ func (h *a2aTaskHandler) newSession(task a2a.Task) *agent.Session {
 		title += " (" + task.SkillName + ")"
 	}
 	sess := agent.NewSession(title)
-	sess.Sender = "a2a/" + task.FromAgent
+	// Sender feeds RBAC, identity bindings and the audit trail, so it
+	// must come from the authenticated peer, never from the body's
+	// self-declared from_agent. Fall back to the label only when the
+	// server runs without auth (nothing to bind to).
+	peer := task.Peer
+	if peer == "" {
+		peer = task.FromAgent
+	}
+	sess.Sender = "a2a/" + peer
 	sess.Append(agent.NewUserText(a2aPromptFor(task)))
 	return sess
 }

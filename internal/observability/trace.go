@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
@@ -56,6 +57,10 @@ func StartOTel(ctx context.Context, endpoint, serviceVersion string, logger *slo
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
+	// W3C trace context on outbound HTTP (A2A peers, OTLP-aware
+	// collectors) so a turn's spans join across daemons.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{}, propagation.Baggage{}))
 	Tracer = tp.Tracer("github.com/sebastienrousseau/rousseau-agent")
 	logger.Info("otel.started", slog.String("endpoint", endpoint))
 	return tp.Shutdown, nil
