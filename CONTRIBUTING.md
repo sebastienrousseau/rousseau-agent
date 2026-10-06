@@ -8,7 +8,7 @@ Private project. Contributions accepted from invited collaborators only. This do
 git clone https://github.com/sebastienrousseau/rousseau-agent
 cd rousseau-agent
 make setup      # installs golangci-lint (v2) and govulncheck
-make check      # vet + lint + race-tests + govulncheck
+make check      # vet + lint + complexity ratchet + race-tests + govulncheck
 ```
 
 Every check that runs in CI is available locally through the Makefile. If a change passes `make check`, it will pass CI.
@@ -44,7 +44,8 @@ Every check that runs in CI is available locally through the Makefile. If a chan
 1. Open the PR against `main`. Rebase (do not merge) if `main` moves under you.
 2. Every PR requires:
    - A rationale in the description (2–3 sentences linking to the underlying decision).
-   - Green CI: `vet`, `lint`, `test-race` on Linux + macOS, `govulncheck`, `codeql`, `reproducible-build`, coverage floor.
+   - Green CI: `vet`, `lint`, `complexity ratchet`, `test-race` on Linux + macOS, `govulncheck`, `codeql`, `reproducible-build`, coverage floor.
+   - Complexity ratchet: no function you add or touch may exceed cyclomatic 10 / cognitive 15 unless it is already in `.complexity-baseline.txt`, and a baselined function may not get worse. After shrinking an offender, run `make complexity-baseline` and commit the smaller file.
    - Reviewer approval. Green CI is necessary but not sufficient.
 3. Squash merges only. The merge commit message is the final commit message and lands on `main` as one atomic change.
 4. If the PR adds a new dependency, note the justification in the description. Prefer standard library over adding a dependency; prefer an existing dependency over adding a new one.

@@ -116,15 +116,45 @@ func Model() string {
 	return "claude-opus-4-6"
 }
 
-// ResultsDir returns test/benchmarks/results/ under the current working
-// directory (the caller must ensure it runs from the repo root). Creates
-// the directory if absent.
+// ResultsDir returns the directory benchmark reports are written to
+// and creates it if absent. ROUSSEAU_BENCH_RESULTS overrides it;
+// otherwise it is test/benchmarks/results/ under the module root.
+//
+// `go test` runs each package with the package directory as cwd, so
+// a cwd-relative path would land reports under
+// test/benchmarks/<runner>/test/benchmarks/results/ where the CI
+// upload step never looks. The module root is found by walking up
+// from cwd to the nearest go.mod; with no go.mod in reach the path
+// stays cwd-relative.
 func ResultsDir() (string, error) {
-	dir := filepath.Join("test", "benchmarks", "results")
+	dir := os.Getenv("ROUSSEAU_BENCH_RESULTS")
+	if dir == "" {
+		dir = filepath.Join(moduleRoot(), "test", "benchmarks", "results")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("common: mkdir %s: %w", dir, err)
 	}
 	return dir, nil
+}
+
+// moduleRoot walks up from the working directory to the nearest
+// directory containing go.mod. Returns "" when cwd is unknown or no
+// go.mod is found, so callers fall back to a cwd-relative path.
+func moduleRoot() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 // WriteReport marshals r to JSON and writes it to

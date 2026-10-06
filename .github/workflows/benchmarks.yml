@@ -54,6 +54,18 @@ jobs:
           go-version: '1.26.6'
           cache: true
 
+      - name: Check benchmark API key is configured
+        id: key
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY_BENCH }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::warning::ANTHROPIC_API_KEY_BENCH secret is not set — benchmark runs are skipped"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Clone benchmark corpora
         run: |
           mkdir -p "$HOME/bench-corpora"
@@ -61,6 +73,23 @@ jobs:
           git clone --depth 1 https://github.com/princeton-nlp/SWE-bench    SWE-bench
           git clone --depth 1 https://github.com/Aider-AI/polyglot-benchmark polyglot-benchmark
           git clone --depth 1 https://github.com/laude-institute/terminal-bench terminal-bench
+
+      - name: Materialise SWE-bench Verified task list
+        # The Verified subset is not in the SWE-bench git repo; it is a
+        # HuggingFace dataset (princeton-nlp/SWE-bench_Verified). Build
+        # the verified.json the runner expects from the datasets-server
+        # rows API, 100 rows per page, 500 rows total.
+        run: |
+          out="$HOME/bench-corpora/SWE-bench/swebench/harness/test_spec/verified.json"
+          mkdir -p "$(dirname "$out")"
+          : > "$RUNNER_TEMP/ids.jsonl"
+          for offset in 0 100 200 300 400; do
+            curl -sSf --retry 3 --retry-delay 5 \
+              "https://datasets-server.huggingface.co/rows?dataset=princeton-nlp%2FSWE-bench_Verified&config=default&split=test&offset=${offset}&length=100" \
+              | jq -c '.rows[].row | {instance_id}' >> "$RUNNER_TEMP/ids.jsonl"
+          done
+          jq -s '{tasks: .}' "$RUNNER_TEMP/ids.jsonl" > "$out"
+          echo "verified tasks: $(jq '.tasks | length' "$out")"
 
       - name: Build rousseau (so runners exec a real binary)
         run: go build -o "$RUNNER_TEMP/rousseau" ./cmd/rousseau
@@ -73,19 +102,19 @@ jobs:
           echo "PATH=$RUNNER_TEMP:$PATH"                          >> "$GITHUB_ENV"
 
       - name: Run SWE-Bench Verified
-        if: inputs.benchmark == 'all' || inputs.benchmark == 'swe-bench' || inputs.benchmark == ''
+        if: steps.key.outputs.present == 'true' && (inputs.benchmark == 'all' || inputs.benchmark == 'swe-bench' || inputs.benchmark == '')
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_BENCH }}
         run: go test -tags bench -timeout 6h ./test/benchmarks/swe-bench/...
 
       - name: Run Aider Polyglot
-        if: inputs.benchmark == 'all' || inputs.benchmark == 'aider-polyglot' || inputs.benchmark == ''
+        if: steps.key.outputs.present == 'true' && (inputs.benchmark == 'all' || inputs.benchmark == 'aider-polyglot' || inputs.benchmark == '')
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_BENCH }}
         run: go test -tags bench -timeout 6h ./test/benchmarks/aider-polyglot/...
 
       - name: Run Terminal-Bench
-        if: inputs.benchmark == 'all' || inputs.benchmark == 'terminal-bench' || inputs.benchmark == ''
+        if: steps.key.outputs.present == 'true' && (inputs.benchmark == 'all' || inputs.benchmark == 'terminal-bench' || inputs.benchmark == '')
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_BENCH }}
         run: go test -tags bench -timeout 6h ./test/benchmarks/terminal-bench/...

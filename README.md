@@ -105,7 +105,7 @@ make build             # produces ./bin/rousseau
 ```
 
 `make check` runs the same gate CI does: `go vet`, `golangci-lint`,
-`go test -race`, `govulncheck`.
+the complexity ratchet, `go test -race`, `govulncheck`.
 
 ### Container images
 
@@ -881,7 +881,8 @@ fixed or moved into the supported set.
 ```bash
 make help              # list every target
 make build             # build ./bin/rousseau
-make check             # vet + lint + race tests + govulncheck — the CI gate
+make check             # vet + lint + complexity ratchet + race tests + govulncheck — the CI gate
+make complexity        # no new/worse functions over cyclomatic 10 / cognitive 15 vs .complexity-baseline.txt
 make test              # go test -count=1 ./...
 make test-race         # go test -race -count=1 ./...
 make cover             # coverage profile and total
