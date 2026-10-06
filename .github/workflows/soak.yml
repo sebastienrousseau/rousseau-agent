@@ -1,6 +1,12 @@
 name: soak
 
-# Nightly 24-hour soak on main + 30-minute soak on every PR.
+# Nightly 5h30m soak on main + 30-minute soak on every PR.
+#
+# Why 5h30m and not 24h: GitHub-hosted runners hard-cap a single job
+# at 6 hours regardless of timeout-minutes, so the former 24h nightly
+# was cancelled at the 6h mark every night with no report uploaded.
+# A true 24h soak needs a self-hosted runner — dispatch with
+# duration=24h once one exists.
 # Runs the harness in test/integration/soak that drives synthetic
 # workload against a fake provider while a Monitor samples runtime +
 # FD counts, asserts leak invariants at the end, and uploads a
@@ -27,7 +33,7 @@ jobs:
   soak:
     name: soak (${{ github.event_name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 1500      # 25 hours; nightly needs 24
+    timeout-minutes: 350       # under the 6h hosted-runner hard cap
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -45,7 +51,7 @@ jobs:
             exit 0
           fi
           case "${{ github.event_name }}" in
-            schedule|workflow_dispatch) echo "duration=24h" >> "$GITHUB_OUTPUT" ;;
+            schedule|workflow_dispatch) echo "duration=5h30m" >> "$GITHUB_OUTPUT" ;;
             push)                        echo "duration=10m" >> "$GITHUB_OUTPUT" ;;
             pull_request)                echo "duration=30m" >> "$GITHUB_OUTPUT" ;;
             *)                           echo "duration=5m"  >> "$GITHUB_OUTPUT" ;;
@@ -57,7 +63,7 @@ jobs:
           SOAK_REPORT: /tmp/soak-report.md
         run: |
           echo "Running soak for $SOAK_DURATION"
-          go test -count=1 -timeout 25h ./test/integration/soak/...
+          go test -count=1 -timeout 5h50m ./test/integration/soak/...
 
       - name: Upload report artefact
         if: always()

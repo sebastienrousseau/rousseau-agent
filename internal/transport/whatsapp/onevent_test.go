@@ -200,16 +200,19 @@ func TestOnEvent_KeepAliveTimeout_TriggersReconnectAtThreshold(t *testing.T) {
 	}
 
 	// The reconnect helper resets the miss counter and clears the
-	// in-flight flag. Give the goroutine a moment to run its post-
-	// reconnect bookkeeping before asserting on state.
+	// in-flight flag, then logs reconnect_issued *after* releasing
+	// the lock. Wait on the log line, which is the last thing the
+	// goroutine does, so the state assertions below cannot race it
+	// (observed flaking on macOS CI and under -count=30 locally).
 	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		return !c.reconnecting && c.keepaliveMisses == 0
+		return logs.has("whatsapp.reconnect_issued")
 	}, time.Second, 10*time.Millisecond)
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	assert.False(t, c.reconnecting)
+	assert.Equal(t, 0, c.keepaliveMisses)
 	assert.True(t, logs.has("whatsapp.keepalive_reconnect"))
-	assert.True(t, logs.has("whatsapp.reconnect_issued"))
 }
 
 func TestOnEvent_KeepAliveTimeout_ReconnectFailureIsLogged(t *testing.T) {
