@@ -33,6 +33,11 @@ func TestREADMEConfigExamplesLoad(t *testing.T) {
 	blocks := regexp.MustCompile("(?s)```yaml\n(.*?)```").FindAllSubmatch(readme, -1)
 	require.NotEmpty(t, blocks)
 	for i, b := range blocks {
+		// Examples reference secrets as ${VAR}; Load refuses an unset
+		// reference, so give every referenced variable a placeholder.
+		for _, m := range envRef.FindAllSubmatch(b[1], -1) {
+			t.Setenv(string(m[1]), "placeholder")
+		}
 		path := filepath.Join(t.TempDir(), "example.yaml")
 		require.NoError(t, os.WriteFile(path, b[1], 0o600))
 		_, err := Load(path)
