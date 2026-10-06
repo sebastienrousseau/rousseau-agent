@@ -174,7 +174,12 @@ rousseau chat      # Bubble Tea TUI against the configured provider
 checks the environment, and writes the config file. `rousseau doctor`
 prints what it found and what it could not find, which is the fastest
 way to diagnose a missing `claude` binary or an unreadable state
-directory.
+directory. `rousseau doctor --json` and `rousseau config validate
+[--json]` give the same answers in a form a deployment pipeline or a
+procurement questionnaire can consume: the config command loads the
+file exactly as the daemon would (strict keys, `${VAR}` expansion, a
+missing explicit `--config` is an error) and reports the resolved
+path and effective top-level choices.
 
 Once the config is in place, run a transport instead of the TUI:
 

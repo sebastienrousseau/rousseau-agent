@@ -229,6 +229,14 @@ with 100 messages is ~30 KB, so 100k sessions = 3 GB.
 
 ## Limitations shipped today
 
+- **Retention erase, recall and the interrupted-turn journal are
+  SQLite-only.** Under the Postgres driver `state.retention` does
+  not erase idle sessions or senders (GDPR Art. 17 requests must be
+  handled with SQL against the Postgres tables), `recall` vectors are
+  not stored, and a daemon restart does not notify senders whose
+  turn was cut short. The Phase 2 storage contract suite ports all
+  three; until then treat Postgres HA as a session-store topology,
+  not feature parity with SQLite.
 - Cron schedules, WhatsApp JID pairings, and session cost
   ledgers stay per-replica. Roadmap §2.4b covers the port.
 - No pgx `pgxpool` tuning surface yet — the stdlib bridge

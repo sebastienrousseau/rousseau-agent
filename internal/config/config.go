@@ -1103,6 +1103,9 @@ func Load(path string) (*Config, error) {
 	if err := decodeConfig(v, cfg, path); err != nil {
 		return nil, err
 	}
+	if err := restoreEnvKeyCase(cfg, path); err != nil {
+		return nil, fmt.Errorf("config: %s: %w", path, err)
+	}
 	if err := expandEnvRefs(cfg); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}

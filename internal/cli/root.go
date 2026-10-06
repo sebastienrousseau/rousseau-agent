@@ -70,6 +70,7 @@ func NewRoot(opts *Options) *cobra.Command {
 
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newHealthCmd())
+	root.AddCommand(newConfigCmd(opts))
 	root.AddCommand(newChatCmd(opts))
 	root.AddCommand(newWhatsAppCmd(opts))
 	root.AddCommand(newDoctorCmd(opts))

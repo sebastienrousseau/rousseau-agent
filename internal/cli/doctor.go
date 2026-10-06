@@ -3,7 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -21,29 +21,77 @@ import (
 
 // diagResult is one row in the doctor report.
 type diagResult struct {
-	Name   string
-	Status string // "ok", "warn", "fail", "info"
-	Detail string
+	Name   string `json:"name"`
+	Status string `json:"status"` // "ok", "warn", "fail", "info"
+	Detail string `json:"detail"`
 }
 
 func newDoctorCmd(opts *Options) *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Diagnose the local rousseau installation",
 		Long: "Print a report of every runtime dependency, config choice, and\n" +
 			"state location the daemon relies on. Use this before opening a\n" +
-			"bug report or when the WhatsApp bridge does not respond.",
+			"bug report or when the WhatsApp bridge does not respond.\n" +
+			"--json emits {status, checks:[{name,status,detail}]} for\n" +
+			"procurement evidence and monitoring; exit 1 on any failed check.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			w := cmd.OutOrStdout()
 			results := runChecks(cmd.Context(), opts.Config, license.Load(license.Source{}, nil))
-			renderReport(w, results)
-			if hasFailures(results) {
-				return errors.New("one or more checks failed")
+			if asJSON {
+				if err := renderJSON(w, results); err != nil {
+					return err
+				}
+			} else {
+				renderReport(w, results)
+			}
+			if failed := failedChecks(results); len(failed) > 0 {
+				return fmt.Errorf("%d check(s) failed: %s", len(failed), strings.Join(failed, ", "))
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the report as JSON")
+	return cmd
+}
+
+// doctorReport is the --json shape. Status is the worst row status
+// in the order fail > warn > ok, so a consumer can alert on one field.
+type doctorReport struct {
+	Status string       `json:"status"`
+	Checks []diagResult `json:"checks"`
+}
+
+func renderJSON(w io.Writer, rs []diagResult) error {
+	rep := doctorReport{Status: "ok", Checks: rs}
+	if rep.Checks == nil {
+		rep.Checks = []diagResult{}
+	}
+	for _, r := range rs {
+		switch {
+		case r.Status == "fail":
+			rep.Status = "fail"
+		case r.Status == "warn" && rep.Status != "fail":
+			rep.Status = "warn"
+		}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(rep)
+}
+
+// failedChecks lists the names of every failed row so the error the
+// operator sees says which check to look at.
+func failedChecks(rs []diagResult) []string {
+	var out []string
+	for _, r := range rs {
+		if r.Status == "fail" {
+			out = append(out, r.Name)
+		}
+	}
+	return out
 }
 
 func runChecks(ctx context.Context, cfg *config.Config, chk license.Checker) []diagResult {

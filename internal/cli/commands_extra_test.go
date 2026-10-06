@@ -141,7 +141,8 @@ func TestDoctorCmd_FailingCheckReturnsError(t *testing.T) {
 	cmd.SetContext(context.Background())
 	err := cmd.RunE(cmd, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "one or more checks failed")
+	assert.Contains(t, err.Error(), "check(s) failed")
+	assert.Contains(t, err.Error(), "provider.claudecli.binary", "the error names the failed check")
 }
 
 func TestCheckProvider_NilConfigReturnsNothing(t *testing.T) {
