@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
@@ -28,7 +28,7 @@ func BenchmarkRecover_Passthrough(b *testing.B) {
 func BenchmarkBreaker_Closed(b *testing.B) {
 	fp := &noopProvider{}
 	br := NewBreakerProvider(fp, BreakerConfig{})
-	req := agent.Request{}
+	req := model.Request{}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = br.Complete(context.Background(), req) //nolint:errcheck // bench passthrough
@@ -38,6 +38,6 @@ func BenchmarkBreaker_Closed(b *testing.B) {
 type noopProvider struct{}
 
 func (*noopProvider) Name() string { return "noop" }
-func (*noopProvider) Complete(context.Context, agent.Request) (agent.Response, error) {
-	return agent.Response{}, nil
+func (*noopProvider) Complete(context.Context, model.Request) (model.Response, error) {
+	return model.Response{}, nil
 }

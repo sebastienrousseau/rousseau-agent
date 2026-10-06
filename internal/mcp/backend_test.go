@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
@@ -25,8 +25,8 @@ func openBackend(t *testing.T) (SessionsBackend, *sqlitestore.Store, *sqlitestor
 
 func TestStoreBackend_SearchRoundtrip(t *testing.T) {
 	be, s, _ := openBackend(t)
-	sess := agent.NewSession("about kubernetes")
-	sess.Append(agent.NewUserText("pods and services and helm charts"))
+	sess := model.NewSession("about kubernetes")
+	sess.Append(model.NewUserText("pods and services and helm charts"))
 	require.NoError(t, s.Save(context.Background(), sess))
 
 	hits, err := be.Search(context.Background(), "helm", sqlitestore.SearchOptions{})
@@ -36,7 +36,7 @@ func TestStoreBackend_SearchRoundtrip(t *testing.T) {
 
 func TestStoreBackend_ListRoundtrip(t *testing.T) {
 	be, s, _ := openBackend(t)
-	sess := agent.NewSession("list me")
+	sess := model.NewSession("list me")
 	require.NoError(t, s.Save(context.Background(), sess))
 
 	summaries, err := be.List(context.Background(), 10)
@@ -46,8 +46,8 @@ func TestStoreBackend_ListRoundtrip(t *testing.T) {
 
 func TestStoreBackend_LoadRoundtrip(t *testing.T) {
 	be, s, _ := openBackend(t)
-	sess := agent.NewSession("load me")
-	sess.Append(agent.NewUserText("hi"))
+	sess := model.NewSession("load me")
+	sess.Append(model.NewUserText("hi"))
 	require.NoError(t, s.Save(context.Background(), sess))
 
 	got, err := be.Load(context.Background(), sess.ID)

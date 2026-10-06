@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -71,8 +71,8 @@ func TestComplete_SendsMaxTokensAndTools(t *testing.T) {
 		assert.Equal(t, "grep", fn["name"])
 	})
 
-	resp, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("ping")},
+	resp, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("ping")},
 		Tools: []tools.Definition{{
 			Name: "grep", Description: "search",
 			InputSchema: map[string]any{"type": "object"},
@@ -81,7 +81,7 @@ func TestComplete_SendsMaxTokensAndTools(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1)
 	assert.Equal(t, "pong", resp.Message.Content[0].Text)
-	assert.Equal(t, agent.StopEndTurn, resp.StopReason)
+	assert.Equal(t, model.StopEndTurn, resp.StopReason)
 	assert.Equal(t, 7, resp.Usage.InputTokens)
 	assert.Equal(t, 2, resp.Usage.OutputTokens)
 }
@@ -92,8 +92,8 @@ func TestComplete_OmitsMaxTokensAndToolsWhenUnset(t *testing.T) {
 		assert.NotContains(t, body, "max_tokens")
 		assert.NotContains(t, body, "tools")
 	})
-	_, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("ping")},
+	_, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("ping")},
 	})
 	require.NoError(t, err)
 }
@@ -113,10 +113,10 @@ func TestComplete_ConversionErrorShortCircuits(t *testing.T) {
 	p, err := New(Config{APIKey: "k", Model: "m", BaseURL: srv.URL})
 	require.NoError(t, err)
 
-	_, err = p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{{
-			Role:    agent.Role("nonsense"),
-			Content: []agent.Content{{Kind: agent.ContentText, Text: "x"}},
+	_, err = p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{{
+			Role:    model.Role("nonsense"),
+			Content: []model.Content{{Kind: model.ContentText, Text: "x"}},
 		}},
 	})
 	require.Error(t, err)
@@ -132,8 +132,8 @@ func TestComplete_UpstreamErrorIsWrapped(t *testing.T) {
 
 	p, err := New(Config{APIKey: "k", Model: "m", BaseURL: srv.URL})
 	require.NoError(t, err)
-	_, err = p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err = p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openai: complete")
@@ -142,9 +142,9 @@ func TestComplete_UpstreamErrorIsWrapped(t *testing.T) {
 // TestToSDKMessage_AssistantWithoutToolCalls covers the plain-assistant
 // branch (no tool_calls -> simple assistant message).
 func TestToSDKMessage_AssistantWithoutToolCalls(t *testing.T) {
-	got, err := toSDKMessage(agent.Message{
-		Role:    agent.RoleAssistant,
-		Content: []agent.Content{{Kind: agent.ContentText, Text: "plain reply"}},
+	got, err := toSDKMessage(model.Message{
+		Role:    model.RoleAssistant,
+		Content: []model.Content{{Kind: model.ContentText, Text: "plain reply"}},
 	})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
@@ -158,11 +158,11 @@ func TestToSDKMessage_AssistantWithoutToolCalls(t *testing.T) {
 // TestToSDKMessage_SystemRoleInHistory covers the RoleSystem branch of
 // toSDKMessage (distinct from the Request.System shortcut).
 func TestToSDKMessage_SystemRoleInHistory(t *testing.T) {
-	got, err := toSDKMessage(agent.Message{
-		Role: agent.RoleSystem,
-		Content: []agent.Content{
-			{Kind: agent.ContentText, Text: "be brief"},
-			{Kind: agent.ContentText, Text: "be kind"},
+	got, err := toSDKMessage(model.Message{
+		Role: model.RoleSystem,
+		Content: []model.Content{
+			{Kind: model.ContentText, Text: "be brief"},
+			{Kind: model.ContentText, Text: "be kind"},
 		},
 	})
 	require.NoError(t, err)
@@ -176,10 +176,10 @@ func TestToSDKMessage_SystemRoleInHistory(t *testing.T) {
 // TestUserMessage_SkipsNilImagePayload proves a nil Image block is
 // dropped rather than panicking or emitting an empty image part.
 func TestUserMessage_SkipsNilImagePayload(t *testing.T) {
-	m := userMessage([]agent.Content{
-		{Kind: agent.ContentText, Text: "look"},
-		{Kind: agent.ContentImage, Image: nil},
-		{Kind: agent.ContentImage, Image: &agent.Image{MediaType: "image/png", Data: []byte{1, 2}}},
+	m := userMessage([]model.Content{
+		{Kind: model.ContentText, Text: "look"},
+		{Kind: model.ContentImage, Image: nil},
+		{Kind: model.ContentImage, Image: &model.Image{MediaType: "image/png", Data: []byte{1, 2}}},
 	})
 	raw, err := json.Marshal(m)
 	require.NoError(t, err)
@@ -196,9 +196,9 @@ func TestUserMessage_SkipsNilImagePayload(t *testing.T) {
 // TestUserMessage_DropsEmptyTextPart keeps the multipart builder from
 // emitting zero-length text blocks (rejected by several gateways).
 func TestUserMessage_DropsEmptyTextPart(t *testing.T) {
-	m := userMessage([]agent.Content{
-		{Kind: agent.ContentText, Text: ""},
-		{Kind: agent.ContentImage, Image: &agent.Image{MediaType: "image/gif", Data: []byte{9}}},
+	m := userMessage([]model.Content{
+		{Kind: model.ContentText, Text: ""},
+		{Kind: model.ContentImage, Image: &model.Image{MediaType: "image/gif", Data: []byte{9}}},
 	})
 	raw, err := json.Marshal(m)
 	require.NoError(t, err)
@@ -239,17 +239,17 @@ func TestComplete_ToolCallResponseRoundTrip(t *testing.T) {
 
 	p, err := New(Config{APIKey: "k", Model: "m", BaseURL: srv.URL})
 	require.NoError(t, err)
-	resp, err := p.Complete(context.Background(), agent.Request{
+	resp, err := p.Complete(context.Background(), model.Request{
 		System:   "be terse",
-		Messages: []agent.Message{agent.NewUserText("find x")},
+		Messages: []model.Message{model.NewUserText("find x")},
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1, "empty text content must not become a block")
-	require.Equal(t, agent.ContentToolUse, resp.Message.Content[0].Kind)
+	require.Equal(t, model.ContentToolUse, resp.Message.Content[0].Kind)
 	tu := resp.Message.Content[0].ToolUse
 	require.NotNil(t, tu)
 	assert.Equal(t, "call-9", tu.ID)
 	assert.Equal(t, "grep", tu.Name)
 	assert.JSONEq(t, `{"pattern":"x"}`, string(tu.Input))
-	assert.Equal(t, agent.StopToolUse, resp.StopReason)
+	assert.Equal(t, model.StopToolUse, resp.StopReason)
 }

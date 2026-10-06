@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -33,10 +33,10 @@ func TestNew_ExplicitName(t *testing.T) {
 }
 
 func TestCollectText_Combines(t *testing.T) {
-	got := collectText([]agent.Content{
-		{Kind: agent.ContentText, Text: "a"},
-		{Kind: agent.ContentText, Text: "b"},
-		{Kind: agent.ContentToolUse},
+	got := collectText([]model.Content{
+		{Kind: model.ContentText, Text: "a"},
+		{Kind: model.ContentText, Text: "b"},
+		{Kind: model.ContentToolUse},
 	})
 	assert.Equal(t, "a\nb", got)
 }
@@ -46,51 +46,51 @@ func TestCollectText_Empty(t *testing.T) {
 }
 
 func TestToSDKMessages_SkipsSystemWhenPassed(t *testing.T) {
-	got, err := toSDKMessages("hi system", []agent.Message{
-		agent.NewUserText("hello"),
+	got, err := toSDKMessages("hi system", []model.Message{
+		model.NewUserText("hello"),
 	})
 	require.NoError(t, err)
 	assert.Len(t, got, 2) // system + user
 }
 
 func TestToSDKMessages_UserRoundtrip(t *testing.T) {
-	got, err := toSDKMessages("", []agent.Message{agent.NewUserText("hi")})
+	got, err := toSDKMessages("", []model.Message{model.NewUserText("hi")})
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 }
 
 func TestToSDKMessages_AssistantWithToolCall(t *testing.T) {
-	msg := agent.Message{
-		Role: agent.RoleAssistant,
-		Content: []agent.Content{
-			{Kind: agent.ContentText, Text: "let me look"},
-			{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	msg := model.Message{
+		Role: model.RoleAssistant,
+		Content: []model.Content{
+			{Kind: model.ContentText, Text: "let me look"},
+			{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 				ID: "call-1", Name: "grep", Input: []byte(`{"pattern":"x"}`),
 			}},
 		},
 	}
-	got, err := toSDKMessages("", []agent.Message{msg})
+	got, err := toSDKMessages("", []model.Message{msg})
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 }
 
 func TestToSDKMessages_ToolResultAsSeparateMessage(t *testing.T) {
-	toolResultMsg := agent.Message{
-		Role: agent.Role("tool"),
-		Content: []agent.Content{
-			{Kind: agent.ContentToolResult, ToolResult: &agent.ToolResult{
+	toolResultMsg := model.Message{
+		Role: model.Role("tool"),
+		Content: []model.Content{
+			{Kind: model.ContentToolResult, ToolResult: &model.ToolResult{
 				ToolUseID: "call-1", Output: "match!",
 			}},
 		},
 	}
-	got, err := toSDKMessages("", []agent.Message{toolResultMsg})
+	got, err := toSDKMessages("", []model.Message{toolResultMsg})
 	require.NoError(t, err)
 	assert.Len(t, got, 1)
 }
 
 func TestToSDKMessages_UnknownRoleErrors(t *testing.T) {
-	_, err := toSDKMessages("", []agent.Message{
-		{Role: agent.Role("weird"), Content: []agent.Content{{Kind: agent.ContentText, Text: "x"}}},
+	_, err := toSDKMessages("", []model.Message{
+		{Role: model.Role("weird"), Content: []model.Content{{Kind: model.ContentText, Text: "x"}}},
 	})
 	assert.Error(t, err)
 }
@@ -105,9 +105,9 @@ func TestToSDKTools(t *testing.T) {
 }
 
 func TestMapFinishReason(t *testing.T) {
-	assert.Equal(t, agent.StopEndTurn, mapFinishReason("stop"))
-	assert.Equal(t, agent.StopToolUse, mapFinishReason("tool_calls"))
-	assert.Equal(t, agent.StopMaxTokens, mapFinishReason("length"))
-	assert.Equal(t, agent.StopOther, mapFinishReason("weird"))
-	assert.Equal(t, agent.StopOther, mapFinishReason(""))
+	assert.Equal(t, model.StopEndTurn, mapFinishReason("stop"))
+	assert.Equal(t, model.StopToolUse, mapFinishReason("tool_calls"))
+	assert.Equal(t, model.StopMaxTokens, mapFinishReason("length"))
+	assert.Equal(t, model.StopOther, mapFinishReason("weird"))
+	assert.Equal(t, model.StopOther, mapFinishReason(""))
 }

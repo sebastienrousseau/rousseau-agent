@@ -8,18 +8,18 @@ import (
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	sdkssestream "github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // Stream runs a streaming completion via the Messages API. It emits
-// agent.StreamEvents for provider-observed progress and finalises with
+// model.StreamEvents for provider-observed progress and finalises with
 // a StreamReport carrying the assembled Response.
 //
 // The SDK's streaming iterator hands us delta events (text_delta,
 // input_json_delta, message_delta, message_stop). We aggregate text
 // deltas into a running assistant message and surface them as
-// agent.StreamTextDelta events for the caller.
-func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.StreamEvent, <-chan agent.StreamReport, error) {
+// model.StreamTextDelta events for the caller.
+func (p *Provider) Stream(ctx context.Context, req model.Request) (<-chan model.StreamEvent, <-chan model.StreamReport, error) {
 	msgs, err := toSDKMessages(req.Messages)
 	if err != nil {
 		return nil, nil, err
@@ -43,8 +43,8 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 
 	stream := p.client.Messages.NewStreaming(ctx, params)
 
-	events := make(chan agent.StreamEvent, 16)
-	report := make(chan agent.StreamReport, 1)
+	events := make(chan model.StreamEvent, 16)
+	report := make(chan model.StreamReport, 1)
 
 	go func() {
 		defer close(events)
@@ -53,14 +53,14 @@ func (p *Provider) Stream(ctx context.Context, req agent.Request) (<-chan agent.
 		if closeErr := stream.Close(); sErr == nil && closeErr != nil {
 			sErr = fmt.Errorf("anthropic: close stream: %w", closeErr)
 		}
-		report <- agent.StreamReport{Response: resp, Err: sErr}
+		report <- model.StreamReport{Response: resp, Err: sErr}
 	}()
 	return events, report, nil
 }
 
-// consumeStream advances the SDK iterator, emits agent.StreamEvent per
-// SSE payload, and assembles the terminal agent.Response.
-func consumeStream(stream *sdkssestream.Stream[sdk.MessageStreamEventUnion], events chan<- agent.StreamEvent) (agent.Response, error) {
+// consumeStream advances the SDK iterator, emits model.StreamEvent per
+// SSE payload, and assembles the terminal model.Response.
+func consumeStream(stream *sdkssestream.Stream[sdk.MessageStreamEventUnion], events chan<- model.StreamEvent) (model.Response, error) {
 	var (
 		message   sdk.Message
 		sentStart bool
@@ -68,40 +68,40 @@ func consumeStream(stream *sdkssestream.Stream[sdk.MessageStreamEventUnion], eve
 	for stream.Next() {
 		evt := stream.Current()
 		if !sentStart {
-			events <- agent.StreamEvent{Kind: agent.StreamStart}
+			events <- model.StreamEvent{Kind: model.StreamStart}
 			sentStart = true
 		}
 
 		if err := message.Accumulate(evt); err != nil {
-			return agent.Response{}, fmt.Errorf("anthropic: accumulate: %w", err)
+			return model.Response{}, fmt.Errorf("anthropic: accumulate: %w", err)
 		}
 
 		switch payload := evt.AsAny().(type) {
 		case sdk.ContentBlockDeltaEvent:
 			text := extractDeltaText(payload)
 			if text != "" {
-				events <- agent.StreamEvent{Kind: agent.StreamTextDelta, Delta: text}
+				events <- model.StreamEvent{Kind: model.StreamTextDelta, Delta: text}
 			}
 		case sdk.ContentBlockStartEvent:
 			if isToolUseStart(payload) {
-				events <- agent.StreamEvent{Kind: agent.StreamToolUse}
+				events <- model.StreamEvent{Kind: model.StreamToolUse}
 			}
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return agent.Response{}, fmt.Errorf("anthropic: stream: %w", err)
+		return model.Response{}, fmt.Errorf("anthropic: stream: %w", err)
 	}
 
 	assistant, err := fromAssembledMessage(&message)
 	if err != nil {
-		return agent.Response{}, err
+		return model.Response{}, err
 	}
-	events <- agent.StreamEvent{Kind: agent.StreamResult}
+	events <- model.StreamEvent{Kind: model.StreamResult}
 
-	return agent.Response{
+	return model.Response{
 		Message:    assistant,
 		StopReason: mapStopReason(string(message.StopReason)),
-		Usage: agent.Usage{
+		Usage: model.Usage{
 			InputTokens:  int(message.Usage.InputTokens),
 			OutputTokens: int(message.Usage.OutputTokens),
 		},
@@ -129,13 +129,13 @@ func isToolUseStart(evt sdk.ContentBlockStartEvent) bool {
 
 // fromAssembledMessage mirrors fromSDKResponse but works on an
 // already-accumulated message rather than a Complete response.
-func fromAssembledMessage(m *sdk.Message) (agent.Message, error) {
+func fromAssembledMessage(m *sdk.Message) (model.Message, error) {
 	if m == nil {
-		return agent.Message{}, errors.New("anthropic: nil assembled message")
+		return model.Message{}, errors.New("anthropic: nil assembled message")
 	}
 	// The Complete path already knows how to convert; delegate.
 	return fromSDKResponse(m)
 }
 
-// Compile-time check that Provider satisfies agent.StreamingProvider.
-var _ agent.StreamingProvider = (*Provider)(nil)
+// Compile-time check that Provider satisfies model.StreamingProvider.
+var _ model.StreamingProvider = (*Provider)(nil)

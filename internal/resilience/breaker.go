@@ -7,7 +7,7 @@ import (
 
 	"github.com/sony/gobreaker/v2"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 )
 
@@ -44,18 +44,18 @@ func (c BreakerConfig) applyDefaults() BreakerConfig {
 	return c
 }
 
-// BreakerProvider wraps an [agent.Provider] with a circuit breaker.
+// BreakerProvider wraps an [model.Provider] with a circuit breaker.
 // When the breaker is Open, Complete returns [gobreaker.ErrOpenState]
 // immediately without touching the wrapped provider.
 type BreakerProvider struct {
-	inner    agent.Provider
-	breaker  *gobreaker.CircuitBreaker[agent.Response]
+	inner    model.Provider
+	breaker  *gobreaker.CircuitBreaker[model.Response]
 	resource string
 }
 
 // NewBreakerProvider constructs a breaker-wrapped provider. resource
 // is used as both the gobreaker name and the metric label.
-func NewBreakerProvider(inner agent.Provider, cfg BreakerConfig) *BreakerProvider {
+func NewBreakerProvider(inner model.Provider, cfg BreakerConfig) *BreakerProvider {
 	cfg = cfg.applyDefaults()
 	resource := inner.Name()
 
@@ -81,7 +81,7 @@ func NewBreakerProvider(inner agent.Provider, cfg BreakerConfig) *BreakerProvide
 		},
 	}
 
-	b := gobreaker.NewCircuitBreaker[agent.Response](settings)
+	b := gobreaker.NewCircuitBreaker[model.Response](settings)
 	observability.CircuitState.WithLabelValues(resource).Set(stateFloat(gobreaker.StateClosed))
 
 	return &BreakerProvider{inner: inner, breaker: b, resource: resource}
@@ -97,8 +97,8 @@ func (p *BreakerProvider) Name() string { return p.inner.Name() }
 // been wrapped in [NonRetryable]. In either case the error is still
 // surfaced to the caller — only the breaker's health metric is
 // spared.
-func (p *BreakerProvider) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
-	return p.breaker.Execute(func() (agent.Response, error) {
+func (p *BreakerProvider) Complete(ctx context.Context, req model.Request) (model.Response, error) {
+	return p.breaker.Execute(func() (model.Response, error) {
 		return p.inner.Complete(ctx, req)
 	})
 }

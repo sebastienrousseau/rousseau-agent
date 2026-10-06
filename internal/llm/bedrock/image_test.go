@@ -7,14 +7,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // TestToBedrockContent_Image asserts the type:"image" wire shape
 // with a base64-encoded source.
 func TestToBedrockContent_Image(t *testing.T) {
 	raw := []byte{0x89, 0x50, 0x4E, 0x47}
-	msg := agent.NewUserImage("image/png", raw, "test")
+	msg := model.NewUserImage("image/png", raw, "test")
 	blocks, err := toBedrockContent(msg.Content)
 	require.NoError(t, err)
 	require.Len(t, blocks, 1)
@@ -28,6 +28,6 @@ func TestToBedrockContent_Image(t *testing.T) {
 }
 
 func TestToBedrockContent_NilImageRejected(t *testing.T) {
-	_, err := toBedrockContent([]agent.Content{{Kind: agent.ContentImage}})
+	_, err := toBedrockContent([]model.Content{{Kind: model.ContentImage}})
 	assert.ErrorContains(t, err, "image content missing payload")
 }

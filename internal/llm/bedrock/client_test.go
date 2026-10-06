@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // stubInvoke satisfies InvokeAPI for tests.
@@ -58,14 +58,14 @@ func TestComplete_HappyPath(t *testing.T) {
 	p, err := New(context.Background(), Config{Region: "us-west-2", Model: "m", Runtime: stub})
 	require.NoError(t, err)
 
-	resp, err := p.Complete(context.Background(), agent.Request{
+	resp, err := p.Complete(context.Background(), model.Request{
 		System:   "you are helpful",
-		Messages: []agent.Message{agent.NewUserText("hello")},
+		Messages: []model.Message{model.NewUserText("hello")},
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1)
 	assert.Equal(t, "hi there", resp.Message.Content[0].Text)
-	assert.Equal(t, agent.StopEndTurn, resp.StopReason)
+	assert.Equal(t, model.StopEndTurn, resp.StopReason)
 	assert.Equal(t, 10, resp.Usage.InputTokens)
 	assert.Equal(t, 2, resp.Usage.OutputTokens)
 
@@ -89,31 +89,31 @@ func TestComplete_ToolUseInResponse(t *testing.T) {
 	p, err := New(context.Background(), Config{Region: "us-west-2", Model: "m", Runtime: stub})
 	require.NoError(t, err)
 
-	resp, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("please grep")},
+	resp, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("please grep")},
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1)
-	assert.Equal(t, agent.ContentToolUse, resp.Message.Content[0].Kind)
+	assert.Equal(t, model.ContentToolUse, resp.Message.Content[0].Kind)
 	assert.Equal(t, "grep", resp.Message.Content[0].ToolUse.Name)
-	assert.Equal(t, agent.StopToolUse, resp.StopReason)
+	assert.Equal(t, model.StopToolUse, resp.StopReason)
 }
 
 func TestComplete_ClientError(t *testing.T) {
 	stub := &stubInvoke{err: errors.New("throttled")}
 	p, err := New(context.Background(), Config{Region: "us-west-2", Model: "m", Runtime: stub})
 	require.NoError(t, err)
-	_, err = p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err = p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	assert.Error(t, err)
 }
 
 func TestBuildBedrockBody_ToolResultMessages(t *testing.T) {
-	req := agent.Request{
-		Messages: []agent.Message{
-			{Role: agent.RoleUser, Content: []agent.Content{
-				{Kind: agent.ContentToolResult, ToolResult: &agent.ToolResult{
+	req := model.Request{
+		Messages: []model.Message{
+			{Role: model.RoleUser, Content: []model.Content{
+				{Kind: model.ContentToolResult, ToolResult: &model.ToolResult{
 					ToolUseID: "call-1", Output: "matched", IsError: false,
 				}},
 			}},
@@ -126,11 +126,11 @@ func TestBuildBedrockBody_ToolResultMessages(t *testing.T) {
 }
 
 func TestBuildBedrockBody_ToolUseInAssistant(t *testing.T) {
-	req := agent.Request{
-		Messages: []agent.Message{{
-			Role: agent.RoleAssistant, Content: []agent.Content{
-				{Kind: agent.ContentText, Text: "let me look"},
-				{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	req := model.Request{
+		Messages: []model.Message{{
+			Role: model.RoleAssistant, Content: []model.Content{
+				{Kind: model.ContentText, Text: "let me look"},
+				{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 					ID: "tu-1", Name: "grep", Input: json.RawMessage(`{"pattern":"foo"}`),
 				}},
 			},
@@ -144,10 +144,10 @@ func TestBuildBedrockBody_ToolUseInAssistant(t *testing.T) {
 }
 
 func TestBuildBedrockBody_SkipsSystemRole(t *testing.T) {
-	req := agent.Request{
-		Messages: []agent.Message{
-			{Role: agent.RoleSystem, Content: []agent.Content{{Kind: agent.ContentText, Text: "sys"}}},
-			agent.NewUserText("hi"),
+	req := model.Request{
+		Messages: []model.Message{
+			{Role: model.RoleSystem, Content: []model.Content{{Kind: model.ContentText, Text: "sys"}}},
+			model.NewUserText("hi"),
 		},
 	}
 	body, err := buildBedrockBody(req, 100)
@@ -158,10 +158,10 @@ func TestBuildBedrockBody_SkipsSystemRole(t *testing.T) {
 }
 
 func TestBuildBedrockBody_BadToolInputErrors(t *testing.T) {
-	req := agent.Request{
-		Messages: []agent.Message{{
-			Role: agent.RoleAssistant, Content: []agent.Content{
-				{Kind: agent.ContentToolUse, ToolUse: &agent.ToolUse{
+	req := model.Request{
+		Messages: []model.Message{{
+			Role: model.RoleAssistant, Content: []model.Content{
+				{Kind: model.ContentToolUse, ToolUse: &model.ToolUse{
 					ID: "1", Name: "n", Input: json.RawMessage(`not json`),
 				}},
 			},
@@ -177,10 +177,10 @@ func TestParseBedrockResponse_MalformedJSON(t *testing.T) {
 }
 
 func TestMapStop(t *testing.T) {
-	assert.Equal(t, agent.StopEndTurn, mapStop("end_turn"))
-	assert.Equal(t, agent.StopToolUse, mapStop("tool_use"))
-	assert.Equal(t, agent.StopMaxTokens, mapStop("max_tokens"))
-	assert.Equal(t, agent.StopOther, mapStop("weird"))
+	assert.Equal(t, model.StopEndTurn, mapStop("end_turn"))
+	assert.Equal(t, model.StopToolUse, mapStop("tool_use"))
+	assert.Equal(t, model.StopMaxTokens, mapStop("max_tokens"))
+	assert.Equal(t, model.StopOther, mapStop("weird"))
 }
 
 func TestComplete_BuildBodyFailureShortCircuits(t *testing.T) {
@@ -193,11 +193,11 @@ func TestComplete_BuildBodyFailureShortCircuits(t *testing.T) {
 	p, err := New(context.Background(), Config{Region: "us-west-2", Model: "m", Runtime: stub})
 	require.NoError(t, err)
 
-	req := agent.Request{Messages: []agent.Message{{
-		Role: agent.RoleUser,
-		Content: []agent.Content{{
-			Kind: agent.ContentToolUse,
-			ToolUse: &agent.ToolUse{
+	req := model.Request{Messages: []model.Message{{
+		Role: model.RoleUser,
+		Content: []model.Content{{
+			Kind: model.ContentToolUse,
+			ToolUse: &model.ToolUse{
 				ID: "call1", Name: "x",
 				Input: []byte(`{not json`), // invalid JSON → buildBedrockBody fails
 			},

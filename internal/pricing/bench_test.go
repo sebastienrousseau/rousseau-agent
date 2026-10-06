@@ -3,7 +3,7 @@ package pricing_test
 import (
 	"testing"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/pricing"
 )
 
@@ -11,7 +11,7 @@ import (
 // a realistic usage record. Runs on every recorded completion so it
 // belongs in the hot path (per-request-per-completion frequency).
 func BenchmarkEstimate_HotPath(b *testing.B) {
-	usage := agent.Usage{
+	usage := model.Usage{
 		InputTokens:              5000,
 		OutputTokens:             800,
 		CacheReadInputTokens:     12000,
@@ -29,7 +29,7 @@ func BenchmarkEstimate_HotPath(b *testing.B) {
 // BenchmarkEstimate_UnknownModel measures the "miss" path — the
 // canonical-name normalisation loop plus the map miss.
 func BenchmarkEstimate_UnknownModel(b *testing.B) {
-	usage := agent.Usage{InputTokens: 1000}
+	usage := model.Usage{InputTokens: 1000}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

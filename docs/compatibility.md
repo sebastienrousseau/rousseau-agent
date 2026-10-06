@@ -30,13 +30,21 @@ Compatibility promise:
 Currently-public packages in `pkg/`:
 
 - `pkg/agent` — agent loop, Provider/Handler/Tool interfaces, Session
-  and Message types
+  and Message types (the types themselves live in `internal/model`
+  and are re-exported; `internal/model` depends on nothing but
+  `internal/tools`, which is what lets providers and stores stay
+  independent of the loop — `scripts/depcheck.sh` enforces it in CI)
 - `pkg/agent/subagent` — sub-agent Spawn primitive
+- `pkg/llm/anthropic`, `pkg/llm/openai`, `pkg/llm/bedrock`,
+  `pkg/llm/vertex` — the API-key providers, so an external module
+  can run the loop with its own key and no Claude Code CLI
 - `pkg/llm/claudecli` — Claude Code CLI provider (exported for
   consumers who want to plug in their own SessionCache without
   importing `internal/`)
-- `pkg/state/sqlite` — SQLite session/OAuth-vault store
-- `pkg/tools` — tool registry and common tool contracts
+- `pkg/recall` — recall store and retriever
+- `pkg/state/sqlite`, `pkg/state/postgres` — session/OAuth-vault stores
+- `pkg/tools`, `pkg/tools/builtin`, `pkg/tools/integrations` — tool
+  registry, common tool contracts, the shipped tools
 
 Test coverage on these packages is the highest-priority tech-debt
 item (see ROADMAP T2).

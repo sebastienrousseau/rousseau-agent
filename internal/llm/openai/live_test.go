@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // mockCompletionServer returns an httptest.Server that responds to
@@ -69,13 +69,13 @@ func TestComplete_TextOnlyResponse(t *testing.T) {
 	p, err := New(Config{APIKey: "sk-test", Model: "gpt-4", BaseURL: server.URL})
 	require.NoError(t, err)
 
-	resp, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hello")},
+	resp, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hello")},
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Message.Content, 1)
 	assert.Equal(t, "hi back", resp.Message.Content[0].Text)
-	assert.Equal(t, agent.StopEndTurn, resp.StopReason)
+	assert.Equal(t, model.StopEndTurn, resp.StopReason)
 	assert.Equal(t, 5, resp.Usage.InputTokens)
 	assert.Equal(t, 3, resp.Usage.OutputTokens)
 }
@@ -87,15 +87,15 @@ func TestComplete_ToolCallResponse(t *testing.T) {
 	p, err := New(Config{APIKey: "sk-test", Model: "gpt-4", BaseURL: server.URL})
 	require.NoError(t, err)
 
-	resp, err := p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("read /tmp/x please")},
+	resp, err := p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("read /tmp/x please")},
 	})
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.Message.Content)
 	// Find the tool_use block.
 	var haveToolUse bool
 	for _, c := range resp.Message.Content {
-		if c.Kind == agent.ContentToolUse && c.ToolUse != nil {
+		if c.Kind == model.ContentToolUse && c.ToolUse != nil {
 			haveToolUse = true
 			assert.Equal(t, "read", c.ToolUse.Name)
 			var args map[string]string
@@ -104,7 +104,7 @@ func TestComplete_ToolCallResponse(t *testing.T) {
 		}
 	}
 	assert.True(t, haveToolUse)
-	assert.Equal(t, agent.StopToolUse, resp.StopReason)
+	assert.Equal(t, model.StopToolUse, resp.StopReason)
 }
 
 func TestComplete_ServerError(t *testing.T) {
@@ -116,8 +116,8 @@ func TestComplete_ServerError(t *testing.T) {
 	p, err := New(Config{APIKey: "sk-test", Model: "gpt-4", BaseURL: server.URL})
 	require.NoError(t, err)
 
-	_, err = p.Complete(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	_, err = p.Complete(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	assert.Error(t, err)
 }

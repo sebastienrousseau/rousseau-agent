@@ -1,4 +1,4 @@
-package agent
+package model
 
 import (
 	"context"
@@ -23,11 +23,8 @@ type Request struct {
 	// opinion — provider default applies). Providers that do not
 	// implement caching ignore this value; providers that do
 	// (Anthropic's ephemeral cache) mark the last CacheableMessages
-	// blocks with cache_control.
-	//
-	// Compressor implementations set this to len(recentMessages) - 1
-	// after a rewrite so the summary block hits the cache on the very
-	// next turn.
+	// blocks with cache_control. The agent loop sets it to the number
+	// of messages already in the session on every iteration.
 	CacheableMessages int
 }
 

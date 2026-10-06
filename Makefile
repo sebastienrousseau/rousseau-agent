@@ -68,7 +68,10 @@ complexity: ## Ratchet gate: no new or worse functions over cyclomatic 10 / cogn
 complexity-baseline: ## Regenerate .complexity-baseline.txt after shrinking an offender
 	@bash scripts/complexity-gate.sh baseline
 
-check: vet lint complexity test-race vuln ## Full quality gate
+depcheck: ## Providers and stores must not depend on internal/agent
+	@bash scripts/depcheck.sh
+
+check: vet depcheck lint complexity test-race vuln ## Full quality gate
 
 build: ## Build the binary
 	@mkdir -p bin

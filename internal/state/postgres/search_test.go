@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // openSearchStore opens a Store, ensures the base schema + the
@@ -38,12 +38,12 @@ func openSearchStore(t *testing.T) (*Store, context.Context) {
 // queries have something to hit. Uses the canonical Store.Save
 // path — that's where the JSON-serialisation shape lives, and we
 // want the index to hold whatever Save actually wrote.
-func saveSession(t *testing.T, store *Store, ctx context.Context, title, body string) *agent.Session {
+func saveSession(t *testing.T, store *Store, ctx context.Context, title, body string) *model.Session {
 	t.Helper()
-	sess := &agent.Session{
+	sess := &model.Session{
 		ID:        uuid.NewString(),
 		Title:     title,
-		Messages:  []agent.Message{{Role: agent.RoleUser, Content: []agent.Content{{Kind: agent.ContentText, Text: body}}}},
+		Messages:  []model.Message{{Role: model.RoleUser, Content: []model.Content{{Kind: model.ContentText, Text: body}}}},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}

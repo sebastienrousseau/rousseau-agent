@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
@@ -19,7 +19,7 @@ type fakeBackend struct {
 	searchHits []sqlitestore.SearchHit
 	searchErr  error
 	summaries  []state.Summary
-	session    *agent.Session
+	session    *model.Session
 	loadErr    error
 	cronJobs   []sqlitestore.CronJob
 	cronErr    error
@@ -31,7 +31,7 @@ func (f *fakeBackend) Search(context.Context, string, sqlitestore.SearchOptions)
 func (f *fakeBackend) List(context.Context, int) ([]state.Summary, error) {
 	return f.summaries, nil
 }
-func (f *fakeBackend) Load(_ context.Context, id string) (*agent.Session, error) {
+func (f *fakeBackend) Load(_ context.Context, id string) (*model.Session, error) {
 	if f.loadErr != nil {
 		return nil, f.loadErr
 	}
@@ -99,9 +99,9 @@ func TestListSessionsTool_Empty(t *testing.T) {
 }
 
 func TestReadSessionTool_HappyPath(t *testing.T) {
-	sess := agent.NewSession("welcome")
-	sess.Append(agent.NewUserText("hi"))
-	sess.Append(agent.NewAssistantText("hello"))
+	sess := model.NewSession("welcome")
+	sess.Append(model.NewUserText("hi"))
+	sess.Append(model.NewAssistantText("hello"))
 	spec := readSessionTool(&fakeBackend{session: sess})
 	args, _ := json.Marshal(map[string]string{"id": sess.ID}) //nolint:errcheck // trusted static input
 	content, err := callTool(t, spec, string(args))

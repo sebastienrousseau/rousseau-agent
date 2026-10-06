@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // TestCanonical_DotSeparatedVersionSuffix covers deployments that pin a
@@ -38,7 +38,7 @@ func TestCanonical_DotSeparatedVersionSuffix(t *testing.T) {
 // TestEstimate_DatedBuildResolvesToBaseRate proves the canonicalisation
 // above actually reaches the price table.
 func TestEstimate_DatedBuildResolvesToBaseRate(t *testing.T) {
-	u := agent.Usage{InputTokens: 1_000_000}
+	u := model.Usage{InputTokens: 1_000_000}
 	dated, ok := Estimate(u, "claude-opus-4-6.20260615", nil)
 	require := assert.New(t)
 	require.True(ok)

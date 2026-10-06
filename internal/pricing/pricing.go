@@ -1,5 +1,5 @@
 // Package pricing computes USD cost estimates for a completion given
-// its [agent.Usage] and the model that was used.
+// its [model.Usage] and the model that was used.
 //
 // The price table is baked into the binary at release time (see
 // [DefaultTable]). Operators wanting to override — e.g. because their
@@ -14,7 +14,7 @@ package pricing
 import (
 	"strings"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // Rate is the per-million-token USD price for one dimension of usage.
@@ -99,7 +99,7 @@ var DefaultTable = Table{
 //   - unattributed CacheCreation    × CacheWriteEphemeral5mPerMTok (default TTL)
 //   - InputTokens (non-cache)       × InputPerMTok
 //   - OutputTokens                  × OutputPerMTok
-func Estimate(u agent.Usage, model string, table Table) (float64, bool) {
+func Estimate(u model.Usage, model string, table Table) (float64, bool) {
 	if table == nil {
 		table = DefaultTable
 	}

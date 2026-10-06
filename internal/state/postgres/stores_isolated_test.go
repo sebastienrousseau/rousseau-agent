@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 )
 
@@ -29,7 +29,7 @@ func TestPGListBySender_IsScopedToTheSender(t *testing.T) {
 	ctx := context.Background()
 	s := openIsolated(t)
 	for _, k := range []string{"signal:+447700900123", "imessage:+447700900123", "signal:+447700900123"} {
-		sess := agent.NewSession(k)
+		sess := model.NewSession(k)
 		sess.Sender = k
 		require.NoError(t, s.Save(ctx, sess))
 	}

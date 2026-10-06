@@ -7,14 +7,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
-// TestToSDKContent_ImageBlock verifies that an agent.ContentImage
+// TestToSDKContent_ImageBlock verifies that an model.ContentImage
 // block flows through toSDKContent into the SDK's image-block wire
 // shape without truncation.
 func TestToSDKContent_ImageBlock(t *testing.T) {
-	msg := agent.NewUserImage("image/png", []byte{0x89, 0x50, 0x4E, 0x47}, "test")
+	msg := model.NewUserImage("image/png", []byte{0x89, 0x50, 0x4E, 0x47}, "test")
 	blocks, err := toSDKContent(msg.Content)
 	require.NoError(t, err)
 	require.Len(t, blocks, 1)
@@ -34,6 +34,6 @@ func TestToSDKContent_ImageBlock(t *testing.T) {
 }
 
 func TestToSDKContent_NilImageRejected(t *testing.T) {
-	_, err := toSDKContent([]agent.Content{{Kind: agent.ContentImage}})
+	_, err := toSDKContent([]model.Content{{Kind: model.ContentImage}})
 	assert.ErrorContains(t, err, "image content missing payload")
 }

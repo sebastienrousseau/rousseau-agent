@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 )
 
@@ -60,9 +60,9 @@ func streamProvider(srv *httptest.Server) *Provider {
 }
 
 // drain collects every event and the terminal report.
-func drain(t *testing.T, evs <-chan agent.StreamEvent, rep <-chan agent.StreamReport) ([]agent.StreamEvent, agent.StreamReport) {
+func drain(t *testing.T, evs <-chan model.StreamEvent, rep <-chan model.StreamReport) ([]model.StreamEvent, model.StreamReport) {
 	t.Helper()
-	var got []agent.StreamEvent
+	var got []model.StreamEvent
 	for e := range evs {
 		got = append(got, e)
 	}
@@ -71,8 +71,8 @@ func drain(t *testing.T, evs <-chan agent.StreamEvent, rep <-chan agent.StreamRe
 	return got, report
 }
 
-func kinds(evs []agent.StreamEvent) []agent.StreamEventKind {
-	out := make([]agent.StreamEventKind, 0, len(evs))
+func kinds(evs []model.StreamEvent) []model.StreamEventKind {
+	out := make([]model.StreamEventKind, 0, len(evs))
 	for _, e := range evs {
 		out = append(out, e.Kind)
 	}
@@ -102,10 +102,10 @@ func TestStream_AssemblesTextAndToolUse(t *testing.T) {
 	srv := streamServer(t, happyScript, &body)
 	p := streamProvider(srv)
 
-	evs, rep, err := p.Stream(context.Background(), agent.Request{
+	evs, rep, err := p.Stream(context.Background(), model.Request{
 		System:            "be terse",
 		CacheableMessages: 1,
-		Messages:          []agent.Message{agent.NewUserText("find x")},
+		Messages:          []model.Message{model.NewUserText("find x")},
 		Tools: []tools.Definition{{
 			Name: "grep", Description: "search", InputSchema: map[string]any{"type": "object"},
 		}},
@@ -117,12 +117,12 @@ func TestStream_AssemblesTextAndToolUse(t *testing.T) {
 
 	// Exactly one start, one delta per non-empty text_delta, one
 	// tool-use notice, one terminal result.
-	assert.Equal(t, []agent.StreamEventKind{
-		agent.StreamStart,
-		agent.StreamTextDelta,
-		agent.StreamTextDelta,
-		agent.StreamToolUse,
-		agent.StreamResult,
+	assert.Equal(t, []model.StreamEventKind{
+		model.StreamStart,
+		model.StreamTextDelta,
+		model.StreamTextDelta,
+		model.StreamToolUse,
+		model.StreamResult,
 	}, kinds(got))
 
 	var text strings.Builder
@@ -132,7 +132,7 @@ func TestStream_AssemblesTextAndToolUse(t *testing.T) {
 	assert.Equal(t, "Looking", text.String())
 
 	require.Len(t, report.Response.Message.Content, 2)
-	assert.Equal(t, agent.ContentText, report.Response.Message.Content[0].Kind)
+	assert.Equal(t, model.ContentText, report.Response.Message.Content[0].Kind)
 	assert.Equal(t, "Looking", report.Response.Message.Content[0].Text)
 
 	tu := report.Response.Message.Content[1].ToolUse
@@ -141,7 +141,7 @@ func TestStream_AssemblesTextAndToolUse(t *testing.T) {
 	assert.Equal(t, "grep", tu.Name)
 	assert.JSONEq(t, `{"pattern":"x"}`, string(tu.Input))
 
-	assert.Equal(t, agent.StopToolUse, report.Response.StopReason)
+	assert.Equal(t, model.StopToolUse, report.Response.StopReason)
 	assert.Equal(t, 11, report.Response.Usage.InputTokens)
 	assert.Equal(t, 9, report.Response.Usage.OutputTokens)
 
@@ -179,16 +179,16 @@ func TestStream_NoSystemOrToolsOmitsFields(t *testing.T) {
 		{"message_stop", `{"type":"message_stop"}`},
 	}, &body)
 
-	evs, rep, err := streamProvider(srv).Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	evs, rep, err := streamProvider(srv).Stream(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.NoError(t, err)
 	got, report := drain(t, evs, rep)
 	require.NoError(t, report.Err)
 	assert.Equal(t, "ok", report.Response.Message.Content[0].Text)
-	assert.Equal(t, agent.StopEndTurn, report.Response.StopReason)
-	assert.Equal(t, []agent.StreamEventKind{
-		agent.StreamStart, agent.StreamTextDelta, agent.StreamResult,
+	assert.Equal(t, model.StopEndTurn, report.Response.StopReason)
+	assert.Equal(t, []model.StreamEventKind{
+		model.StreamStart, model.StreamTextDelta, model.StreamResult,
 	}, kinds(got))
 	assert.NotContains(t, body, "system")
 	assert.NotContains(t, body, "tools")
@@ -202,10 +202,10 @@ func TestStream_ConversionErrorIsSynchronous(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	evs, rep, err := streamProvider(srv).Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{{
-			Role:    agent.RoleAssistant,
-			Content: []agent.Content{{Kind: agent.ContentToolUse}}, // missing payload
+	evs, rep, err := streamProvider(srv).Stream(context.Background(), model.Request{
+		Messages: []model.Message{{
+			Role:    model.RoleAssistant,
+			Content: []model.Content{{Kind: model.ContentToolUse}}, // missing payload
 		}},
 	})
 	require.Error(t, err)
@@ -223,8 +223,8 @@ func TestStream_AccumulateErrorSurfaces(t *testing.T) {
 		{"message_stop", `{"type":"message_stop"}`},
 	}, nil)
 
-	evs, rep, err := streamProvider(srv).Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	evs, rep, err := streamProvider(srv).Stream(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.NoError(t, err)
 	got, report := drain(t, evs, rep)
@@ -232,7 +232,7 @@ func TestStream_AccumulateErrorSurfaces(t *testing.T) {
 	assert.Contains(t, report.Err.Error(), "anthropic: accumulate")
 	assert.Empty(t, report.Response.Message.Content)
 	// The start event still reached the caller before the failure.
-	assert.Equal(t, []agent.StreamEventKind{agent.StreamStart}, kinds(got))
+	assert.Equal(t, []model.StreamEventKind{model.StreamStart}, kinds(got))
 }
 
 // TestStream_UpstreamErrorEventSurfaces covers stream.Err(): the API
@@ -243,8 +243,8 @@ func TestStream_UpstreamErrorEventSurfaces(t *testing.T) {
 		{"error", `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`},
 	}, nil)
 
-	evs, rep, err := streamProvider(srv).Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	evs, rep, err := streamProvider(srv).Stream(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.NoError(t, err)
 	_, report := drain(t, evs, rep)
@@ -267,15 +267,15 @@ func TestStream_TruncatedStreamDeliversDeltasOnly(t *testing.T) {
 		{"content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"half"}}`},
 	}, nil)
 
-	evs, rep, err := streamProvider(srv).Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	evs, rep, err := streamProvider(srv).Stream(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.NoError(t, err)
 	got, report := drain(t, evs, rep)
 	require.NoError(t, report.Err)
 
-	assert.Equal(t, []agent.StreamEventKind{
-		agent.StreamStart, agent.StreamTextDelta, agent.StreamResult,
+	assert.Equal(t, []model.StreamEventKind{
+		model.StreamStart, model.StreamTextDelta, model.StreamResult,
 	}, kinds(got))
 	var streamed strings.Builder
 	for _, e := range got {
@@ -286,11 +286,11 @@ func TestStream_TruncatedStreamDeliversDeltasOnly(t *testing.T) {
 	require.Len(t, report.Response.Message.Content, 1)
 	assert.Empty(t, report.Response.Message.Content[0].Text,
 		"an unterminated block is not folded into the assembled message")
-	assert.Equal(t, agent.StopOther, report.Response.StopReason)
+	assert.Equal(t, model.StopOther, report.Response.StopReason)
 }
 
 // TestStream_UnsupportedBlockFailsAssembly: a thinking block has no
-// agent.Content equivalent, so assembling the final message errors.
+// model.Content equivalent, so assembling the final message errors.
 func TestStream_UnsupportedBlockFailsAssembly(t *testing.T) {
 	srv := streamServer(t, []sseEvent{
 		{"message_start", `{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`},
@@ -300,15 +300,15 @@ func TestStream_UnsupportedBlockFailsAssembly(t *testing.T) {
 		{"message_stop", `{"type":"message_stop"}`},
 	}, nil)
 
-	evs, rep, err := streamProvider(srv).Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	evs, rep, err := streamProvider(srv).Stream(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.NoError(t, err)
 	got, report := drain(t, evs, rep)
 	require.Error(t, report.Err)
 	assert.Contains(t, report.Err.Error(), "unsupported content block")
 	// No StreamResult is emitted when assembly fails.
-	assert.NotContains(t, kinds(got), agent.StreamResult)
+	assert.NotContains(t, kinds(got), model.StreamResult)
 }
 
 // -- transport double for the Close() error branch ---------------------
@@ -360,8 +360,8 @@ func TestStream_CloseErrorSurfacesWhenStreamSucceeded(t *testing.T) {
 		cfg: Config{APIKey: "sk-test", Model: "m", MaxTokens: 64},
 	}
 
-	evs, rep, err := p.Stream(context.Background(), agent.Request{
-		Messages: []agent.Message{agent.NewUserText("hi")},
+	evs, rep, err := p.Stream(context.Background(), model.Request{
+		Messages: []model.Message{model.NewUserText("hi")},
 	})
 	require.NoError(t, err)
 	_, report := drain(t, evs, rep)
