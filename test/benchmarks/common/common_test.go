@@ -132,6 +132,31 @@ func TestResultsDir_CreatesRelativeToCwd(t *testing.T) {
 	assert.True(t, info.IsDir())
 }
 
+func TestResultsDir_ResolvesToModuleRootFromNestedPackageDir(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test\n"), 0o644))
+	nested := filepath.Join(root, "test", "benchmarks", "swe-bench")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	t.Chdir(nested)
+
+	dir, err := ResultsDir()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, "test", "benchmarks", "results"), dir)
+	info, statErr := os.Stat(dir)
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir())
+}
+
+func TestResultsDir_EnvOverrideWins(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "elsewhere")
+	t.Setenv("ROUSSEAU_BENCH_RESULTS", want)
+	t.Chdir(t.TempDir())
+
+	dir, err := ResultsDir()
+	require.NoError(t, err)
+	assert.Equal(t, want, dir)
+}
+
 func TestResultsDir_MkdirFailure(t *testing.T) {
 	// A regular file where the directory needs to go makes MkdirAll fail.
 	root := t.TempDir()
