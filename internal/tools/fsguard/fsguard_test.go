@@ -110,6 +110,28 @@ func TestNew_RejectsRelativeEntries(t *testing.T) {
 	assert.NoError(t, err, "a root that does not exist yet resolves through its parent")
 }
 
+func TestDefaultDeny_WithoutHomeKeepsSystemEntries(t *testing.T) {
+	t.Setenv("HOME", "")
+	got := DefaultDeny()
+	assert.Contains(t, got, "/proc")
+	assert.Len(t, got, 6, "no home-relative entries when $HOME is unset")
+}
+
+func TestWithin(t *testing.T) {
+	assert.True(t, within("/a/b", "/a"))
+	assert.True(t, within("/a", "/a"))
+	assert.False(t, within("/ab", "/a"))
+	assert.True(t, within("/anything", "/"), "the filesystem root contains every path")
+	assert.True(t, within("/", "/"))
+}
+
+func TestResolveExisting_FallsBackToCleanedPath(t *testing.T) {
+	// A path with no existing ancestor other than "/" still resolves
+	// through "/" and keeps its tail intact.
+	got := resolveExisting(filepath.Join(string(filepath.Separator), "no-such-dir-xyz", "f"))
+	assert.Equal(t, filepath.Join(string(filepath.Separator), "no-such-dir-xyz", "f"), got)
+}
+
 func TestDefault_IsSingletonWithDenyList(t *testing.T) {
 	assert.Same(t, Default(), Default())
 	assert.Empty(t, Default().Root())

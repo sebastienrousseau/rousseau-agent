@@ -48,35 +48,32 @@ type Guard struct {
 // New builds a guard with an optional workspace root and the default
 // deny list plus extraDeny. Root and deny entries are symlink-resolved
 // where they exist so comparisons happen on real paths. An empty root
-// means "any path not on the deny list".
+// means "any path not on the deny list". The only error is a relative
+// root or deny entry.
 func New(root string, extraDeny []string) (*Guard, error) {
-	g := &Guard{}
-	if root != "" {
-		if !filepath.IsAbs(root) {
-			return nil, fmt.Errorf("fsguard: root %q: %w", root, ErrRelative)
-		}
-		r, err := resolveExisting(filepath.Clean(root))
-		if err != nil {
-			return nil, fmt.Errorf("fsguard: root %q: %w", root, err)
-		}
-		g.root = r
+	if root != "" && !filepath.IsAbs(root) {
+		return nil, fmt.Errorf("fsguard: root %q: %w", root, ErrRelative)
 	}
-	for _, d := range append(DefaultDeny(), extraDeny...) {
-		if d == "" {
-			continue
-		}
-		if !filepath.IsAbs(d) {
+	for _, d := range extraDeny {
+		if d != "" && !filepath.IsAbs(d) {
 			return nil, fmt.Errorf("fsguard: deny entry %q: %w", d, ErrRelative)
 		}
-		r, err := resolveExisting(filepath.Clean(d))
-		if err != nil {
-			// A deny entry that cannot be resolved still protects its
-			// literal spelling.
-			r = filepath.Clean(d)
-		}
-		g.deny = append(g.deny, r)
 	}
-	return g, nil
+	return newGuard(root, append(DefaultDeny(), extraDeny...)), nil
+}
+
+// newGuard resolves already-validated absolute entries.
+func newGuard(root string, deny []string) *Guard {
+	g := &Guard{}
+	if root != "" {
+		g.root = resolveExisting(filepath.Clean(root))
+	}
+	for _, d := range deny {
+		if d != "" {
+			g.deny = append(g.deny, resolveExisting(filepath.Clean(d)))
+		}
+	}
+	return g
 }
 
 var (
@@ -89,15 +86,7 @@ var (
 // deny list applies even to library consumers that never configure
 // one.
 func Default() *Guard {
-	defaultOnce.Do(func() {
-		g, err := New("", nil)
-		if err != nil {
-			// New only fails on a relative root or deny entry; the
-			// defaults are absolute by construction.
-			g = &Guard{}
-		}
-		defaultGuard = g
-	})
+	defaultOnce.Do(func() { defaultGuard = newGuard("", DefaultDeny()) })
 	return defaultGuard
 }
 
@@ -144,10 +133,7 @@ func (g *Guard) Resolve(path string) (string, error) {
 	if path == "" || !filepath.IsAbs(path) {
 		return "", fmt.Errorf("%w: %q", ErrRelative, path)
 	}
-	real, err := resolveExisting(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("fsguard: resolve %q: %w", path, err)
-	}
+	real := resolveExisting(filepath.Clean(path))
 	for _, d := range g.deny {
 		if within(real, d) {
 			return "", fmt.Errorf("%w: %s", ErrDenied, path)
@@ -172,23 +158,23 @@ func within(p, base string) bool {
 }
 
 // resolveExisting symlink-resolves the longest existing ancestor of
-// p and re-attaches the non-existent tail, so a path that is about to
-// be created still compares on its real parent directory.
-func resolveExisting(p string) (string, error) {
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r, nil
-	}
+// the absolute, cleaned path p and re-attaches the non-existent tail,
+// so a path that is about to be created still compares on its real
+// parent directory. Walking up always terminates at the filesystem
+// root; should even that fail to resolve, the cleaned path is
+// returned unchanged.
+func resolveExisting(p string) string {
 	var tail []string
 	cur := p
 	for {
+		if r, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(append([]string{r}, tail...)...)
+		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
-			return "", fmt.Errorf("no existing ancestor for %q", p)
+			return p
 		}
 		tail = append([]string{filepath.Base(cur)}, tail...)
 		cur = parent
-		if r, err := filepath.EvalSymlinks(cur); err == nil {
-			return filepath.Join(append([]string{r}, tail...)...), nil
-		}
 	}
 }
