@@ -50,18 +50,26 @@ func expandValue(v reflect.Value, missing map[string]struct{}) {
 			expandValue(v.Elem(), missing)
 		}
 	case reflect.Struct:
-		for i := 0; i < v.NumField(); i++ {
-			if v.Type().Field(i).IsExported() {
-				expandValue(v.Field(i), missing)
-			}
-		}
+		expandStruct(v, missing)
 	case reflect.Slice, reflect.Array:
-		for i := 0; i < v.Len(); i++ {
-			expandValue(v.Index(i), missing)
-		}
+		expandSlice(v, missing)
 	case reflect.Map:
 		expandMap(v, missing)
 	default:
+	}
+}
+
+func expandStruct(v reflect.Value, missing map[string]struct{}) {
+	for i := 0; i < v.NumField(); i++ {
+		if v.Type().Field(i).IsExported() {
+			expandValue(v.Field(i), missing)
+		}
+	}
+}
+
+func expandSlice(v reflect.Value, missing map[string]struct{}) {
+	for i := 0; i < v.Len(); i++ {
+		expandValue(v.Index(i), missing)
 	}
 }
 
