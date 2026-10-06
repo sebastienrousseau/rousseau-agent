@@ -61,7 +61,14 @@ type OIDCDirectory struct {
 	jwks         map[string]jwkKey // kid → parsed key
 	jwksFetched  time.Time
 	jwksFetching sync.Mutex // serialises concurrent refreshes
+	// jwksForcedAt is when an unknown kid last forced a refresh;
+	// guarded by jwksFetching.
+	jwksForcedAt time.Time
 }
+
+// jwksMinRefresh is the shortest interval between JWKS fetches
+// triggered by unknown key IDs.
+const jwksMinRefresh = time.Minute
 
 // NewOIDCDirectory constructs a running verifier. Does NOT hit the
 // network — discovery + JWKS fetches happen lazily on first
@@ -74,6 +81,13 @@ func NewOIDCDirectory(cfg OIDCConfig, logger *slog.Logger) (*OIDCDirectory, erro
 	}
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if cfg.Audience == "" {
+		// Without an audience any token the IdP issued for any of
+		// its clients is accepted here. Not fatal (some deployments
+		// run a single client) but worth a line in the startup log.
+		logger.Warn("sso.oidc.audience_unset",
+			slog.String("effect", "tokens issued for other clients of this issuer are accepted; set sso.oidc.audience"))
 	}
 	cfg = cfg.applyDefaults()
 	return &OIDCDirectory{
@@ -165,13 +179,23 @@ func (d *OIDCDirectory) ResolveTransportID(ctx context.Context, transport, exter
 // first so an expired token doesn't cost a string compare.
 func (d *OIDCDirectory) checkClaims(c jwtClaims, now time.Time) error {
 	skew := d.cfg.ClockSkew
-	if c.Exp > 0 && now.Add(-skew).Unix() > c.Exp {
+	// exp and iss are mandatory. A token signed by the IdP's key but
+	// lacking them used to be accepted and then bound for the 24 h
+	// default, so a leaked long-lived or mis-issued token never aged
+	// out and could not be tied to this issuer.
+	if c.Exp == 0 {
+		return fmt.Errorf("%w: missing exp claim", ErrTokenInvalid)
+	}
+	if now.Add(-skew).Unix() > c.Exp {
 		return ErrTokenExpired
 	}
 	if c.Nbf > 0 && now.Add(skew).Unix() < c.Nbf {
 		return ErrTokenExpired
 	}
-	if c.Iss != "" && c.Iss != d.cfg.Issuer {
+	if c.Iss == "" {
+		return fmt.Errorf("%w: missing iss claim", ErrIssuerMismatch)
+	}
+	if c.Iss != d.cfg.Issuer {
 		return fmt.Errorf("%w: got %q want %q", ErrIssuerMismatch, c.Iss, d.cfg.Issuer)
 	}
 	if d.cfg.Audience != "" && !c.matchAudience(d.cfg.Audience) {
@@ -237,6 +261,16 @@ func (d *OIDCDirectory) resolveKey(ctx context.Context, kid string) (jwkKey, err
 	d.jwksMu.RUnlock()
 	if ok && time.Since(fetched) < d.cfg.JWKSRefresh {
 		return k, nil
+	}
+	// An unknown kid forces a refresh (IdPs rotate keys on their own
+	// schedule), but a second forced refresh within jwksMinRefresh is
+	// refused: otherwise `/login` spam with made-up kids turns every
+	// attempt into an IdP round-trip.
+	if !ok && !fetched.IsZero() { // a cold cache is a first fetch, not a forced one
+		if !d.jwksForcedAt.IsZero() && time.Since(d.jwksForcedAt) < jwksMinRefresh {
+			return jwkKey{}, fmt.Errorf("%w: kid %q not in JWKS (refresh rate-limited)", ErrTokenInvalid, kid)
+		}
+		d.jwksForcedAt = time.Now()
 	}
 
 	if err := d.refreshJWKS(ctx); err != nil {

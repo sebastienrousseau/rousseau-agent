@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -197,6 +198,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "task must set prompt or skill_name")
 		return
 	}
+	task.Peer = peerFromContext(r.Context())
 
 	state := s.spawnTask(task)
 	writeJSON(w, http.StatusAccepted, map[string]string{
@@ -283,12 +285,32 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 			writeErr(w, http.StatusUnauthorized, "missing bearer token")
 			return
 		}
-		if _, ok := tokens[strings.TrimPrefix(hdr, "Bearer ")]; !ok {
+		tok := strings.TrimPrefix(hdr, "Bearer ")
+		if _, ok := tokens[tok]; !ok {
 			writeErr(w, http.StatusForbidden, "invalid bearer token")
 			return
 		}
-		h(w, r)
+		h(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, PeerID(tok))))
 	}
+}
+
+// peerKey is the context key for the authenticated peer identity.
+type peerKey struct{}
+
+// PeerID derives a stable, non-reversible identity from a bearer
+// token: "tok:" plus the first 16 hex chars of its SHA-256. Operators
+// bind RBAC and audit rules to this value; it cannot be forged by a
+// caller that does not hold the token.
+func PeerID(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return "tok:" + hex.EncodeToString(sum[:8])
+}
+
+// peerFromContext returns the authenticated peer id, or "" when the
+// server runs without auth.
+func peerFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(peerKey{}).(string)
+	return id
 }
 
 // spawnTask records a new task, launches its Handler in a goroutine,
