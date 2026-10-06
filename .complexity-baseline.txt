@@ -97,7 +97,6 @@ cyclo	13	claudecli	(*Provider).drainStream	internal/llm/claudecli/stream.go
 cyclo	34	cli	assembleDaemon	internal/cli/daemon.go
 cyclo	15	cli	buildA2AServer	internal/cli/a2a_daemon.go
 cyclo	13	cli	buildChildProvider	internal/cli/provider.go
-cyclo	16	cli	buildProvider	internal/cli/provider.go
 cyclo	12	cli	buildRateLimiters	internal/cli/wiring.go
 cyclo	15	cli	checkGovernance	internal/cli/doctor.go
 cyclo	12	cli	checkSSO	internal/cli/doctor.go

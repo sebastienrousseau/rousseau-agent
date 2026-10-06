@@ -551,10 +551,24 @@ type RateLimitConfig struct {
 // ResilienceConfig configures panic-recovery and circuit-breaker
 // middleware.
 type ResilienceConfig struct {
-	// CircuitBreaker configures every provider-side breaker with the
-	// same settings. Zero-value uses gobreaker defaults documented on
-	// resilience.BreakerConfig.
+	// CircuitBreaker configures the provider-side breaker. The breaker
+	// is wired only when max_failures is set; the other fields fall
+	// back to the defaults documented on resilience.BreakerConfig.
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
+	// Retry configures retries of retryable provider errors (rate
+	// limits, overloaded, 5xx, request timeouts) for the API-key
+	// providers. On by default with 3 attempts; max_attempts: 1
+	// disables it. claudecli has its own retry logic and is not
+	// wrapped.
+	Retry RetryConfig `mapstructure:"retry"`
+}
+
+// RetryConfig mirrors resilience.RetryConfig via viper tags.
+type RetryConfig struct {
+	MaxAttempts     int `mapstructure:"max_attempts"`
+	BaseDelayMS     int `mapstructure:"base_delay_ms"`
+	MaxDelayMS      int `mapstructure:"max_delay_ms"`
+	MaxRetryAfterMS int `mapstructure:"max_retry_after_ms"`
 }
 
 // CircuitBreakerConfig mirrors resilience.BreakerConfig via viper tags.
