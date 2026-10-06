@@ -17,7 +17,9 @@ import (
 // TestSoak drives a synthetic workload against a fake provider while
 // [Monitor] samples runtime + FD counts. Duration is controlled by
 // SOAK_DURATION (default 30s — smoke). PR CI runs 30m; nightly runs
-// 24h.
+// 5h30m, the longest run that fits under the 6-hour hard ceiling
+// GitHub-hosted runners impose on a single job. A 24h soak needs a
+// self-hosted runner (workflow_dispatch with duration=24h).
 //
 // Failure modes checked:
 //   - goroutine count leaked past 1.2× baseline
