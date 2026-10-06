@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/builtin"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/fsguard"
+	"github.com/sebastienrousseau/rousseau-agent/internal/tools/integrations"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/sandbox"
 )
 
@@ -72,6 +74,42 @@ func buildBashTool(cfg config.BashConfig) (*builtin.BashTool, error) {
 	tool := builtin.NewBashToolWithSandbox(timeout, backend)
 	tool.EnvPassthrough = cfg.EnvPassthrough
 	return tool, nil
+}
+
+// buildDaemonToolRegistry assembles the daemon's tool registry: the
+// guarded file tools, the (policy-checked) bash tool, spawn_subagent
+// and every enabled integration suite. Split out of assembleDaemon
+// so the daemon constructor stays a sequence of subsystem builders.
+func buildDaemonToolRegistry(opts *Options) (*tools.Registry, error) {
+	cfg := opts.Config
+	registry := tools.NewRegistry()
+	guard, err := buildFSGuard(cfg.Tools.FS)
+	if err != nil {
+		return nil, err
+	}
+	registerFileTools(registry, guard)
+	if err := requireSandboxPolicy(cfg.Tools.Bash, "daemon"); err != nil {
+		return nil, err
+	}
+	bash, err := buildBashTool(cfg.Tools.Bash)
+	if err != nil {
+		return nil, fmt.Errorf("cli: build bash tool: %w", err)
+	}
+	registry.MustRegister(bash)
+	// spawn_subagent exposes the sub-agent parallelism primitive
+	// (subagent.Spawn) to the model. Zero-value Policy uses the
+	// defaults documented on subagent.Policy (MaxConcurrent=4,
+	// PerTaskTimeout=5m, no aggregate token budget). Operators wanting
+	// tighter limits can pass a non-zero Policy here.
+	registry.MustRegister(builtin.NewSpawnSubagentTool(subagent.Policy{}))
+
+	// Register every enabled tool-integration suite. Each suite is
+	// opt-in via the integrations block in the config; a nil
+	// integrations config leaves the registry unchanged.
+	if err := integrations.RegisterAll(registry, integrationsFromConfig(cfg), opts.Logger); err != nil {
+		return nil, err
+	}
+	return registry, nil
 }
 
 // requireSandboxPolicy refuses to run an unattended daemon whose bash
