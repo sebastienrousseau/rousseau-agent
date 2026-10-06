@@ -4,7 +4,6 @@
 cognit	20	a2a	decodeDataURI	internal/a2a/fetch.go
 cognit	20	a2a	VerifyAgentCard	internal/a2a/sign.go
 cognit	18	agent	(*Agent).DecideExternal	internal/agent/external.go
-cognit	44	agent	(*Agent).runTools	internal/agent/agent.go
 cognit	20	agent	(*Agent).turnStream	internal/agent/stream_turn.go
 cognit	38	agent	(*Agent).turnWithStats	internal/agent/agent.go
 cognit	50	agent	checkValue	internal/agent/structured.go
@@ -13,7 +12,7 @@ cognit	20	agent	(*LLMCompressor).summarise	internal/agent/compressor.go
 cognit	21	audio	(*WhisperCPP).Transcribe	internal/media/audio/whisper_cpp.go
 cognit	19	bedrock	toBedrockContent	internal/llm/bedrock/client.go
 cognit	23	builtin	(*A2ADispatchTool).Execute	internal/tools/builtin/a2a_dispatch.go
-cognit	33	builtin	(*GrepTool).Execute	internal/tools/builtin/grep.go
+cognit	32	builtin	(*GrepTool).Execute	internal/tools/builtin/grep.go
 cognit	17	builtin	(*SpawnSubagentTool).Execute	internal/tools/builtin/spawn_subagent.go
 cognit	17	bundle	(*Bundle).Verify	internal/skills/bundle/bundle.go
 cognit	18	claudecli	EraseTranscripts	internal/llm/claudecli/session_recover.go
@@ -45,7 +44,7 @@ cognit	25	client	(*Client).SubmitTask	internal/a2a/client/client.go
 cognit	20	client	(*Client).SubscribeToTask	internal/a2a/client/spec_v1.go
 cognit	17	client	(*Client).subscribeToTaskLegacyFallback	internal/a2a/client/spec_v1.go
 cognit	17	client	mergeEnv	internal/mcp/client/client.go
-cognit	26	email	(*Client).pollOnce	internal/transport/email/client.go
+cognit	21	email	(*Client).pollOnce	internal/transport/email/client.go
 cognit	31	integrations	RegisterAll	internal/tools/integrations/register.go
 cognit	17	oauth	(*Broker).Serve	internal/auth/oauth/callback.go
 cognit	18	plan	(*Executor).Run	internal/agent/plan/plan.go
@@ -74,7 +73,6 @@ cognit	17	whatsapp	(*Client).Start	internal/transport/whatsapp/client.go
 cognit	23	whatsapp	Dispatch	internal/transport/whatsapp/dispatch.go
 cyclo	14	a2a	decodeDataURI	internal/a2a/fetch.go
 cyclo	12	a2a	VerifyAgentCard	internal/a2a/sign.go
-cyclo	17	agent	(*Agent).runTools	internal/agent/agent.go
 cyclo	13	agent	(*Agent).turnStream	internal/agent/stream_turn.go
 cyclo	18	agent	(*Agent).turnWithStats	internal/agent/agent.go
 cyclo	28	agent	checkValue	internal/agent/structured.go
@@ -88,7 +86,7 @@ cyclo	16	audio	(*OpenAIAPI).Transcribe	internal/media/audio/openai_api.go
 cyclo	19	audio	(*WhisperCPP).Transcribe	internal/media/audio/whisper_cpp.go
 cyclo	11	bedrock	toBedrockContent	internal/llm/bedrock/client.go
 cyclo	20	builtin	(*A2ADispatchTool).Execute	internal/tools/builtin/a2a_dispatch.go
-cyclo	21	builtin	(*GrepTool).Execute	internal/tools/builtin/grep.go
+cyclo	20	builtin	(*GrepTool).Execute	internal/tools/builtin/grep.go
 cyclo	15	builtin	(*SpawnSubagentTool).Execute	internal/tools/builtin/spawn_subagent.go
 cyclo	15	bundle	(*Bundle).Verify	internal/skills/bundle/bundle.go
 cyclo	12	claudecli	classifyLine	internal/llm/claudecli/stream.go
@@ -120,7 +118,7 @@ cyclo	18	client	(*Client).SubmitTask	internal/a2a/client/client.go
 cyclo	13	client	(*Client).SubscribeToTask	internal/a2a/client/spec_v1.go
 cyclo	11	client	mergeEnv	internal/mcp/client/client.go
 cyclo	12	client	New	internal/mcp/client/client.go
-cyclo	16	email	(*Client).pollOnce	internal/transport/email/client.go
+cyclo	13	email	(*Client).pollOnce	internal/transport/email/client.go
 cyclo	13	email	New	internal/transport/email/client.go
 cyclo	11	google	(*Client).do	internal/tools/integrations/google/client.go
 cyclo	20	integrations	RegisterAll	internal/tools/integrations/register.go
