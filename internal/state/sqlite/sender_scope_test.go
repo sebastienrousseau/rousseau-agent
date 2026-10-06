@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // TestSearchBySender_IsScopedToTheSender pins /find's isolation: a
@@ -19,9 +19,9 @@ func TestSearchBySender_IsScopedToTheSender(t *testing.T) {
 	s := openSearchTestStore(t)
 	ctx := context.Background()
 	for _, who := range []string{"alice", "bob"} {
-		sess := agent.NewSession(who + " chat")
+		sess := model.NewSession(who + " chat")
 		sess.Sender = who
-		sess.Append(agent.NewUserText("notes on the quarterly budget"))
+		sess.Append(model.NewUserText("notes on the quarterly budget"))
 		require.NoError(t, s.Save(ctx, sess))
 	}
 

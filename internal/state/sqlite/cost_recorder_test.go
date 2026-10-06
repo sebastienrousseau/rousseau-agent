@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
@@ -23,11 +23,11 @@ func TestCostRecorder_RecordAppendsRowWithEstimatedCost(t *testing.T) {
 	rec := sqlitestore.NewCostRecorder(cs, nil)
 
 	// Sonnet: 1M input tokens = $3.00
-	err = rec.Record(ctx, agent.CostEvent{
+	err = rec.Record(ctx, model.CostEvent{
 		SessionID: "s1",
 		Provider:  "anthropic",
 		Model:     "claude-sonnet-4-6",
-		Usage:     agent.Usage{InputTokens: 1_000_000},
+		Usage:     model.Usage{InputTokens: 1_000_000},
 	})
 	require.NoError(t, err)
 
@@ -48,11 +48,11 @@ func TestCostRecorder_UnknownModelStillRecordsWithZeroCost(t *testing.T) {
 
 	rec := sqlitestore.NewCostRecorder(cs, nil)
 
-	err = rec.Record(ctx, agent.CostEvent{
+	err = rec.Record(ctx, model.CostEvent{
 		SessionID: "s2",
 		Provider:  "custom",
 		Model:     "vendor-x-experimental",
-		Usage:     agent.Usage{InputTokens: 500, OutputTokens: 200},
+		Usage:     model.Usage{InputTokens: 500, OutputTokens: 200},
 	})
 	require.NoError(t, err, "record must succeed even for unpriced models")
 

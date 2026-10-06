@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	"github.com/sebastienrousseau/rousseau-agent/internal/testutil/fuzztest"
 )
@@ -32,18 +32,18 @@ func TestFuzz_SessionSaveLoadRoundtrip(t *testing.T) {
 		// pointer sub-type (ToolUse.Input is a json.RawMessage
 		// that must be legal JSON — easier to bypass than to
 		// synthesise).
-		func(c *agent.Content, ctn fuzz.Continue) {
-			c.Kind = agent.ContentText
+		func(c *model.Content, ctn fuzz.Continue) {
+			c.Kind = model.ContentText
 			c.Text = randPrintable(ctn, 4, 32)
 		},
 		// Role: constrained to legal enum values.
-		func(r *agent.Role, ctn fuzz.Continue) {
-			*r = []agent.Role{agent.RoleUser, agent.RoleAssistant}[ctn.Intn(2)]
+		func(r *model.Role, ctn fuzz.Continue) {
+			*r = []model.Role{model.RoleUser, model.RoleAssistant}[ctn.Intn(2)]
 		},
 	)
 
 	for i := 0; i < 200; i++ {
-		var sess agent.Session
+		var sess model.Session
 		f.Fuzz(&sess)
 		// Ensure a unique, non-empty ID per iteration.
 		sess.ID = fmt.Sprintf("fuzz-%d", i)
@@ -83,7 +83,7 @@ func TestFuzz_DeleteThenLoadIsErrNotFound(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		var title string
 		f.Fuzz(&title)
-		sess := agent.NewSession(title)
+		sess := model.NewSession(title)
 		require.NoError(t, store.Save(ctx, sess))
 		require.NoError(t, store.Delete(ctx, sess.ID))
 		_, err := store.Load(ctx, sess.ID)
@@ -106,10 +106,10 @@ func TestFuzz_UpsertPreservesLastWrite(t *testing.T) {
 		f.Fuzz(&v1Title)
 		f.Fuzz(&v2Title)
 
-		sess := agent.NewSession(v1Title)
+		sess := model.NewSession(v1Title)
 		require.NoError(t, store.Save(ctx, sess))
 		sess.Title = v2Title
-		sess.Append(agent.NewUserText("second"))
+		sess.Append(model.NewUserText("second"))
 		require.NoError(t, store.Save(ctx, sess))
 
 		got, err := store.Load(ctx, sess.ID)

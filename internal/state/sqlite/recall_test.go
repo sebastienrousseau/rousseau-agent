@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 func TestRecallSearcher_Roundtrip(t *testing.T) {
@@ -16,8 +16,8 @@ func TestRecallSearcher_Roundtrip(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }() //nolint:errcheck // test cleanup
 
-	sess := agent.NewSession("previous kubernetes chat")
-	sess.Append(agent.NewUserText("we discussed pod affinity and helm charts"))
+	sess := model.NewSession("previous kubernetes chat")
+	sess.Append(model.NewUserText("we discussed pod affinity and helm charts"))
 	require.NoError(t, s.Save(ctx, sess))
 
 	r := NewRecallSearcher(s)

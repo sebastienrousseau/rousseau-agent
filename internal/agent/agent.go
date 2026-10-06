@@ -114,32 +114,6 @@ type Options struct {
 	EnableConfidenceElicitation bool
 }
 
-// CostRecorder is the seam the agent loop uses to persist per-call
-// cost telemetry. Implementations must be safe for concurrent use.
-// Errors returned from Record are logged at Warn but never abort the
-// agent loop — cost telemetry is best-effort observability, not a
-// correctness dependency.
-type CostRecorder interface {
-	Record(ctx context.Context, r CostEvent) error
-}
-
-// CostEvent is what the agent loop hands to a CostRecorder after
-// every completion. Provider + Model may be empty for older provider
-// implementations that don't populate them.
-type CostEvent struct {
-	SessionID string
-	Provider  string
-	Model     string
-	Usage     Usage
-}
-
-// SkillsProvider returns text spliced into the system prompt for a
-// given session. Implementations typically look at the last user
-// message and select relevant skills.
-type SkillsProvider interface {
-	SystemAppendix(s *Session) string
-}
-
 // Agent orchestrates the model / tool-use loop against a Session.
 type Agent struct {
 	provider Provider

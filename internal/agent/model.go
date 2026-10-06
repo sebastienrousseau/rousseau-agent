@@ -104,3 +104,21 @@ const (
 
 // StreamReport aliases [model.StreamReport].
 type StreamReport = model.StreamReport
+
+// CostRecorder aliases [model.CostRecorder].
+type CostRecorder = model.CostRecorder
+
+// CostEvent aliases [model.CostEvent].
+type CostEvent = model.CostEvent
+
+// SkillsProvider aliases [model.SkillsProvider].
+type SkillsProvider = model.SkillsProvider
+
+// RecallProvider aliases [model.RecallProvider].
+type RecallProvider = model.RecallProvider
+
+// SearchHit aliases [model.SearchHit].
+type SearchHit = model.SearchHit
+
+// RecallSearcher aliases [model.RecallSearcher].
+type RecallSearcher = model.RecallSearcher

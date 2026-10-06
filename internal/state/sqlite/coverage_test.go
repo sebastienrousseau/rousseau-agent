@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/scim"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // TestNewJIDMap_ErrorFromClosedStore hits the schema-apply error path
@@ -130,7 +130,7 @@ func TestListBySender_HonoursLimitAndReturnsMultipleRows(t *testing.T) {
 	// Seed 3 sessions for the same sender + 1 for another. Use the
 	// public Save path so payload NOT NULL + schema drift stay honest.
 	seed := func(id, sender, title string) {
-		require.NoError(t, s.Save(ctx, &agent.Session{
+		require.NoError(t, s.Save(ctx, &model.Session{
 			ID: id, Sender: sender, Title: title,
 			CreatedAt: time.Now(), UpdatedAt: time.Now(),
 		}))

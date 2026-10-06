@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // ErrNotFound is returned when a Session cannot be located.
@@ -16,9 +16,9 @@ var ErrNotFound = errors.New("state: session not found")
 // be safe for concurrent use.
 type Store interface {
 	// Save writes a Session, creating it or replacing its content.
-	Save(ctx context.Context, s *agent.Session) error
+	Save(ctx context.Context, s *model.Session) error
 	// Load returns the Session identified by id, or ErrNotFound.
-	Load(ctx context.Context, id string) (*agent.Session, error)
+	Load(ctx context.Context, id string) (*model.Session, error)
 	// List returns Session summaries newest-first, capped at limit
 	// (0 disables the cap).
 	List(ctx context.Context, limit int) ([]Summary, error)

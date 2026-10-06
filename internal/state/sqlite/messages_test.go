@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 func openV2(t *testing.T) *Store {
@@ -28,7 +28,7 @@ func rowCount(t *testing.T, s *Store, id string) int {
 	return n
 }
 
-func texts(sess *agent.Session) []string {
+func texts(sess *model.Session) []string {
 	var out []string
 	for _, m := range sess.Messages {
 		out = append(out, m.Content[0].Text)
@@ -41,9 +41,9 @@ func texts(sess *agent.Session) []string {
 func TestSave_AppendsOnlyNewMessages(t *testing.T) {
 	s := openV2(t)
 	ctx := context.Background()
-	sess := agent.NewSession("chat")
-	sess.Append(agent.NewUserText("one"))
-	sess.Append(agent.NewUserText("two"))
+	sess := model.NewSession("chat")
+	sess.Append(model.NewUserText("one"))
+	sess.Append(model.NewUserText("two"))
 	require.NoError(t, s.Save(ctx, sess))
 	require.Equal(t, 2, rowCount(t, s, sess.ID))
 
@@ -51,7 +51,7 @@ func TestSave_AppendsOnlyNewMessages(t *testing.T) {
 	_, err := s.db.ExecContext(ctx, `UPDATE session_messages SET created_at = 'stamped' WHERE session_id = ? AND seq = 0`, sess.ID)
 	require.NoError(t, err)
 
-	sess.Append(agent.NewUserText("three"))
+	sess.Append(model.NewUserText("three"))
 	require.NoError(t, s.Save(ctx, sess))
 	assert.Equal(t, 3, rowCount(t, s, sess.ID))
 	var stamp string
@@ -75,14 +75,14 @@ func TestSave_AppendsOnlyNewMessages(t *testing.T) {
 func TestSave_CompressionKeepsRowsAndStoresTheSummaryAsHead(t *testing.T) {
 	s := openV2(t)
 	ctx := context.Background()
-	sess := agent.NewSession("long")
+	sess := model.NewSession("long")
 	for _, w := range []string{"a", "b", "c", "d"} {
-		sess.Append(agent.NewUserText(w))
+		sess.Append(model.NewUserText(w))
 	}
 	require.NoError(t, s.Save(ctx, sess))
 
 	// What LLMCompressor does: summary + the last two messages.
-	sess.Messages = append([]agent.Message{agent.NewUserText("[summary of a, b]")}, sess.Messages[2:]...)
+	sess.Messages = append([]model.Message{model.NewUserText("[summary of a, b]")}, sess.Messages[2:]...)
 	require.NoError(t, s.Save(ctx, sess))
 	assert.Equal(t, 4, rowCount(t, s, sess.ID), "folded rows are kept")
 
@@ -90,7 +90,7 @@ func TestSave_CompressionKeepsRowsAndStoresTheSummaryAsHead(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"[summary of a, b]", "c", "d"}, texts(got))
 
-	sess.Append(agent.NewUserText("e"))
+	sess.Append(model.NewUserText("e"))
 	require.NoError(t, s.Save(ctx, sess))
 	assert.Equal(t, 5, rowCount(t, s, sess.ID))
 	got, err = s.Load(ctx, sess.ID)
@@ -108,12 +108,12 @@ func TestSave_CompressionKeepsRowsAndStoresTheSummaryAsHead(t *testing.T) {
 func TestSave_FoldingOneMessageIsARewrite(t *testing.T) {
 	s := openV2(t)
 	ctx := context.Background()
-	sess := agent.NewSession("short")
-	sess.Append(agent.NewUserText("a"))
-	sess.Append(agent.NewUserText("b"))
+	sess := model.NewSession("short")
+	sess.Append(model.NewUserText("a"))
+	sess.Append(model.NewUserText("b"))
 	require.NoError(t, s.Save(ctx, sess))
 
-	sess.Messages = append([]agent.Message{agent.NewUserText("[summary of a]")}, sess.Messages[1:]...)
+	sess.Messages = append([]model.Message{model.NewUserText("[summary of a]")}, sess.Messages[1:]...)
 	require.NoError(t, s.Save(ctx, sess))
 	got, err := s.Load(ctx, sess.ID)
 	require.NoError(t, err)
@@ -126,11 +126,11 @@ func TestSave_FoldingOneMessageIsARewrite(t *testing.T) {
 func TestSave_UnrelatedRewriteAppendsTheNewView(t *testing.T) {
 	s := openV2(t)
 	ctx := context.Background()
-	sess := agent.NewSession("t")
-	sess.Append(agent.NewUserText("old"))
+	sess := model.NewSession("t")
+	sess.Append(model.NewUserText("old"))
 	require.NoError(t, s.Save(ctx, sess))
 
-	sess.Messages = []agent.Message{agent.NewUserText("new 1"), agent.NewUserText("new 2")}
+	sess.Messages = []model.Message{model.NewUserText("new 1"), model.NewUserText("new 2")}
 	require.NoError(t, s.Save(ctx, sess))
 	assert.Equal(t, 3, rowCount(t, s, sess.ID))
 	got, err := s.Load(ctx, sess.ID)
@@ -149,8 +149,8 @@ func TestSave_UnrelatedRewriteAppendsTheNewView(t *testing.T) {
 func TestSave_ConcurrentWritersLoseNoMessage(t *testing.T) {
 	s := openV2(t)
 	ctx := context.Background()
-	base := agent.NewSession("race")
-	base.Append(agent.NewUserText("shared"))
+	base := model.NewSession("race")
+	base.Append(model.NewUserText("shared"))
 	require.NoError(t, s.Save(ctx, base))
 
 	var wg sync.WaitGroup
@@ -160,8 +160,8 @@ func TestSave_ConcurrentWritersLoseNoMessage(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			mine := *base
-			mine.Messages = append([]agent.Message{}, base.Messages...)
-			mine.Append(agent.NewUserText(w))
+			mine.Messages = append([]model.Message{}, base.Messages...)
+			mine.Append(model.NewUserText(w))
 			errs[i] = s.Save(ctx, &mine)
 		}()
 	}
@@ -185,8 +185,8 @@ func TestSave_ConcurrentWritersLoseNoMessage(t *testing.T) {
 func TestDelete_RemovesMessagesAndIndex(t *testing.T) {
 	s := openV2(t)
 	ctx := context.Background()
-	sess := agent.NewSession("gone")
-	sess.Append(agent.NewUserText("ephemeral marmalade"))
+	sess := model.NewSession("gone")
+	sess.Append(model.NewUserText("ephemeral marmalade"))
 	require.NoError(t, s.Save(ctx, sess))
 	require.NoError(t, s.Delete(ctx, sess.ID))
 
@@ -199,9 +199,9 @@ func TestDelete_RemovesMessagesAndIndex(t *testing.T) {
 func TestSearch_MatchesTitlesAndReturnsOneHitPerSession(t *testing.T) {
 	s := openV2(t)
 	ctx := context.Background()
-	sess := agent.NewSession("terraform notes")
-	sess.Append(agent.NewUserText("terraform plan failed"))
-	sess.Append(agent.NewUserText("terraform apply worked"))
+	sess := model.NewSession("terraform notes")
+	sess.Append(model.NewUserText("terraform plan failed"))
+	sess.Append(model.NewUserText("terraform apply worked"))
 	require.NoError(t, s.Save(ctx, sess))
 
 	hits, err := s.Search(ctx, "terraform", SearchOptions{})
@@ -228,9 +228,9 @@ func TestEraseSender_NamespacedKeyScopesToItsTransport(t *testing.T) {
 		_, err = s.db.ExecContext(ctx,
 			`INSERT INTO identity_handles (transport, sender, identity_id, verified_at) VALUES (?, '+447700900123', 'i1', 'now')`, tp)
 		require.NoError(t, err)
-		sess := agent.NewSession(tp)
+		sess := model.NewSession(tp)
 		sess.Sender = tp + ":+447700900123"
-		sess.Append(agent.NewUserText("hi"))
+		sess.Append(model.NewUserText("hi"))
 		require.NoError(t, s.Save(ctx, sess))
 	}
 

@@ -13,11 +13,9 @@ cd "$(git rev-parse --show-toplevel)"
 
 # Packages that must not depend (transitively) on internal/agent.
 #
-# Not yet guarded, each blocked by internal/state still defining its
-# recorder/searcher contracts against internal/agent and by
-# internal/transport importing the loop: internal/resilience,
-# internal/state/postgres, internal/mcp. Add them here as the Phase 2
-# storage contract work moves those interfaces into internal/model.
+# Not guarded: internal/resilience, whose Recover middleware wraps
+# transport.Handler and so legitimately follows internal/transport
+# (which runs the loop). Its provider breaker alone is loop-free.
 GUARDED=(
   ./internal/model
   ./internal/llm/anthropic
@@ -25,7 +23,12 @@ GUARDED=(
   ./internal/llm/bedrock
   ./internal/llm/vertex
   ./internal/pricing
+  ./internal/state
   ./internal/state/history
+  ./internal/state/sqlite
+  ./internal/state/postgres
+  ./internal/skills
+  ./internal/mcp
 )
 
 bad=0

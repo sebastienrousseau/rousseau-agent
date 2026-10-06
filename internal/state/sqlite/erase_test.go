@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // TestEraseSender pins GDPR Article 17 erasure: every row tied to the
@@ -29,9 +29,9 @@ func TestEraseSender(t *testing.T) {
 	require.NoError(t, err)
 
 	mk := func(sender, text string) string {
-		sess := agent.NewSession("chat")
+		sess := model.NewSession("chat")
 		sess.Sender = sender
-		sess.Append(agent.NewUserText(text))
+		sess.Append(model.NewUserText(text))
 		require.NoError(t, s.Save(ctx, sess))
 		_, err := s.db.ExecContext(ctx, `INSERT INTO session_costs (session_id, at, provider, model) VALUES (?, '2026-01-01T00:00:00Z', 'p', 'm')`, sess.ID)
 		require.NoError(t, err)
@@ -89,9 +89,9 @@ func TestEraseIdleSessions(t *testing.T) {
 
 	now := time.Now().UTC()
 	mk := func(sender string, age time.Duration) string {
-		sess := agent.NewSession("chat")
+		sess := model.NewSession("chat")
 		sess.Sender = sender
-		sess.Append(agent.NewUserText("hello"))
+		sess.Append(model.NewUserText("hello"))
 		sess.UpdatedAt = now.Add(-age)
 		require.NoError(t, s.Save(ctx, sess))
 		_, err := s.db.ExecContext(ctx, `INSERT INTO session_costs (session_id, at, provider, model) VALUES (?, '2026-01-01T00:00:00Z', 'p', 'm')`, sess.ID)
