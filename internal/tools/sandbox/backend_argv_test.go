@@ -131,13 +131,24 @@ func TestNSJail_BuildsBaselineArgv(t *testing.T) {
 	})
 	require.NoError(t, err)
 	got := argvOf(res.CombinedOutput)
-	// Always-on prefix:
-	assert.Equal(t, []string{"--quiet", "--mode", "o", "--disable_clone_newuser=false"}, got[:4])
-	// Scratch bindmount (Policy.TmpdirRoot empty → os.TempDir()):
-	require.Equal(t, "--bindmount", got[4])
-	assert.Contains(t, got[5], "rousseau-nsjail-", "scratch bindmount uses the per-invocation tmpdir prefix")
+	// Always-on prefix. nsjail's --disable_clone_* switches take no
+	// value; the old "=false" spelling was rejected by its parser.
+	assert.Equal(t, []string{"--quiet", "--mode", "o", "--disable_clone_newuser", "--keep_env"}, got[:5])
+	// Zero Policy allows network, so the network namespace is disabled.
+	assert.Equal(t, "--disable_clone_newnet", got[5])
+	// Scratch dir is the cwd and a writable bindmount
+	// (Policy.TmpdirRoot empty → os.TempDir()):
+	require.Equal(t, "--cwd", got[6])
+	assert.Contains(t, got[7], "rousseau-nsjail-", "scratch cwd uses the per-invocation tmpdir prefix")
+	require.Equal(t, "--bindmount", got[8])
+	assert.Contains(t, got[9], "rousseau-nsjail-")
+	// With no Readonly set the minimal root is mounted so /bin/sh
+	// exists inside the jail.
+	joined := strings.Join(got, " ")
+	assert.Contains(t, joined, "--bindmount_ro /usr:/usr")
+	assert.Contains(t, joined, "--bindmount_ro /etc/resolv.conf:/etc/resolv.conf", "network allowed, so DNS config is mounted")
 	// Terminated by --, then the wrapped command:
-	assert.Equal(t, []string{"--", "/bin/sh", "-c", "echo hi"}, got[6:])
+	assert.Equal(t, []string{"--", "/bin/sh", "-c", "echo hi"}, got[len(got)-4:])
 }
 
 func TestNSJail_PolicyPropagatesLimitsAndBindmounts(t *testing.T) {
@@ -162,8 +173,9 @@ func TestNSJail_PolicyPropagatesLimitsAndBindmounts(t *testing.T) {
 	// Presence-only assertions — order stability is nice but not
 	// contractually load-bearing on individual flags.
 	joined := strings.Join(got, " ")
-	assert.Contains(t, joined, "--disable_clone_newnet=false") // NoNetwork
+	assert.NotContains(t, joined, "--disable_clone_newnet", "NoNetwork keeps nsjail's default fresh netns")
 	assert.Contains(t, joined, "--disable_proc")
+	assert.NotContains(t, joined, "resolv.conf", "explicit Readonly replaces the default root")
 	assert.Contains(t, joined, "--time_limit 30")       // Wallclock 30s
 	assert.Contains(t, joined, "--rlimit_cpu 10")       // CPUSeconds 10
 	assert.Contains(t, joined, "--rlimit_as 256")       // MemoryBytes 256 MiB

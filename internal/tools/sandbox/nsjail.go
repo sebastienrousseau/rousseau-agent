@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 )
@@ -14,18 +15,26 @@ import (
 //
 // Argv shape (translated from Policy):
 //
-//	nsjail --quiet --mode o --disable_clone_newuser=false \
-//	       [--disable_clone_newnet=false --disable_proc] \
+//	nsjail --quiet --mode o --disable_clone_newuser --keep_env \
+//	       [--disable_clone_newnet] [--disable_proc] \
 //	       [--time_limit=<sec>] [--rlimit_cpu=<sec>] [--rlimit_as=<MiB>] \
-//	       [--bindmount=<scratch>:<scratch>] \
-//	       [--bindmount_ro=/x:/x ...] [--bindmount=/y:/y ...] \
+//	       --cwd <scratch> --bindmount=<scratch>:<scratch> \
+//	       --bindmount_ro=/x:/x ... [--bindmount=/y:/y ...] \
 //	       -- <cmd...>
 //
-// The three always-on flags (`--quiet --mode o
-// --disable_clone_newuser=false`) keep compatibility with the
-// rootless container the daemon typically runs inside: we already
-// unshare into a user namespace, and nsjail's default of ALSO
-// unsharing would double-nest and fail.
+// nsjail's --disable_clone_* switches are plain booleans (no value):
+// `--disable_clone_newuser` keeps compatibility with the rootless
+// container the daemon typically runs inside (we already unshare into
+// a user namespace; nsjail unsharing again would double-nest and
+// fail). A network namespace is created by default; only a policy
+// that allows network passes `--disable_clone_newnet`. The earlier
+// `=false` spellings were rejected by nsjail's option parser, so the
+// backend never ran. `--keep_env` hands the child the environment
+// the bash tool already scrubbed.
+//
+// With no Readonly set the backend mounts the minimal read-only root
+// a shell needs (defaultReadonly); without it `/bin/sh` does not
+// exist inside the jail.
 type NSJail struct {
 	// Binary overrides the nsjail executable path. Empty resolves via $PATH.
 	Binary string
@@ -73,13 +82,15 @@ func (n *NSJail) Run(ctx context.Context, cmd Command) (Result, error) {
 // nsjailArgs builds the nsjail pre-`--` flag set from Policy. Kept
 // separate from Run so tests can assert the exact flag order.
 func nsjailArgs(p Policy, scratch string) []string {
-	// The three always-on flags — see the type doc for why.
-	args := []string{"--quiet", "--mode", "o", "--disable_clone_newuser=false"}
+	// The always-on flags — see the type doc for why.
+	args := []string{"--quiet", "--mode", "o", "--disable_clone_newuser", "--keep_env"}
 	if p.NoNetwork {
-		// nsjail creates a fresh network namespace by default when
-		// clone_newnet is enabled; --disable_proc keeps /proc from
-		// leaking host process listings.
-		args = append(args, "--disable_clone_newnet=false", "--disable_proc")
+		// nsjail creates a fresh network namespace by default;
+		// --disable_proc keeps /proc from leaking host process
+		// listings.
+		args = append(args, "--disable_proc")
+	} else {
+		args = append(args, "--disable_clone_newnet")
 	}
 	if p.Wallclock > 0 {
 		args = append(args, "--time_limit", strconv.Itoa(int(p.Wallclock.Seconds())))
@@ -99,13 +110,35 @@ func nsjailArgs(p Policy, scratch string) []string {
 	// process has somewhere to scratch. Callers who want a specific
 	// workspace layout add more via Policy.Writable / Policy.Readonly.
 	if scratch != "" {
-		args = append(args, "--bindmount", scratch+":"+scratch)
+		args = append(args, "--cwd", scratch, "--bindmount", scratch+":"+scratch)
 	}
-	for _, ro := range p.Readonly {
-		args = append(args, "--bindmount_ro", ro+":"+ro)
+	ro := p.Readonly
+	if len(ro) == 0 {
+		ro = defaultReadonly(p.NoNetwork)
+	}
+	for _, path := range ro {
+		args = append(args, "--bindmount_ro", path+":"+path)
 	}
 	for _, rw := range p.Writable {
 		args = append(args, "--bindmount", rw+":"+rw)
 	}
 	return args
+}
+
+// defaultReadonly is the minimal read-only root a shell needs when
+// the policy names no Readonly paths. Entries that do not exist on
+// the host are skipped so a merged-/usr distribution without /lib64
+// still starts. resolv.conf only matters with network access.
+func defaultReadonly(noNetwork bool) []string {
+	candidates := []string{"/bin", "/sbin", "/usr", "/lib", "/lib64", "/etc/alternatives", "/etc/ssl/certs", "/etc/ld.so.cache"}
+	if !noNetwork {
+		candidates = append(candidates, "/etc/resolv.conf", "/etc/hosts")
+	}
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if _, err := os.Lstat(c); err == nil {
+			out = append(out, c)
+		}
+	}
+	return out
 }
