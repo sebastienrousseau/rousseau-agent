@@ -114,6 +114,23 @@ func (h *harness) run(ctx context.Context) {
 	}()
 }
 
+// publish puts an event on the bus and waits until the Reporter has
+// taken it off the subscription channel. Without this a tick sent
+// right after Publish could be selected before the event, so the
+// first assertion saw no send (flaked under -race on CI runners).
+func (h *harness) publish(ev Event) {
+	h.bus.Publish(ev)
+	deadline := time.Now().Add(2 * time.Second)
+	for len(h.sub.ch) > 0 && time.Now().Before(deadline) {
+		select {
+		case <-h.done: // Reporter has exited; nothing will drain the channel
+			return
+		default:
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // pulse advances the clock and delivers one tick, waiting for the
 // Reporter to consume it so assertions are race-free.
 func (h *harness) pulse(d time.Duration) {
@@ -151,15 +168,15 @@ func TestReporter_PostsFirstUpdateThenEditsInPlace(t *testing.T) {
 	ctx := context.Background()
 	h.run(ctx)
 
-	h.bus.Publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
+	h.publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
 	h.pulse(8 * time.Second)
 	require.Len(t, sink.sends(), 1)
 	assert.Contains(t, sink.sends()[0].Text, "running `bash`")
 
-	h.bus.Publish(Event{Key: "k", Kind: KindToolFinished, Tool: "bash"})
+	h.publish(Event{Key: "k", Kind: KindToolFinished, Tool: "bash"})
 	h.pulse(10 * time.Second)
 
-	h.bus.Publish(Event{Key: "k", Kind: KindTurnFinished})
+	h.publish(Event{Key: "k", Kind: KindTurnFinished})
 	<-h.done
 
 	sink.mu.Lock()
@@ -178,16 +195,16 @@ func TestReporter_PostsNewMessagesWhenTheSinkCannotEdit(t *testing.T) {
 	h := newHarness(t, sink, Policy{})
 	h.run(context.Background())
 
-	h.bus.Publish(Event{Key: "k", Kind: KindTurnStarted})
+	h.publish(Event{Key: "k", Kind: KindTurnStarted})
 	h.pulse(8 * time.Second)
 	// MinInterval (25s), not MinEditInterval, applies.
-	h.bus.Publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
+	h.publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
 	h.pulse(10 * time.Second)
 	assert.Len(t, sink.sends(), 1)
 	h.pulse(15 * time.Second)
 	assert.Len(t, sink.sends(), 2)
 
-	h.bus.Publish(Event{Key: "k", Kind: KindError, Err: "provider blew up"})
+	h.publish(Event{Key: "k", Kind: KindError, Err: "provider blew up"})
 	<-h.done
 
 	got := sink.sends()
@@ -203,7 +220,7 @@ func TestReporter_StaleEditHandleFallsBackToANewMessage(t *testing.T) {
 	h := newHarness(t, sink, Policy{})
 	h.run(context.Background())
 
-	h.bus.Publish(Event{Key: "k", Kind: KindTurnStarted})
+	h.publish(Event{Key: "k", Kind: KindTurnStarted})
 	h.pulse(8 * time.Second)
 	require.Len(t, sink.sends(), 1)
 
@@ -211,14 +228,14 @@ func TestReporter_StaleEditHandleFallsBackToANewMessage(t *testing.T) {
 	sink.editErr = errSinkDown
 	sink.mu.Unlock()
 
-	h.bus.Publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
+	h.publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
 	h.pulse(10 * time.Second) // edit attempt fails, handle dropped
 
 	sink.mu.Lock()
 	sink.editErr = nil
 	sink.mu.Unlock()
 
-	h.bus.Publish(Event{Key: "k", Kind: KindToolFinished, Tool: "bash"})
+	h.publish(Event{Key: "k", Kind: KindToolFinished, Tool: "bash"})
 	h.pulse(10 * time.Second) // no handle → posts a new message
 
 	assert.Len(t, sink.sends(), 2)
@@ -230,14 +247,14 @@ func TestReporter_BreakerStopsProgressButStillTriesTheFinalUpdate(t *testing.T) 
 	h.run(context.Background())
 
 	for i := 0; i < 4; i++ {
-		h.bus.Publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
+		h.publish(Event{Key: "k", Kind: KindToolStarted, Tool: "bash"})
 		h.pulse(10 * time.Second)
 	}
 	require.GreaterOrEqual(t, h.rep.failures, DefaultMaxFailures)
 
 	// Breaker is open: further progress updates are not even attempted.
 	before := h.rep.failures
-	h.bus.Publish(Event{Key: "k", Kind: KindToolStarted, Tool: "read"})
+	h.publish(Event{Key: "k", Kind: KindToolStarted, Tool: "read"})
 	h.pulse(10 * time.Second)
 	assert.Equal(t, before, h.rep.failures, "no further attempts while tripped")
 
@@ -245,7 +262,7 @@ func TestReporter_BreakerStopsProgressButStillTriesTheFinalUpdate(t *testing.T) 
 	sink.mu.Lock()
 	sink.sendErr = nil
 	sink.mu.Unlock()
-	h.bus.Publish(Event{Key: "k", Kind: KindTurnFinished})
+	h.publish(Event{Key: "k", Kind: KindTurnFinished})
 	<-h.done
 
 	got := sink.sends()
@@ -263,6 +280,8 @@ func TestReporter_SurfacesDroppedEvents(t *testing.T) {
 	// then publish) was racy: the reporter goroutine could drain
 	// each event before the next Publish call, in which case the
 	// ring never filled and no drops occurred.
+	// Direct Publish, not h.publish: the reporter is not running, so
+	// the ring is meant to stay full here.
 	for i := 0; i < 12; i++ {
 		h.bus.Publish(Event{Key: "k", Kind: KindThinking, Iteration: i + 1})
 	}
