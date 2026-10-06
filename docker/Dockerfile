@@ -295,12 +295,19 @@ RUN rm -rf /home/rousseau/.ssh /home/rousseau/.gnupg \
  && ln -sfn /home/rousseau/.local/share/rousseau/keys/ssh   /home/rousseau/.ssh \
  && ln -sfn /home/rousseau/.local/share/rousseau/keys/gnupg /home/rousseau/.gnupg
 
-# rousseau has no HTTP surface — no ports to expose. Health is the
-# process being alive; podman restart policy handles crashes.
+# rousseau has no HTTP surface by default — no ports to expose. The
+# health check reads the heartbeat the whatsapp daemon writes every
+# 15s and fails when it is stale or reports the bridge disconnected,
+# so an orchestrator sees a dead bridge, not just a live process.
+# Override HEALTH_TRANSPORT at build time when CMD runs another bridge.
 #
 # The image ships without a hardcoded allowlist. Supply your JID via
 # the ROUSSEAU_WHATSAPP_ALLOW env var, e.g.
 #   docker run -e ROUSSEAU_WHATSAPP_ALLOW=15551234567@s.whatsapp.net rousseau
 # or explicitly with `--allow` at container invocation.
+ARG HEALTH_TRANSPORT=whatsapp
+ENV ROUSSEAU_HEALTH_TRANSPORT=${HEALTH_TRANSPORT}
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD ["/bin/sh", "-c", "exec /usr/local/bin/rousseau health \"$ROUSSEAU_HEALTH_TRANSPORT\""]
 ENTRYPOINT ["/usr/local/bin/rousseau"]
 CMD ["whatsapp"]

@@ -84,7 +84,10 @@ spec:
           {{- if .Values.probes.readiness.enabled }}
           readinessProbe:
             httpGet:
-              path: /healthz
+              # /readyz reflects the transport's link state; /healthz
+              # is process liveness only and would keep a pod with a
+              # dead bridge in the Service endpoints.
+              path: /readyz
               port: metrics
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}

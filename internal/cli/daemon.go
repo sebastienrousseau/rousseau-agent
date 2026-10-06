@@ -492,6 +492,10 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	// the same checker (a single load means one consistent
 	// tier picture regardless of which entry point is used).
 	checker := license.Load(license.Source{}, opts.Logger)
+	// Publish licence state so an expiry that silently drops SSO,
+	// audit egress and governance to the core tier is alertable.
+	licInfo := checker.Info()
+	observability.ObserveLicense(licInfo.Valid, licInfo.ExpiresAt)
 
 	approver, err := buildApprover(cfg.Agent.Approver)
 	if err != nil {
@@ -802,6 +806,13 @@ func buildAuditSink(cfg config.AuditEgressConfig, checker license.Checker, chain
 	// computation on records that never leave the process.
 	if _, isNop := inner.(audit_egress.Nop); isNop {
 		return inner, nil
+	}
+	if otlp, ok := inner.(*audit_egress.OTLPHTTPSink); ok {
+		// AlreadyRegistered only happens when a test assembles twice
+		// in one process; the first collector keeps serving.
+		if err := observability.Registry.Register(otlp.Collector()); err != nil {
+			logger.Debug("audit_egress.metrics_register", slog.String("err", err.Error()))
+		}
 	}
 	sink := inner
 	if cfg.Chained {

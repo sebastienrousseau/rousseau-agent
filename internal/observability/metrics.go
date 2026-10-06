@@ -243,9 +243,23 @@ func StartMetricsServer(ctx context.Context, addr string, logger *slog.Logger) e
 		DisableCompression:  true,
 		MaxRequestsInFlight: 8,
 	}))
+	// /healthz is liveness only: the process is up and serving HTTP.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok")) //nolint:errcheck // best-effort healthz write
+	})
+	// /readyz asks the registered readiness check whether the daemon
+	// can actually do work (transport connected). A daemon whose
+	// bridge has been dead for days must not pass readiness just
+	// because its process is alive.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if err := Ready(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("not ready: " + err.Error())) //nolint:errcheck // best-effort
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready")) //nolint:errcheck // best-effort
 	})
 	srv := &http.Server{
 		Addr:              addr,
