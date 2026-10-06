@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 )
 
@@ -20,8 +20,8 @@ func TestStore_SaveLoadRoundtrip(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
-	s := agent.NewSession("first")
-	s.Append(agent.NewUserText("hello"))
+	s := model.NewSession("first")
+	s.Append(model.NewUserText("hello"))
 
 	require.NoError(t, store.Save(ctx, s))
 
@@ -50,7 +50,7 @@ func TestStore_List(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
 	for _, title := range []string{"a", "b", "c"} {
-		s := agent.NewSession(title)
+		s := model.NewSession(title)
 		require.NoError(t, store.Save(ctx, s))
 	}
 	summaries, err := store.List(ctx, 0)
@@ -64,7 +64,7 @@ func TestStore_Delete(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close() }) //nolint:errcheck // test cleanup
 
-	s := agent.NewSession("t")
+	s := model.NewSession("t")
 	require.NoError(t, store.Save(ctx, s))
 	require.NoError(t, store.Delete(ctx, s.ID))
 

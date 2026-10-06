@@ -6,29 +6,6 @@ import (
 	"strings"
 )
 
-// RecallProvider looks up snippets from prior sessions relevant to the
-// current user message and returns them as a system-prompt appendix.
-// It is the cross-session analogue of SkillsProvider.
-type RecallProvider interface {
-	// SystemAppendix inspects s and returns text to append to the base
-	// system prompt. Empty return leaves the prompt untouched.
-	SystemAppendix(ctx context.Context, s *Session) string
-}
-
-// SearchHit is the shape a recall backend returns per matched session.
-type SearchHit struct {
-	SessionID string
-	Title     string
-	Snippet   string
-}
-
-// RecallSearcher is the narrow surface the FTS-backed recall provider
-// depends on. Kept here (rather than importing state/sqlite) so tests
-// can inject fakes without a real database.
-type RecallSearcher interface {
-	Search(ctx context.Context, query string, limit int) ([]SearchHit, error)
-}
-
 // FTSRecall implements RecallProvider by searching a FTS5 index of
 // previous sessions using keywords from the latest user message.
 type FTSRecall struct {

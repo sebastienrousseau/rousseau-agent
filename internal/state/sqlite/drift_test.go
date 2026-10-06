@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/identity"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // This file drives the error branches of the sqlite package by
@@ -109,8 +109,8 @@ func TestSave_FailsWhenFTSTableIsDrifted(t *testing.T) {
 	s2, err := Open(context.Background(), path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s2.Close() }) //nolint:errcheck // test cleanup
-	sess := agent.NewSession("t")
-	sess.Append(agent.NewUserText("hello"))
+	sess := model.NewSession("t")
+	sess.Append(model.NewUserText("hello"))
 	err = s2.Save(context.Background(), sess)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "append")
@@ -120,12 +120,12 @@ func TestSave_FailsWhenFTSTableIsDrifted(t *testing.T) {
 
 func TestStore_SaveRejectsUnmarshalableSession(t *testing.T) {
 	s, _ := openFileStore(t)
-	sess := agent.NewSession("bad")
-	sess.Append(agent.Message{
-		Role: agent.RoleAssistant,
-		Content: []agent.Content{{
-			Kind:    agent.ContentToolUse,
-			ToolUse: &agent.ToolUse{ID: "t1", Name: "x", Input: json.RawMessage("{not json")},
+	sess := model.NewSession("bad")
+	sess.Append(model.Message{
+		Role: model.RoleAssistant,
+		Content: []model.Content{{
+			Kind:    model.ContentToolUse,
+			ToolUse: &model.ToolUse{ID: "t1", Name: "x", Input: json.RawMessage("{not json")},
 		}},
 	})
 
@@ -138,7 +138,7 @@ func TestStore_MutationsFailOnClosedDB(t *testing.T) {
 	s := closedStore(t)
 	ctx := context.Background()
 
-	require.Error(t, s.Save(ctx, agent.NewSession("t")))
+	require.Error(t, s.Save(ctx, model.NewSession("t")))
 	_, err := s.Load(ctx, "id")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, sql.ErrNoRows)

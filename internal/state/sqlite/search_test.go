@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 func openSearchTestStore(t *testing.T) *Store {
@@ -26,8 +26,8 @@ func TestSearch_EmptyQueryErrors(t *testing.T) {
 
 func TestSearch_FindsMatchInSessionPayload(t *testing.T) {
 	s := openSearchTestStore(t)
-	sess := agent.NewSession("kubernetes primer")
-	sess.Append(agent.NewUserText("how do I debug a pod stuck in CrashLoopBackOff?"))
+	sess := model.NewSession("kubernetes primer")
+	sess.Append(model.NewUserText("how do I debug a pod stuck in CrashLoopBackOff?"))
 	require.NoError(t, s.Save(context.Background(), sess))
 
 	hits, err := s.Search(context.Background(), "CrashLoopBackOff", SearchOptions{})
@@ -38,8 +38,8 @@ func TestSearch_FindsMatchInSessionPayload(t *testing.T) {
 
 func TestSearch_NoMatchesReturnsEmpty(t *testing.T) {
 	s := openSearchTestStore(t)
-	sess := agent.NewSession("empty")
-	sess.Append(agent.NewUserText("hello"))
+	sess := model.NewSession("empty")
+	sess.Append(model.NewUserText("hello"))
 	require.NoError(t, s.Save(context.Background(), sess))
 
 	hits, err := s.Search(context.Background(), "kubernetes", SearchOptions{})
@@ -50,7 +50,7 @@ func TestSearch_NoMatchesReturnsEmpty(t *testing.T) {
 func TestRecentSessions(t *testing.T) {
 	s := openSearchTestStore(t)
 	for _, title := range []string{"first", "second", "third"} {
-		sess := agent.NewSession(title)
+		sess := model.NewSession(title)
 		require.NoError(t, s.Save(context.Background(), sess))
 	}
 	recent, err := s.RecentSessions(context.Background(), 2)
@@ -60,8 +60,8 @@ func TestRecentSessions(t *testing.T) {
 
 func TestSearch_HandlesFTS5PhraseSyntax(t *testing.T) {
 	s := openSearchTestStore(t)
-	sess := agent.NewSession("phrase")
-	sess.Append(agent.NewUserText("the quick brown fox jumps"))
+	sess := model.NewSession("phrase")
+	sess.Append(model.NewUserText("the quick brown fox jumps"))
 	require.NoError(t, s.Save(context.Background(), sess))
 
 	hits, err := s.Search(context.Background(), `"quick brown"`, SearchOptions{})
@@ -76,10 +76,10 @@ func TestSearch_HandlesFTS5PhraseSyntax(t *testing.T) {
 func TestSearch_IndexesMessageTextOnly(t *testing.T) {
 	s := openSearchTestStore(t)
 	ctx := context.Background()
-	sess := agent.NewSession("chat")
-	sess.Append(agent.Message{Role: agent.RoleUser, Content: []agent.Content{
-		{Kind: agent.ContentText, Text: "why is my kubernetes pod pending"},
-		{Kind: agent.ContentImage, Image: &agent.Image{MediaType: "image/png", Data: []byte("QUJDREVGR0hJSktMTU5PUFFSU1RVVldY")}},
+	sess := model.NewSession("chat")
+	sess.Append(model.Message{Role: model.RoleUser, Content: []model.Content{
+		{Kind: model.ContentText, Text: "why is my kubernetes pod pending"},
+		{Kind: model.ContentImage, Image: &model.Image{MediaType: "image/png", Data: []byte("QUJDREVGR0hJSktMTU5PUFFSU1RVVldY")}},
 	}})
 	require.NoError(t, s.Save(ctx, sess))
 

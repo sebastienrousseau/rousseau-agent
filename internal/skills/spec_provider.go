@@ -1,10 +1,10 @@
 package skills
 
 import (
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
-// SpecProvider satisfies agent.SkillsProvider using the spec's
+// SpecProvider satisfies model.SkillsProvider using the spec's
 // three-tier progressive-disclosure model.
 //
 // Tier 1: SystemAppendix returns the `<available_skills>` catalog
@@ -60,11 +60,11 @@ func NewSpecProviderFromDir(root string) (*SpecProvider, error) {
 	return NewSpecProvider(discovered), nil
 }
 
-// SystemAppendix satisfies agent.SkillsProvider by returning the
+// SystemAppendix satisfies model.SkillsProvider by returning the
 // tier-1 catalog block ready to append to a system prompt.
 // Ignores the session — the spec's model-driven activation flow
 // injects the catalog on every turn and lets the model decide.
-func (p *SpecProvider) SystemAppendix(_ *agent.Session) string {
+func (p *SpecProvider) SystemAppendix(_ *model.Session) string {
 	if p == nil || len(p.skills) == 0 {
 		return ""
 	}

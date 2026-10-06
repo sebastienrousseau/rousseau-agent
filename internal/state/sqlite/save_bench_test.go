@@ -8,19 +8,19 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // longSession is a 350-message conversation of ~1.2 KB messages, about
 // the size of the largest live session (348 messages, 430 KB).
-func longSession() *agent.Session {
-	sess := agent.NewSession("long")
+func longSession() *model.Session {
+	sess := model.NewSession("long")
 	for i := range 350 {
-		role := agent.RoleUser
+		role := model.RoleUser
 		if i%2 == 1 {
-			role = agent.RoleAssistant
+			role = model.RoleAssistant
 		}
-		sess.Append(agent.Message{Role: role, Content: []agent.Content{{Kind: agent.ContentText,
+		sess.Append(model.Message{Role: role, Content: []model.Content{{Kind: model.ContentText,
 			Text: strings.Repeat("a realistic sentence of conversation. ", 32)}}})
 	}
 	return sess
@@ -57,7 +57,7 @@ func BenchmarkSave_AppendOneTurn(b *testing.B) {
 		before := walSize(b, path)
 		b.ResetTimer()
 		for range b.N {
-			sess.Append(agent.NewUserText("one more turn"))
+			sess.Append(model.NewUserText("one more turn"))
 			if err := s.Save(ctx, sess); err != nil {
 				b.Fatal(err)
 			}
@@ -90,7 +90,7 @@ ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, message_count = exclud
 		before := walSize(b, path)
 		b.ResetTimer()
 		for range b.N {
-			sess.Append(agent.NewUserText("one more turn"))
+			sess.Append(model.NewUserText("one more turn"))
 			write()
 		}
 		b.ReportMetric(float64(walSize(b, path)-before)/float64(b.N), "wal-bytes/op")

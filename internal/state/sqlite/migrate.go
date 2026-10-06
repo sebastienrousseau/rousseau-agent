@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/senderkey"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state/history"
 )
@@ -259,14 +259,14 @@ func isNoSuchTable(err error) bool {
 
 func countPayloadMessages(ctx context.Context, db execer) (int, error) {
 	n := 0
-	err := eachPayload(ctx, db, func(_ string, sess *agent.Session) error {
+	err := eachPayload(ctx, db, func(_ string, sess *model.Session) error {
 		n += len(sess.Messages)
 		return nil
 	})
 	return n, err
 }
 
-func eachPayload(ctx context.Context, db execer, fn func(id string, sess *agent.Session) error) error {
+func eachPayload(ctx context.Context, db execer, fn func(id string, sess *model.Session) error) error {
 	rows, err := db.QueryContext(ctx, `SELECT id, payload FROM sessions ORDER BY id`)
 	if err != nil {
 		return fmt.Errorf("sqlite: migrate: list sessions: %w", err)
@@ -286,7 +286,7 @@ func eachPayload(ctx context.Context, db execer, fn func(id string, sess *agent.
 		return fmt.Errorf("sqlite: migrate: list sessions: %w", err)
 	}
 	for _, r := range recs {
-		sess := &agent.Session{}
+		sess := &model.Session{}
 		if err := json.Unmarshal([]byte(r.payload), sess); err != nil {
 			return fmt.Errorf("sqlite: migrate: session %s: unreadable payload: %w", r.id, err)
 		}
@@ -302,7 +302,7 @@ func eachPayload(ctx context.Context, db execer, fn func(id string, sess *agent.
 // verify.
 func splitPayloads(ctx context.Context, conn *sql.Conn, rep *MigrateReport) (map[string][]byte, error) {
 	originals := map[string][]byte{}
-	err := eachPayload(ctx, conn, func(id string, sess *agent.Session) error {
+	err := eachPayload(ctx, conn, func(id string, sess *model.Session) error {
 		orig, err := json.Marshal(nilIfEmpty(sess.Messages))
 		if err != nil {
 			return fmt.Errorf("sqlite: migrate: session %s: %w", id, err)
@@ -545,7 +545,7 @@ func MigrateDown(ctx context.Context, path string, now func() time.Time) (DownRe
 
 // nilIfEmpty makes an empty message list compare equal to a nil one:
 // v1 payloads hold either "messages":null or "messages":[].
-func nilIfEmpty(m []agent.Message) []agent.Message {
+func nilIfEmpty(m []model.Message) []model.Message {
 	if len(m) == 0 {
 		return nil
 	}

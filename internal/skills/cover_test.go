@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/skills"
 )
 
@@ -158,12 +158,12 @@ func TestSystemAppendix_JoinsMultipleTextBlocks(t *testing.T) {
 		Body:     "run kubectl apply",
 	}})
 
-	sess := agent.NewSession("multi-block")
-	sess.Messages = append(sess.Messages, agent.Message{
-		Role: agent.RoleUser,
-		Content: []agent.Content{
-			{Kind: agent.ContentText, Text: "please help"},
-			{Kind: agent.ContentText, Text: "with kubernetes"},
+	sess := model.NewSession("multi-block")
+	sess.Messages = append(sess.Messages, model.Message{
+		Role: model.RoleUser,
+		Content: []model.Content{
+			{Kind: model.ContentText, Text: "please help"},
+			{Kind: model.ContentText, Text: "with kubernetes"},
 		},
 	})
 

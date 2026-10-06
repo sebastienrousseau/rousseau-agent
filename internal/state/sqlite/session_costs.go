@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 const sessionCostsSchema = `
@@ -162,7 +162,7 @@ type CostRecord struct {
 	At        time.Time
 	Provider  string
 	Model     string
-	Usage     agent.Usage
+	Usage     model.Usage
 	CostUSD   float64
 }
 

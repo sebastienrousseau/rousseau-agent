@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // v1Schema is the session store exactly as v0.0.12 leaves it on disk.
@@ -34,7 +34,7 @@ PRAGMA user_version = 1;
 
 type v1Fixture struct {
 	path     string
-	sessions map[string]*agent.Session
+	sessions map[string]*model.Session
 	payloads map[string]string
 }
 
@@ -42,8 +42,8 @@ func fixedTime(min int) time.Time {
 	return time.Date(2026, 9, 1, 12, min, 0, 123456789, time.UTC)
 }
 
-func msg(role agent.Role, text string, min int) agent.Message {
-	return agent.Message{Role: role, Content: []agent.Content{{Kind: agent.ContentText, Text: text}}, CreatedAt: fixedTime(min)}
+func msg(role model.Role, text string, min int) model.Message {
+	return model.Message{Role: role, Content: []model.Content{{Kind: model.ContentText, Text: text}}, CreatedAt: fixedTime(min)}
 }
 
 // writeV1 builds a v1 store holding one session per sender, plus a
@@ -51,7 +51,7 @@ func msg(role agent.Role, text string, min int) agent.Message {
 func writeV1(t *testing.T, senders ...string) *v1Fixture {
 	t.Helper()
 	f := &v1Fixture{path: filepath.Join(t.TempDir(), "sessions.db"),
-		sessions: map[string]*agent.Session{}, payloads: map[string]string{}}
+		sessions: map[string]*model.Session{}, payloads: map[string]string{}}
 	db, err := sql.Open("sqlite", f.path)
 	require.NoError(t, err)
 	defer db.Close() //nolint:errcheck // test fixture
@@ -69,16 +69,16 @@ func writeV1(t *testing.T, senders ...string) *v1Fixture {
 		require.NoError(t, err)
 	}
 	for i, sender := range senders {
-		sess := &agent.Session{ID: "s" + string(rune('a'+i)), Title: "chat " + sender, Sender: sender,
+		sess := &model.Session{ID: "s" + string(rune('a'+i)), Title: "chat " + sender, Sender: sender,
 			CreatedAt: fixedTime(0), UpdatedAt: fixedTime(i + 1)}
-		sess.Messages = []agent.Message{
-			msg(agent.RoleUser, "[rousseau:compressed] (summary of prior 9 messages): deploys", 1),
-			msg(agent.RoleUser, "what about the helm chart for "+sender, 2),
-			{Role: agent.RoleUser, CreatedAt: fixedTime(3), Content: []agent.Content{
-				{Kind: agent.ContentText, Text: "see screenshot"},
-				{Kind: agent.ContentImage, Image: &agent.Image{MediaType: "image/png", Data: []byte{1, 2, 3}}},
+		sess.Messages = []model.Message{
+			msg(model.RoleUser, "[rousseau:compressed] (summary of prior 9 messages): deploys", 1),
+			msg(model.RoleUser, "what about the helm chart for "+sender, 2),
+			{Role: model.RoleUser, CreatedAt: fixedTime(3), Content: []model.Content{
+				{Kind: model.ContentText, Text: "see screenshot"},
+				{Kind: model.ContentImage, Image: &model.Image{MediaType: "image/png", Data: []byte{1, 2, 3}}},
 			}},
-			msg(agent.RoleAssistant, "bump the chart version", 4),
+			msg(model.RoleAssistant, "bump the chart version", 4),
 		}
 		payload, err := json.Marshal(sess)
 		require.NoError(t, err)
@@ -241,7 +241,7 @@ func TestMigrateDown_RefusesKeysThatWouldCollide(t *testing.T) {
 	s, err := Open(ctx, f.path)
 	require.NoError(t, err)
 	for _, k := range []string{"signal:+447700900123", "imessage:+447700900123"} {
-		sess := agent.NewSession(k)
+		sess := model.NewSession(k)
 		sess.Sender = k
 		require.NoError(t, s.Save(ctx, sess))
 	}
@@ -313,7 +313,7 @@ func TestSenderKeys(t *testing.T) {
 	_, err := NewJIDMap(ctx, s)
 	require.NoError(t, err)
 	for _, k := range []string{"signal:+447700900123", "imessage:+447700900123", "+447700900999"} {
-		sess := agent.NewSession(k)
+		sess := model.NewSession(k)
 		sess.Sender = k
 		require.NoError(t, s.Save(ctx, sess))
 	}
@@ -329,7 +329,7 @@ func TestSenderKeys(t *testing.T) {
 
 	// Without a jid_sessions table, sessions alone answer.
 	bare := openV2(t)
-	sess := agent.NewSession("x")
+	sess := model.NewSession("x")
 	sess.Sender = "slack:U0123ABCD"
 	require.NoError(t, bare.Save(ctx, sess))
 	got, err = bare.SenderKeys(ctx, "U0123ABCD")

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // SearchHit is one row of a full-text search result.
@@ -124,7 +124,7 @@ LIMIT %d
 
 // RecentSessions is a small helper that lists the N most recently
 // touched sessions. Handy for CLI commands that render a picker.
-func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*agent.Session, error) {
+func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*model.Session, error) {
 	if limit == 0 {
 		limit = 10
 	}
@@ -132,7 +132,7 @@ func (s *Store) RecentSessions(ctx context.Context, limit int) ([]*agent.Session
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: recent: %w", err)
 	}
-	out := make([]*agent.Session, 0, len(sums))
+	out := make([]*model.Session, 0, len(sums))
 	for _, sum := range sums {
 		sess, err := s.Load(ctx, sum.ID)
 		if err != nil {

@@ -1,10 +1,10 @@
 package skills
 
 import (
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
-// Provider satisfies agent.SkillsProvider. It loads skills once from
+// Provider satisfies model.SkillsProvider. It loads skills once from
 // disk and, on each Session inspection, selects the ones triggered by
 // the latest user text and composes them as a system-prompt appendix.
 type Provider struct {
@@ -25,8 +25,8 @@ func FromDir(dir string) (*Provider, error) {
 	return NewProvider(loaded), nil
 }
 
-// SystemAppendix satisfies agent.SkillsProvider.
-func (p *Provider) SystemAppendix(s *agent.Session) string {
+// SystemAppendix satisfies model.SkillsProvider.
+func (p *Provider) SystemAppendix(s *model.Session) string {
 	if p == nil || len(p.skills) == 0 || s == nil {
 		return ""
 	}
@@ -49,15 +49,15 @@ func (p *Provider) Skills() []Skill {
 
 // lastUserText returns the concatenated text of the most recent user
 // message. Returns (_, false) when the session carries no user text.
-func lastUserText(s *agent.Session) (string, bool) {
+func lastUserText(s *model.Session) (string, bool) {
 	for i := len(s.Messages) - 1; i >= 0; i-- {
 		m := s.Messages[i]
-		if m.Role != agent.RoleUser {
+		if m.Role != model.RoleUser {
 			continue
 		}
 		var out string
 		for _, c := range m.Content {
-			if c.Kind == agent.ContentText && c.Text != "" {
+			if c.Kind == model.ContentText && c.Text != "" {
 				if out != "" {
 					out += "\n"
 				}

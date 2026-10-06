@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state/history"
 )
@@ -125,7 +125,7 @@ func installV2(ctx context.Context, db execer) error {
 // summary), Save keeps every stored row, finds the longest run of
 // stored rows the new view ends with, and records the rest of the
 // view (the summary) as head. No stored message is ever overwritten.
-func (s *Store) Save(ctx context.Context, sess *agent.Session) error {
+func (s *Store) Save(ctx context.Context, sess *model.Session) error {
 	meta := *sess
 	meta.Messages = nil
 	payload, err := json.Marshal(&meta)
@@ -260,11 +260,11 @@ func storedHashes(ctx context.Context, conn *sql.Conn, id string) ([]int64, []st
 }
 
 // Load returns the Session identified by id, or state.ErrNotFound.
-func (s *Store) Load(ctx context.Context, id string) (*agent.Session, error) {
+func (s *Store) Load(ctx context.Context, id string) (*model.Session, error) {
 	return loadSession(ctx, s.db, id)
 }
 
-func loadSession(ctx context.Context, db execer, id string) (*agent.Session, error) {
+func loadSession(ctx context.Context, db execer, id string) (*model.Session, error) {
 	var payload, headJSON, sender string
 	var base int64
 	err := db.QueryRowContext(ctx,
@@ -275,11 +275,11 @@ func loadSession(ctx context.Context, db execer, id string) (*agent.Session, err
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: load session: %w", err)
 	}
-	sess := &agent.Session{}
+	sess := &model.Session{}
 	if err := json.Unmarshal([]byte(payload), sess); err != nil {
 		return nil, fmt.Errorf("sqlite: unmarshal session: %w", err)
 	}
-	var msgs []agent.Message
+	var msgs []model.Message
 	if err := json.Unmarshal([]byte(headJSON), &msgs); err != nil {
 		return nil, fmt.Errorf("sqlite: unmarshal head: %w", err)
 	}
@@ -294,7 +294,7 @@ func loadSession(ctx context.Context, db execer, id string) (*agent.Session, err
 		if err := rows.Scan(&raw); err != nil {
 			return nil, fmt.Errorf("sqlite: scan message: %w", err)
 		}
-		var m agent.Message
+		var m model.Message
 		if err := json.Unmarshal([]byte(raw), &m); err != nil {
 			return nil, fmt.Errorf("sqlite: unmarshal message: %w", err)
 		}

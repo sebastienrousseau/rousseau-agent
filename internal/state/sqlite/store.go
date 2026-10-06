@@ -12,7 +12,7 @@ import (
 
 	_ "modernc.org/sqlite" // register driver
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 )
 
@@ -257,11 +257,11 @@ func ensureColumn(ctx context.Context, db *sql.DB, name, ddl string) error {
 // searchText is what the full-text index holds for a session: the
 // text of its messages, one per line. The JSON payload (keys, base64
 // image bytes, tool-call scaffolding) is deliberately left out.
-func searchText(sess *agent.Session) string {
+func searchText(sess *model.Session) string {
 	var b strings.Builder
 	for _, m := range sess.Messages {
 		for _, c := range m.Content {
-			if c.Kind == agent.ContentText && c.Text != "" {
+			if c.Kind == model.ContentText && c.Text != "" {
 				b.WriteString(c.Text)
 				b.WriteByte('\n')
 			}

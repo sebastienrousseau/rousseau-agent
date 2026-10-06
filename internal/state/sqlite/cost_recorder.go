@@ -3,7 +3,7 @@ package sqlite
 import (
 	"context"
 
-	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 	"github.com/sebastienrousseau/rousseau-agent/internal/pricing"
 )
 
@@ -18,7 +18,7 @@ type costWriter interface {
 }
 
 // CostRecorder adapts a [SessionCostStore] to the
-// [agent.CostRecorder] contract: computes cost from usage via
+// [model.CostRecorder] contract: computes cost from usage via
 // [pricing.Estimate] and appends a row to session_costs. When the
 // model isn't priced in [pricing.DefaultTable], we still record the
 // row with cost_usd = 0 — losing an approximate cost is better than
@@ -37,8 +37,8 @@ func NewCostRecorder(store costWriter, table pricing.Table) *CostRecorder {
 	return &CostRecorder{Store: store, Table: table}
 }
 
-// Record satisfies [agent.CostRecorder].
-func (r *CostRecorder) Record(ctx context.Context, evt agent.CostEvent) error {
+// Record satisfies [model.CostRecorder].
+func (r *CostRecorder) Record(ctx context.Context, evt model.CostEvent) error {
 	cost, _ := pricing.Estimate(evt.Usage, evt.Model, r.Table)
 	return r.Store.Record(ctx, CostRecord{
 		SessionID: evt.SessionID,
