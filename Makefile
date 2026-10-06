@@ -1,6 +1,7 @@
 .PHONY: help setup build install test test-race lint vet vuln check clean tidy fmt bench fuzz \
         image image-base image-builder image-daemon image-distroless image-lite \
-        images quadlet-install quadlet-status deploy container-check cover cover-html cover-gate
+        images quadlet-install quadlet-status deploy container-check cover cover-html cover-gate \
+        complexity complexity-baseline
 
 BIN         := bin/rousseau
 PKG         := ./...
@@ -61,7 +62,13 @@ fuzz: ## Run every Fuzz function for 10s each
 	    done; \
 	done
 
-check: vet lint test-race vuln ## Full quality gate
+complexity: ## Ratchet gate: no new or worse functions over cyclomatic 10 / cognitive 15
+	@bash scripts/complexity-gate.sh check
+
+complexity-baseline: ## Regenerate .complexity-baseline.txt after shrinking an offender
+	@bash scripts/complexity-gate.sh baseline
+
+check: vet lint complexity test-race vuln ## Full quality gate
 
 build: ## Build the binary
 	@mkdir -p bin
