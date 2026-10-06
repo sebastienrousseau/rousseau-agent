@@ -206,6 +206,19 @@ type SSOTransportMapping struct {
 // `bash` has knobs (sandbox selection); more tools may follow.
 type ToolsConfig struct {
 	Bash BashConfig `mapstructure:"bash"`
+	FS   FSConfig   `mapstructure:"fs"`
+}
+
+// FSConfig bounds the file tools (read, write, edit, grep). See
+// internal/tools/fsguard for the rules.
+type FSConfig struct {
+	// Root confines every file tool to this directory and below.
+	// Empty means any path not on the deny list.
+	Root string `mapstructure:"root"`
+	// Deny adds absolute paths to the built-in deny list (the
+	// daemon's own config and state, SSH / GPG / cloud credentials,
+	// /proc, /sys, /dev).
+	Deny []string `mapstructure:"deny"`
 }
 
 // BashConfig configures the bash built-in tool. Zero value is the
@@ -213,6 +226,11 @@ type ToolsConfig struct {
 type BashConfig struct {
 	// TimeoutSeconds caps a single command. Zero uses 60s.
 	TimeoutSeconds int `mapstructure:"timeout_seconds"`
+	// EnvPassthrough names extra environment variables (or "NAME*"
+	// prefixes) commands may inherit from the daemon on top of the
+	// scrubbed baseline (PATH, HOME, locale, TERM, TMPDIR, …).
+	// Provider, licence and transport secrets are never passed.
+	EnvPassthrough []string `mapstructure:"env_passthrough"`
 	// Sandbox selects the execution backend. Zero value uses "none"
 	// (direct exec) to keep pre-existing configs working. Set
 	// `kind: gvisor` / `kind: nsjail` / `kind: firecracker` to
@@ -227,6 +245,11 @@ type BashSandboxConfig struct {
 	// Kind is the backend to use: "" or "none" (default, no
 	// isolation), "gvisor", "nsjail", "firecracker".
 	Kind string `mapstructure:"kind"`
+	// AllowUnsandboxed is the explicit opt-in an unattended daemon
+	// needs to run bash with Kind "none". Without it the daemon
+	// refuses to start, the same way it refuses an unset
+	// claudecli.permission_mode. The chat TUI is unaffected.
+	AllowUnsandboxed bool `mapstructure:"allow_unsandboxed"`
 	// NoNetwork enables the backend's network isolation. Ignored
 	// when Kind is "none". Defaults ON for isolating backends —
 	// see cli/bash_sandbox.go for the default resolution.
@@ -403,9 +426,13 @@ type MCPClientConfig struct {
 	// Args are the command-line arguments passed to Command.
 	Args []string `mapstructure:"args"`
 	// Env are extra environment variables layered on top of the
-	// daemon's own environment. Set an entry to "" to unset a
-	// variable the parent process has.
+	// scrubbed baseline environment. Set an entry to "" to unset a
+	// variable.
 	Env map[string]string `mapstructure:"env"`
+	// EnvPassthrough names extra daemon environment variables (or
+	// "NAME*" prefixes) the server may inherit. The daemon's secrets
+	// are never inherited implicitly.
+	EnvPassthrough []string `mapstructure:"env_passthrough"`
 	// StartTimeoutSeconds bounds the initialize-handshake window.
 	// Zero uses the client default (30s).
 	StartTimeoutSeconds int `mapstructure:"start_timeout_seconds"`

@@ -47,10 +47,11 @@ func newChatCmd(opts *Options) *cobra.Command {
 			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			registry := tools.NewRegistry()
-			registry.MustRegister(builtin.NewReadTool())
-			registry.MustRegister(builtin.NewWriteTool())
-			registry.MustRegister(builtin.NewEditTool())
-			registry.MustRegister(builtin.NewGrepTool(0, 0))
+			guard, err := buildFSGuard(cfg.Tools.FS)
+			if err != nil {
+				return err
+			}
+			registerFileTools(registry, guard)
 			bash, err := buildBashTool(cfg.Tools.Bash)
 			if err != nil {
 				return fmt.Errorf("cli: build bash tool: %w", err)

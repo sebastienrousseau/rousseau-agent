@@ -20,9 +20,18 @@ func makeDaemonOpts(t *testing.T) *Options {
 			// default resolution would read $HOME/.local/share/rousseau/skills,
 			// so a developer's own skills could fail the build step.
 			Agent: config.AgentConfig{SkillsDir: t.TempDir()},
+			// The daemon refuses an unsandboxed bash tool unless the
+			// operator opts in; tests opt in so wiring stays hermetic.
+			Tools: unsandboxedTools(),
 		},
 		Logger: silentLogger(),
 	}
+}
+
+// unsandboxedTools is the explicit opt-in every daemon test fixture
+// needs now that requireSandboxPolicy gates assembleDaemon.
+func unsandboxedTools() config.ToolsConfig {
+	return config.ToolsConfig{Bash: config.BashConfig{Sandbox: config.BashSandboxConfig{AllowUnsandboxed: true}}}
 }
 
 func TestAssembleDaemon_WhenProviderBuildFails(t *testing.T) {

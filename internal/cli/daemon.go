@@ -429,10 +429,16 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 
 	registry := tools.NewRegistry()
-	registry.MustRegister(builtin.NewReadTool())
-	registry.MustRegister(builtin.NewWriteTool())
-	registry.MustRegister(builtin.NewEditTool())
-	registry.MustRegister(builtin.NewGrepTool(0, 0))
+	guard, err := buildFSGuard(opts.Config.Tools.FS)
+	if err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
+	registerFileTools(registry, guard)
+	if err := requireSandboxPolicy(opts.Config.Tools.Bash, "daemon"); err != nil {
+		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
+		return nil, err
+	}
 	bash, err := buildBashTool(opts.Config.Tools.Bash)
 	if err != nil {
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
