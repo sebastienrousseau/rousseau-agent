@@ -57,10 +57,11 @@ func (a *Agent) turnStream(ctx context.Context, s *Session, events chan<- Stream
 		}
 
 		req := Request{
-			SessionID: s.ID,
-			System:    a.systemPrompt(ctx, s),
-			Messages:  s.Messages,
-			Tools:     toolDefs,
+			SessionID:         s.ID,
+			System:            a.systemPrompt(ctx, s),
+			Messages:          s.Messages,
+			Tools:             toolDefs,
+			CacheableMessages: len(s.Messages), // same rationale as turnWithStats
 		}
 
 		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})

@@ -409,6 +409,12 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats)
 			System:    a.systemPrompt(ctx, s),
 			Messages:  s.Messages,
 			Tools:     toolDefs,
+			// Every message already in the session is a stable prefix
+			// for the next round-trip; marking it lets providers with
+			// a prompt cache (Anthropic) bill the prefix at cache-read
+			// rates instead of re-ingesting system prompt, tool
+			// schemas and history on every iteration.
+			CacheableMessages: len(s.Messages),
 		}
 
 		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})
