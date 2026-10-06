@@ -77,6 +77,7 @@ func newChatCmd(opts *Options) *cobra.Command {
 			compressor := buildCompressor(cfg.Agent.Compression, provider)
 			ag := agent.New(provider, registry, opts.Logger, agent.Options{
 				MaxIterations: cfg.Agent.MaxIterations,
+				ToolTimeout:   cfg.Agent.ToolTimeout,
 				SystemPrompt:  systemPrompt(cfg.Agent.SystemPrompt),
 				Approver:      approver,
 				Compressor:    compressor,

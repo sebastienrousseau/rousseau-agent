@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -37,6 +38,17 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 		results = append(results, a.runOneTool(ctx, use, sessionID))
 	}
 	return results, nil
+}
+
+// defaultToolTimeout bounds one tool execution when Options.ToolTimeout
+// is zero.
+const defaultToolTimeout = 10 * time.Minute
+
+func (a *Agent) toolTimeout() time.Duration {
+	if a.opts.ToolTimeout > 0 {
+		return a.opts.ToolTimeout
+	}
+	return defaultToolTimeout
 }
 
 func toolUses(m Message) []*ToolUse {
@@ -155,8 +167,13 @@ func (a *Agent) executeTool(ctx context.Context, tool tools.Tool, use *ToolUse, 
 	toolCtx, toolSpan := observability.StartSpan(ctx, "agent.tool",
 		attribute.String("tool.name", use.Name),
 		attribute.String("tool.use_id", use.ID))
+	toolCtx, cancel := context.WithTimeout(toolCtx, a.toolTimeout())
 	out, err := tool.Execute(toolCtx, use.Input)
+	cancel()
 	if err != nil {
+		if errors.Is(toolCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			err = fmt.Errorf("%w after %s: %w", ErrToolTimeout, a.toolTimeout(), err)
+		}
 		toolSpan.RecordError(err)
 		toolSpan.SetStatus(codes.Error, err.Error())
 	}

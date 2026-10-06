@@ -27,6 +27,10 @@ type Options struct {
 	// MaxIterations caps how many model round-trips a single Turn may
 	// perform. Zero uses the default (32).
 	MaxIterations int
+	// ToolTimeout bounds a single tool execution. Zero uses the
+	// default (10 minutes). Without it a hung bash or MCP call
+	// consumed the whole turn budget.
+	ToolTimeout time.Duration
 	// SystemPrompt is prepended to every request.
 	SystemPrompt string
 	// Approver is consulted before each tool execution. Nil uses

@@ -562,6 +562,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 
 	ag := agent.New(provider, registry, opts.Logger, agent.Options{
 		MaxIterations:  cfg.Agent.MaxIterations,
+		ToolTimeout:    cfg.Agent.ToolTimeout,
 		SystemPrompt:   systemPrompt(cfg.Agent.SystemPrompt),
 		Approver:       approver,
 		Compressor:     buildCompressor(cfg.Agent.Compression, provider),

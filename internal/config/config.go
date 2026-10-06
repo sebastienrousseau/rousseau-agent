@@ -663,10 +663,16 @@ type EmailConfig struct {
 	From        string `mapstructure:"from"`
 	ReplyHeader string `mapstructure:"reply_header"`
 	// Allowlist holds sender addresses allowed to reach the agent,
-	// matched case-insensitively. Note that a From header is easy to
-	// forge; pair this with a mailbox that only accepts mail passing
-	// your provider's SPF/DKIM/DMARC checks.
+	// matched case-insensitively. A From header is trivially forged;
+	// set RequireAuthenticationResults so the allow-list is only
+	// consulted for mail your inbound MTA authenticated.
 	Allowlist []string `mapstructure:"allowlist"`
+	// RequireAuthenticationResults drops any message whose
+	// Authentication-Results header (added by the receiving MTA)
+	// does not carry dkim=pass for the From domain. Off by default
+	// because not every MTA adds the header; the daemon logs a
+	// warning at startup when it is off.
+	RequireAuthenticationResults bool `mapstructure:"require_authentication_results"`
 }
 
 // SlackConfig configures the Slack Socket Mode transport.
@@ -906,6 +912,10 @@ type AgentConfig struct {
 	// provider subprocess is stopped and the sender is told the turn
 	// was cut short. Default 30m; 0 disables the limit.
 	TurnTimeout time.Duration `mapstructure:"turn_timeout"`
+	// ToolTimeout bounds one tool execution inside a turn so a hung
+	// bash or MCP call cannot consume the whole turn budget. Default
+	// 10m.
+	ToolTimeout time.Duration `mapstructure:"tool_timeout"`
 	// MaxConcurrentTurns caps agent turns running at once in this
 	// daemon; further turns queue. Each claudecli turn is a separate
 	// claude process. Default 4; 0 means unlimited.
@@ -1171,6 +1181,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("agent.max_iterations", 32)
 	v.SetDefault("agent.session_idle_timeout", "12h")
 	v.SetDefault("agent.turn_timeout", "30m")
+	v.SetDefault("agent.tool_timeout", "10m")
 	v.SetDefault("agent.max_concurrent_turns", 4)
 	// Tamper evidence is the point of an audit trail; an operator who
 	// enables egress gets the hash chain unless they turn it off.
