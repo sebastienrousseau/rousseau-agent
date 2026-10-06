@@ -46,7 +46,8 @@ func TestNormalizeEmailAllowlist(t *testing.T) {
 
 func TestLoad_PermissionModeFromEnv(t *testing.T) {
 	t.Setenv("ROUSSEAU_CLAUDECLI_PERMISSION_MODE", "dontAsk")
-	cfg, err := config.Load(t.TempDir() + "/missing.yaml")
+	t.Setenv("HOME", t.TempDir()) // no config file at the default path
+	cfg, err := config.Load("")
 	require.NoError(t, err)
 	assert.Equal(t, "dontAsk", cfg.ClaudeCLI.PermissionMode)
 }
