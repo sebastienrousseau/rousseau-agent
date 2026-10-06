@@ -15,6 +15,54 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
+### Phase 1: trust and cost (2026-10-06)
+
+Security and correctness work from the October 2026 audit. Three
+entries change behaviour for existing deployments.
+
+- **BREAKING: unattended daemons refuse to start with an unsandboxed
+  bash tool** unless `tools.bash.sandbox.allow_unsandboxed: true` (or
+  a sandbox kind) is set. Same refusal shape as `claudecli.permission_mode`.
+- **BREAKING: subprocess environment is scrubbed.** bash commands,
+  sandbox backends and MCP servers inherit only PATH, HOME, locale,
+  TERM and scratch-dir variables. Name extra variables (or `PREFIX*`)
+  in `tools.bash.env_passthrough` / `mcp.clients.<name>.env_passthrough`.
+- **BREAKING: Telegram identity is the sending user, not the chat.**
+  Group allow-lists keyed by chat id must switch to user ids. Private
+  chats are unaffected. A2A sessions are keyed by the authenticated
+  peer (`a2a/tok:<fingerprint>`), not the body's `from_agent`.
+- File tools (`read`, `write`, `edit`, `grep`) are confined by a
+  symlink-resolved deny list (daemon config and state, `~/.ssh`,
+  `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.claude`, `/proc`,
+  `/sys`, `/dev`) and an optional workspace root (`tools.fs.root`,
+  `tools.fs.deny`). `read` refuses non-regular files and caps at 4 MiB.
+- Prompt caching is now active on the Anthropic provider; tool
+  schemas forward `required` and other JSON-Schema keywords.
+- `${VAR}` references in config are expanded (unset is an error); an
+  explicit `--config` path that does not exist is an error; config
+  failures exit 78.
+- Unknown tool names and mid-tool cancellation produce tool_results
+  instead of leaving a dangling `tool_use`; each tool execution is
+  bounded by `agent.tool_timeout` (default 10m).
+- OIDC requires `exp` and `iss`; unknown-kid JWKS refreshes are
+  rate-limited; a missing audience logs a startup warning.
+- Audit egress is hash-chained by default with a generated HMAC key
+  (`$XDG_STATE_HOME/rousseau/audit-chain.key`).
+- `/readyz` on the metrics listener follows the transport link state;
+  Helm readiness uses it; the full image has a `HEALTHCHECK`.
+- New metrics: `rousseau_license_valid`,
+  `rousseau_license_expires_timestamp_seconds`,
+  `rousseau_audit_egress_*`. Spans for `agent.turn`,
+  `provider.complete` and `agent.tool`; trace context propagates to
+  A2A peers.
+- MCP client stdin writes are serialised; WhatsApp joins in-flight
+  work on shutdown; A2A tasks are evicted after `TaskRetention`;
+  transport response bodies are bounded.
+- nsjail backend: corrected flag spellings, minimal read-only root,
+  `--keep_env`; smoke tests run when the binary is present.
+- Email: `email.require_authentication_results` drops mail without a
+  `dkim=pass` for the From domain (off by default, warns when off).
+
 Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 
 ### Added — Wave 1 (unblock credibility)
