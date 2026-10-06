@@ -141,16 +141,28 @@ func TestTurnStream_ToolErrorIsReportedBackToTheModel(t *testing.T) {
 	collect()
 }
 
-func TestTurnStream_ToolNotFoundAborts(t *testing.T) {
+// An unknown tool no longer aborts: the model gets an error
+// tool_result and the loop continues, so the scripted streamer runs
+// out of steps and that is the error observed. The session must hold
+// a tool_result for the dangling tool_use.
+func TestTurnStream_ToolNotFoundFeedsBackError(t *testing.T) {
 	prov := &scriptedStreamer{steps: []streamStep{toolUseStep("c1", "nope", `{}`)}}
 	a := New(prov, tools.NewRegistry(), streamSilentLogger(), Options{})
 
 	events := make(chan StreamEvent, 16)
 	collect := drain(events)
 
-	_, err := a.TurnStream(context.Background(), sessionWith("go"), events)
-	assert.ErrorIs(t, err, ErrToolNotFound)
+	s := sessionWith("go")
+	_, err := a.TurnStream(context.Background(), s, events)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrToolNotFound)
 	collect()
+
+	require.Len(t, s.Messages, 3)
+	res := s.Messages[2].Content[0].ToolResult
+	require.NotNil(t, res)
+	assert.Equal(t, "c1", res.ToolUseID)
+	assert.True(t, res.IsError)
 }
 
 func TestTurnStream_MaxIterationsExhausted(t *testing.T) {

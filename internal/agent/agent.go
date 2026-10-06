@@ -2,13 +2,15 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/hooks"
 	"github.com/sebastienrousseau/rousseau-agent/internal/auth/sso"
@@ -173,13 +175,47 @@ func New(provider Provider, registry *tools.Registry, logger *slog.Logger, opts 
 // Compression happens in place; long sessions keep fitting the model's
 // context without the caller having to intervene.
 func (a *Agent) Turn(ctx context.Context, s *Session) (Message, error) {
+	ctx, span := observability.StartSpan(ctx, "agent.turn",
+		attribute.String("session.id", s.ID),
+		attribute.String("provider", a.provider.Name()))
+	defer span.End()
 	start := time.Now()
 	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
 	stats := &turnStats{}
 	msg, err := a.turnWithStats(ctx, s, stats)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	span.SetAttributes(
+		attribute.Int("llm.usage.input_tokens", stats.inputTokens),
+		attribute.Int("llm.usage.output_tokens", stats.outputTokens),
+		attribute.Int("agent.tool_calls", stats.toolCalls))
 	a.emitTerminal(ctx, s, start, err)
 	a.recordReliabilitySamples(s, start, err, stats, msg)
 	return msg, err
+}
+
+// completeSpan wraps one provider round-trip in a child span so a
+// trace shows each model call with its iteration, stop reason and
+// token usage.
+func (a *Agent) completeSpan(ctx context.Context, req Request, iteration int) (Response, error) {
+	ctx, span := observability.StartSpan(ctx, "provider.complete",
+		attribute.String("provider", a.provider.Name()),
+		attribute.Int("agent.iteration", iteration),
+		attribute.Int("llm.messages", len(req.Messages)))
+	defer span.End()
+	resp, err := a.provider.Complete(ctx, req)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return resp, err
+	}
+	span.SetAttributes(
+		attribute.String("llm.stop_reason", string(resp.StopReason)),
+		attribute.Int("llm.usage.input_tokens", resp.Usage.InputTokens),
+		attribute.Int("llm.usage.output_tokens", resp.Usage.OutputTokens))
+	return resp, nil
 }
 
 // turnStats accumulates per-turn counters the outer Turn wants to
@@ -419,7 +455,7 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats)
 
 		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})
 		start := time.Now()
-		resp, err := a.provider.Complete(ctx, req)
+		resp, err := a.completeSpan(ctx, req, i+1)
 		observability.ObserveProviderLatency(a.provider.Name(), "complete", start)
 		if err != nil {
 			observability.ProviderErrors.WithLabelValues(a.provider.Name(), "other").Inc()
@@ -480,11 +516,14 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats)
 			a.logger)
 
 		results, err := a.runTools(toolCtx, resp.Message, s.ID)
-		if err != nil {
-			return Message{}, err
-		}
+		// Append whatever results exist even on error: runTools fills
+		// every tool_use with a result (cancelled ones included) so
+		// the session stays well-formed for the next turn.
 		if len(results) > 0 {
 			s.Append(Message{Role: RoleUser, Content: results})
+		}
+		if err != nil {
+			return Message{}, err
 		}
 	}
 
@@ -562,117 +601,6 @@ func parseConfidence(text string) (float64, bool) {
 		v = 1
 	}
 	return v, true
-}
-
-func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Content, error) {
-	var results []Content
-	for _, c := range m.Content {
-		if c.Kind != ContentToolUse || c.ToolUse == nil {
-			continue
-		}
-		// Between tool calls is the other safe point for pause/cancel.
-		// Steered text is deliberately NOT drained here: the message
-		// list must stay a well-formed tool_use/tool_result pair, so
-		// injections wait for the iteration boundary.
-		if err := gate(ctx); err != nil {
-			return nil, err
-		}
-		use := c.ToolUse
-		tool, ok := a.registry.Get(use.Name)
-		if !ok {
-			return nil, fmt.Errorf("%w: %s", ErrToolNotFound, use.Name)
-		}
-
-		if decision, reason := a.opts.Approver.Approve(ctx, ApprovalRequest{
-			ToolName:  use.Name,
-			Input:     use.Input,
-			SessionID: sessionID,
-		}); decision == DecisionDeny {
-			observability.ToolCalls.WithLabelValues(use.Name, "deny").Inc()
-			if reason == "" {
-				reason = "denied by policy"
-			}
-			a.logger.Warn("tool.denied", slog.String("name", use.Name), slog.String("reason", reason))
-			a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
-			a.emitToolAudit(ctx, "deny", use.Name, "denied", sessionID, map[string]any{
-				"reason": reason,
-			})
-			results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
-				ToolUseID: use.ID,
-				Output:    "tool call blocked: " + reason,
-				IsError:   true,
-			}})
-			continue
-		}
-		// PreToolUse hook — fires AFTER the Approver so operators can
-		// layer policy-as-code on top of the pattern-based allow list.
-		if a.opts.Hooks != nil {
-			payload, mErr := hooks.MarshalPreToolUse(sessionID, use.Name, use.Input)
-			if mErr != nil {
-				// Should be impossible for well-formed input, but fail
-				// open (log) rather than block the whole loop.
-				a.logger.Warn("hook.marshal_failed", slog.String("event", string(hooks.EventPreToolUse)), slog.String("err", mErr.Error()))
-			} else {
-				verdict, hErr := a.opts.Hooks.Run(ctx, hooks.EventPreToolUse, payload)
-				if hErr != nil {
-					a.logger.Warn("hook.run_failed", slog.String("event", string(hooks.EventPreToolUse)), slog.String("err", hErr.Error()))
-				}
-				if verdict.Decision == hooks.DecisionDeny {
-					observability.ToolCalls.WithLabelValues(use.Name, "hook_deny").Inc()
-					reason := verdict.Reason
-					if reason == "" {
-						reason = "denied by hook"
-					}
-					a.logger.Warn("tool.hook_denied", slog.String("name", use.Name), slog.String("reason", reason))
-					a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
-					a.emitToolAudit(ctx, "deny", use.Name, "hook_denied", sessionID, map[string]any{
-						"reason": reason,
-					})
-					results = append(results, Content{Kind: ContentToolResult, ToolResult: &ToolResult{
-						ToolUseID: use.ID,
-						Output:    "tool call blocked by hook: " + reason,
-						IsError:   true,
-					}})
-					continue
-				}
-				if verdict.Decision == hooks.DecisionModify && len(verdict.Modified) > 0 {
-					// A hook that wants to rewrite the input surfaces
-					// the new input on `modified`; validate it parses
-					// as JSON, otherwise leave the original untouched.
-					var probe map[string]any
-					if json.Unmarshal(verdict.Modified, &probe) == nil {
-						use.Input = verdict.Modified
-						a.logger.Info("tool.hook_modified", slog.String("name", use.Name))
-					}
-				}
-			}
-		}
-		observability.ToolCalls.WithLabelValues(use.Name, "allow").Inc()
-
-		a.logger.Info("tool.execute", slog.String("name", use.Name), slog.String("id", use.ID))
-		detail := summarizeToolInput(use.Name, use.Input)
-		a.emitEvent(ctx, progress.Event{Kind: progress.KindToolStarted, Tool: use.Name, Detail: detail})
-		toolStart := time.Now()
-		out, err := tool.Execute(ctx, use.Input)
-		done := progress.Event{Kind: progress.KindToolFinished, Tool: use.Name, Detail: detail, Elapsed: time.Since(toolStart)}
-		result := &ToolResult{ToolUseID: use.ID, Output: out}
-		auditResult := "success"
-		auditDetail := map[string]any{
-			"elapsed_ms": time.Since(toolStart).Milliseconds(),
-		}
-		if err != nil {
-			result.IsError = true
-			result.Output = err.Error()
-			done.Err = err.Error()
-			a.logger.Warn("tool.error", slog.String("name", use.Name), slog.String("err", err.Error()))
-			auditResult = "error"
-			auditDetail["error"] = err.Error()
-		}
-		a.emitEvent(ctx, done)
-		a.emitToolAudit(ctx, "run", use.Name, auditResult, sessionID, auditDetail)
-		results = append(results, Content{Kind: ContentToolResult, ToolResult: result})
-	}
-	return results, nil
 }
 
 // emitToolAudit is a nil-safe helper that stamps a tool_call Record into the
