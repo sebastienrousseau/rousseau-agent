@@ -14,8 +14,6 @@ import "encoding/json"
 
 // Protocol identifier constants.
 const (
-	// ProtocolVersion is the MCP revision this server implements.
-	ProtocolVersion = "2024-11-05"
 	// ModernProtocolVersion is the stateless revision: no initialize
 	// handshake, version and capabilities in every request's _meta.
 	ModernProtocolVersion = "2026-07-28"

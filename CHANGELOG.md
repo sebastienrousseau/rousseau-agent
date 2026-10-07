@@ -61,6 +61,14 @@ entries change behaviour for existing deployments.
   Other servers fall back to `initialize`, now offering 2025-11-25 and
   accepting 2025-06-18, 2025-03-26 or 2024-11-05; any other negotiated
   version is refused. Abandoned requests send `notifications/cancelled`.
+- MCP server (`rousseau mcp`) speaks protocol revision 2026-07-28: it
+  answers `server/discover`, serves requests that carry the version in
+  `_meta` without `initialize` (results marked `resultType: complete`,
+  `tools/list` with cache hints), and refuses other stateless versions
+  with -32022 and the supported list. `initialize` now echoes the
+  client's version when it is 2025-11-25, 2025-06-18, 2025-03-26 or
+  2024-11-05 instead of always answering 2024-11-05. Unknown
+  notifications are no longer answered with an error.
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming

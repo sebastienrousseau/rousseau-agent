@@ -42,7 +42,7 @@
 - [Transports](#transports) — nine chat surfaces behind one interface
 - [LLM providers](#llm-providers) — six backends, one `Provider` contract
 - [Tools and integrations](#tools-and-integrations) — six built-ins, 26 native integration tools, Composio
-- [MCP](#mcp) — server and client; the client speaks 2026-07-28 and every earlier revision
+- [MCP](#mcp) — server and client, protocol revision 2026-07-28 with fallback to every earlier revision
 - [Skills](#skills) — Markdown skills, optional SSH signature enforcement
 - [Recall, scheduling, and sub-agents](#recall-scheduling-and-sub-agents) — memory, cron, fan-out
 - [Agent-to-Agent (A2A)](#agent-to-agent-a2a) — peer protocol surface
@@ -335,14 +335,16 @@ credentials.
 
 ## MCP
 
-Both halves of the Model Context Protocol are implemented. The client
-speaks the stateless revision **2026-07-28** and falls back to the
-`initialize` handshake (2025-11-25 down to 2024-11-05) for older
-servers; the server implements **2024-11-05**.
+Both halves of the Model Context Protocol are implemented against the
+stateless revision **2026-07-28**, and both fall back to the
+`initialize` handshake (2025-11-25 down to 2024-11-05) for older peers.
 
 **Server** (`internal/mcp`, `rousseau mcp`) speaks JSON-RPC 2.0 over
 stdio and exposes the daemon's tools and sessions to any MCP-capable
-client — Claude Desktop, IDE extensions, or another agent. The protocol
+client — Claude Desktop, IDE extensions, or another agent. It answers
+`server/discover`, serves 2026-07-28 requests without `initialize`, and
+negotiates the newest shared revision for clients that still send
+`initialize`. The protocol
 decoder carries a fuzz target (`internal/mcp/fuzz_test.go`).
 
 **Client** (`internal/mcp/client`, adapted into the registry by
