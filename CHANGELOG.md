@@ -49,6 +49,10 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- The provider router (`provider: router`) now streams: a turn is
+  streamed from the routed child, and a child without streaming is
+  replayed as one text delta. Before, routing turned token streaming
+  off for every provider behind it.
 - OIDC requires `exp` and `iss`; unknown-kid JWKS refreshes are
   rate-limited; a missing audience logs a startup warning.
 - Audit egress is hash-chained by default with a generated HMAC key
