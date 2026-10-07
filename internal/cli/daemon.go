@@ -109,6 +109,9 @@ type daemonWiring struct {
 	// TurnTimeout mirrors agent.turn_timeout; TransportHandler
 	// applies it to each routed turn (0 = no limit).
 	TurnTimeout time.Duration
+	// ResumeInterrupted continues turns a restart cut off instead of
+	// only notifying (agent.resume_interrupted).
+	ResumeInterrupted bool
 	// turnLimiter caps concurrent agent turns across every transport
 	// handler this wiring builds (agent.max_concurrent_turns).
 	turnLimiter *transport.TurnLimiter
@@ -674,36 +677,37 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	}
 
 	return &daemonWiring{
-		TurnJournal:    turnJournal,
-		stopBackground: stopBackground,
-		toolgate:       gate,
-		Provider:       provider,
-		Agent:          ag,
-		Registry:       registry,
-		Router:         router,
-		CronStore:      cronStore,
-		Sessions:       sessions,
-		Concrete:       concrete,
-		JIDMap:         jidMap,
-		ClaudeCache:    claudeCache,
-		CostStore:      costStore,
-		Identities:     identities,
-		routerOpts:     routerOpts,
-		MCPClients:     mcpClients,
-		RateLimiters:   rateLimiters,
-		Logger:         opts.Logger,
-		Progress:       progressBus,
-		Licence:        checker,
-		SSOBindings:    ssoStore,
-		AuditSink:      auditSink,
-		SCIMServer:     scimServer,
-		SCIMAddr:       scimAddr,
-		MetricsAddr:    cfg.Observability.MetricsAddr,
-		OTLPEndpoint:   cfg.Observability.OTLPEndpoint,
-		TurnTimeout:    cfg.Agent.TurnTimeout,
-		turnLimiter:    transport.NewTurnLimiter(cfg.Agent.MaxConcurrentTurns, opts.Logger),
-		A2A:            a2aRt,
-		A2AClients:     a2aClients,
+		TurnJournal:       turnJournal,
+		stopBackground:    stopBackground,
+		toolgate:          gate,
+		Provider:          provider,
+		Agent:             ag,
+		Registry:          registry,
+		Router:            router,
+		CronStore:         cronStore,
+		Sessions:          sessions,
+		Concrete:          concrete,
+		JIDMap:            jidMap,
+		ClaudeCache:       claudeCache,
+		CostStore:         costStore,
+		Identities:        identities,
+		routerOpts:        routerOpts,
+		MCPClients:        mcpClients,
+		RateLimiters:      rateLimiters,
+		Logger:            opts.Logger,
+		Progress:          progressBus,
+		Licence:           checker,
+		SSOBindings:       ssoStore,
+		AuditSink:         auditSink,
+		SCIMServer:        scimServer,
+		SCIMAddr:          scimAddr,
+		MetricsAddr:       cfg.Observability.MetricsAddr,
+		OTLPEndpoint:      cfg.Observability.OTLPEndpoint,
+		TurnTimeout:       cfg.Agent.TurnTimeout,
+		ResumeInterrupted: cfg.Agent.ResumeInterrupted,
+		turnLimiter:       transport.NewTurnLimiter(cfg.Agent.MaxConcurrentTurns, opts.Logger),
+		A2A:               a2aRt,
+		A2AClients:        a2aClients,
 	}, nil
 }
 
@@ -1259,6 +1263,36 @@ func interruptedNotice(preview string, ledger []agent.LedgerEntry) string {
 // transport.
 type ledgerFunc func(ctx context.Context, sender string) []agent.LedgerEntry
 
+// resumeFunc continues sender's interrupted turn and returns the reply.
+type resumeFunc func(ctx context.Context, sender string) (string, error)
+
+// restartRecovery is how a transport handles the turns its last
+// shutdown cut off: list what ran (ledger) and, when resume is set,
+// continue the turn instead of only notifying.
+type restartRecovery struct {
+	ledger ledgerFunc
+	resume resumeFunc
+}
+
+// RestartRecovery builds the recovery for transportName from the
+// daemon's stores and router. Resume is set only when
+// agent.resume_interrupted is on, and runs under the turn timeout.
+func (w *daemonWiring) RestartRecovery(transportName string) restartRecovery {
+	rec := restartRecovery{ledger: w.TurnLedger(transportName)}
+	if w.ResumeInterrupted {
+		router := w.routerFor(transportName)
+		rec.resume = func(ctx context.Context, sender string) (string, error) {
+			if w.TurnTimeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, w.TurnTimeout)
+				defer cancel()
+			}
+			return router.Resume(ctx, sender)
+		}
+	}
+	return rec
+}
+
 // TurnLedger looks up the side effects of sender's latest turn on
 // transportName from the checkpointed session. It never creates a
 // session; an unknown sender has an empty ledger.
@@ -1279,11 +1313,15 @@ func (w *daemonWiring) TurnLedger(transportName string) ledgerFunc {
 	}
 }
 
-// notifyInterruptedTurns tells each sender whose turn on transport was
-// cut off by the last shutdown, once deliver can reach them, listing
-// what had already run when ledger is set. It takes (and clears) the
-// journal entries, so each notice is sent once.
-func notifyInterruptedTurns(ctx context.Context, j turnJournal, transportName string, ledger ledgerFunc, deliver func(ctx context.Context, to, body string) error, logger *slog.Logger) {
+// resumedPrefix marks a reply delivered by resuming an interrupted turn.
+const resumedPrefix = "(Resumed after a restart.)\n\n"
+
+// notifyInterruptedTurns handles each turn on transport that the last
+// shutdown cut off, once deliver can reach the sender: it resumes the
+// turn when rec.resume is set and delivers the reply, and otherwise (or
+// when resuming fails) sends a notice listing what had already run. It
+// takes (and clears) the journal entries, so each sender hears once.
+func notifyInterruptedTurns(ctx context.Context, j turnJournal, transportName string, rec restartRecovery, deliver func(ctx context.Context, to, body string) error, logger *slog.Logger) {
 	if j == nil {
 		return
 	}
@@ -1293,14 +1331,30 @@ func notifyInterruptedTurns(ctx context.Context, j turnJournal, transportName st
 		return
 	}
 	for _, t := range turns {
-		var entries []agent.LedgerEntry
-		if ledger != nil {
-			entries = ledger(ctx, t.Sender)
-		}
-		if err := deliver(ctx, t.Sender, interruptedNotice(t.Preview, entries)); err != nil {
+		body, outcome := recoverTurn(ctx, rec, t.Sender, t.Preview, logger)
+		if err := deliver(ctx, t.Sender, body); err != nil {
 			logger.Warn("turn_journal.notify_failed", slog.String("to", t.Sender), slog.String("err", err.Error()))
 			continue
 		}
-		logger.Info("turn_journal.notified", slog.String("transport", transportName), slog.String("to", t.Sender), slog.Int("tool_calls", len(entries)))
+		logger.Info("turn_journal."+outcome, slog.String("transport", transportName), slog.String("to", t.Sender))
 	}
+}
+
+// recoverTurn returns what to send for one interrupted turn and
+// whether it was "resumed" or "notified".
+func recoverTurn(ctx context.Context, rec restartRecovery, sender, preview string, logger *slog.Logger) (string, string) {
+	if rec.resume != nil {
+		reply, err := rec.resume(ctx, sender)
+		if err == nil && reply != "" {
+			return resumedPrefix + reply, "resumed"
+		}
+		if err != nil {
+			logger.Warn("turn_journal.resume_failed", slog.String("to", sender), slog.String("err", err.Error()))
+		}
+	}
+	var entries []agent.LedgerEntry
+	if rec.ledger != nil {
+		entries = rec.ledger(ctx, sender)
+	}
+	return interruptedNotice(preview, entries), "notified"
 }

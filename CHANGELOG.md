@@ -56,6 +56,11 @@ entries change behaviour for existing deployments.
   every tool call that had already run. The restart notice now lists
   the tool calls that ran before the interruption, read from that
   checkpoint.
+- `agent.resume_interrupted` (off by default) continues a turn a
+  restart cut off from its last checkpoint and delivers the reply,
+  marked as resumed; a turn that had finished but whose reply was never
+  delivered is re-sent without a model call. If resuming fails, the
+  sender gets the notice listing what had run.
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming

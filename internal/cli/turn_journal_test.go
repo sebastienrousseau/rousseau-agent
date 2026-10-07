@@ -33,8 +33,8 @@ func TestNotifyInterruptedTurns(t *testing.T) {
 		got = append(got, sent{to, body})
 		return nil
 	}
-	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", nil, deliver, silentLogger())
-	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", nil, deliver, silentLogger())
+	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", restartRecovery{}, deliver, silentLogger())
+	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", restartRecovery{}, deliver, silentLogger())
 
 	require.Len(t, got, 1, "each interrupted turn is announced once")
 	assert.Equal(t, "a@s.whatsapp.net", got[0].to)

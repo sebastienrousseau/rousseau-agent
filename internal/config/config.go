@@ -926,6 +926,11 @@ type AgentConfig struct {
 	// provider subprocess is stopped and the sender is told the turn
 	// was cut short. Default 30m; 0 disables the limit.
 	TurnTimeout time.Duration `mapstructure:"turn_timeout"`
+	// ResumeInterrupted continues a turn a restart cut off from its
+	// last checkpoint and delivers the reply, instead of only telling
+	// the sender what had run. Off by default: resuming runs the model,
+	// and possibly more tools, without the sender asking again.
+	ResumeInterrupted bool `mapstructure:"resume_interrupted"`
 	// ToolTimeout bounds one tool execution inside a turn so a hung
 	// bash or MCP call cannot consume the whole turn budget. Default
 	// 10m.
