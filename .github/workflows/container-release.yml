@@ -103,7 +103,9 @@ jobs:
 
       - name: Compute build date
         id: date
-        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       - name: Build amd64 (load locally for scan)
         id: build
@@ -119,6 +121,7 @@ jobs:
             VERSION=edge-${{ github.sha }}
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.date.outputs.date }}
+            APK_REFRESH=${{ steps.date.outputs.day }}
           cache-from: type=gha,scope=${{ matrix.flavour }}-amd64
           cache-to: type=gha,scope=${{ matrix.flavour }}-amd64,mode=max
 
@@ -187,7 +190,9 @@ jobs:
 
       - name: Compute build date
         id: date
-        run: echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
       # Push by digest only — no tag attached yet. The merge job
       # collects the per-arch digests and creates the multi-arch
@@ -204,6 +209,7 @@ jobs:
             VERSION=${{ github.ref_name }}
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.date.outputs.date }}
+            APK_REFRESH=${{ steps.date.outputs.day }}
           cache-from: type=gha,scope=${{ matrix.flavour }}-${{ matrix.arch }}
           cache-to: type=gha,scope=${{ matrix.flavour }}-${{ matrix.arch }},mode=max
 
