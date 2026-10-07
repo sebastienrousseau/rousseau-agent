@@ -4,7 +4,6 @@
 cognit	20	a2a	decodeDataURI	internal/a2a/fetch.go
 cognit	20	a2a	VerifyAgentCard	internal/a2a/sign.go
 cognit	18	agent	(*Agent).DecideExternal	internal/agent/external.go
-cognit	20	agent	(*Agent).turnStream	internal/agent/stream_turn.go
 cognit	38	agent	(*Agent).turnWithStats	internal/agent/agent.go
 cognit	50	agent	checkValue	internal/agent/structured.go
 cognit	16	agent	lastUserText	internal/agent/recall.go
@@ -73,7 +72,6 @@ cognit	17	whatsapp	(*Client).Start	internal/transport/whatsapp/client.go
 cognit	23	whatsapp	Dispatch	internal/transport/whatsapp/dispatch.go
 cyclo	14	a2a	decodeDataURI	internal/a2a/fetch.go
 cyclo	12	a2a	VerifyAgentCard	internal/a2a/sign.go
-cyclo	13	agent	(*Agent).turnStream	internal/agent/stream_turn.go
 cyclo	18	agent	(*Agent).turnWithStats	internal/agent/agent.go
 cyclo	28	agent	checkValue	internal/agent/structured.go
 cyclo	15	agent	Decide	internal/agent/decide.go

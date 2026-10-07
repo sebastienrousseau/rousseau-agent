@@ -3,18 +3,17 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
-	"github.com/sebastienrousseau/rousseau-agent/internal/toolcontext"
 )
 
-// TurnStream is the streaming twin of Turn. It behaves identically to
-// Turn — same compression pass, same tool loop, same iteration budget —
-// but each provider round-trip is streamed via the optional
-// StreamingProvider interface (falling back to Complete when the
-// provider does not implement it).
+// TurnStream is the streaming twin of Turn. It is the same loop —
+// same compression pass, control gates, cache hints, cost recording,
+// tool phase, iteration budget and reliability samples — with each
+// provider round-trip streamed through the optional StreamingProvider
+// interface (falling back to Complete when the provider does not
+// implement it). Before the loops were unified, the streaming path
+// silently skipped cost telemetry and provider metrics.
 //
 // events receives every StreamEvent the provider emits. TurnStream is
 // responsible for closing events before returning. If the caller only
@@ -25,85 +24,15 @@ import (
 // returned exactly as by Turn.
 func (a *Agent) TurnStream(ctx context.Context, s *Session, events chan<- StreamEvent) (Message, error) {
 	defer close(events)
-
-	start := time.Now()
-	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
-	msg, err := a.turnStream(ctx, s, events)
-	a.emitTerminal(ctx, s, start, err)
-	return msg, err
-}
-
-// turnStream is TurnStream's body, split out so the exported method
-// can bracket every exit path with the progress terminal event.
-func (a *Agent) turnStream(ctx context.Context, s *Session, events chan<- StreamEvent) (Message, error) {
-	if len(s.Messages) == 0 {
-		return Message{}, ErrEmptySession
-	}
-	if changed, err := a.opts.Compressor.Compress(ctx, s); err != nil {
-		a.logger.Warn("agent.compress_failed", slog.String("err", err.Error()))
-	} else if changed {
-		a.logger.Info("agent.compressed", slog.Int("messages", len(s.Messages)))
-	}
-
-	toolDefs := a.registry.Definitions()
 	streamer, canStream := a.provider.(StreamingProvider)
-
-	for i := 0; i < a.opts.MaxIterations; i++ {
-		if err := gate(ctx); err != nil {
-			return Message{}, err
-		}
-		for _, m := range drainSteered(ctx) {
-			s.Append(m)
-		}
-
-		req := Request{
-			SessionID:         s.ID,
-			System:            a.systemPrompt(ctx, s),
-			Messages:          s.Messages,
-			Tools:             toolDefs,
-			CacheableMessages: len(s.Messages), // same rationale as turnWithStats
-		}
-
-		a.emit(ctx, s, progress.Event{Kind: progress.KindThinking, Iteration: i + 1})
-		var (
-			resp Response
-			err  error
-		)
-		if canStream {
-			resp, err = a.streamOnce(ctx, streamer, req, events, i+1)
-		} else {
-			resp, err = a.provider.Complete(ctx, req)
-		}
-		if err != nil {
-			return Message{}, fmt.Errorf("provider: %w", err)
-		}
-
-		s.Append(resp.Message)
-
-		if resp.StopReason == StopEndTurn || resp.StopReason != StopToolUse {
-			return resp.Message, nil
-		}
-
-		// Match the non-streaming Turn: inject per-turn state for tools
-		// that need it (e.g. spawn_subagent).
-		toolCtx := toolcontext.WithLogger(
-			toolcontext.WithProvider(
-				toolcontext.WithSession(ctx, s),
-				a.provider),
-			a.logger)
-
-		results, err := a.runTools(toolCtx, resp.Message, s.ID)
-		// Same as turnWithStats: keep the session well-formed even
-		// when the tool phase was cancelled.
-		if len(results) > 0 {
-			s.Append(Message{Role: RoleUser, Content: results})
-		}
-		if err != nil {
-			return Message{}, err
-		}
+	if !canStream {
+		return a.run(ctx, s, completer{op: "complete", fn: a.completeOnce})
 	}
-
-	return Message{}, ErrMaxIterations
+	return a.run(ctx, s, completer{op: "stream", fn: func(ctx context.Context, req Request, iteration int) (Response, error) {
+		return a.roundTrip(ctx, "provider.stream", req, iteration, func(ctx context.Context) (Response, error) {
+			return a.streamOnce(ctx, streamer, req, events, iteration)
+		})
+	}})
 }
 
 // streamOnce invokes the provider's Stream, forwards every event to
