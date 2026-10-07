@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
-	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
 // newReliabilityCmd wires `rousseau reliability` — the operator-
@@ -126,28 +125,23 @@ func loadReliabilityAggregator(opts *Options, synthetic bool, window time.Durati
 	return agg
 }
 
-// loadPersistedReliabilitySamples opens the daemon's SQLite state
-// DB (same path resolveStateDSN uses), reads the reliability
-// samples newer than `now - window`, and records them into agg.
-// A missing DB / missing table is not an error — first-run
+// loadPersistedReliabilitySamples opens the daemon's state store
+// (SQLite or Postgres, same DSN resolveStateDSN uses), reads the
+// reliability samples newer than `now - window`, and records them
+// into agg. A missing DB / missing table is not an error — first-run
 // operators see the "no data yet" branch instead.
 func loadPersistedReliabilitySamples(opts *Options, agg *reliability.Aggregator, window time.Duration) {
-	if opts == nil || opts.Config == nil {
-		return
-	}
-	dsn := opts.Config.State.DSN
-	if dsn == "" || opts.Config.State.Driver != "" && opts.Config.State.Driver != "sqlite" {
-		// Postgres port pending; only sqlite has the store today.
+	if opts == nil || opts.Config == nil || opts.Config.State.DSN == "" {
 		return
 	}
 	ctx := context.Background()
-	store, err := sqlitestore.Open(ctx, dsn)
+	store, err := openSearchableStore(ctx, opts.Config.State)
 	if err != nil {
 		return
 	}
 	defer func() { _ = store.Close() }() //nolint:errcheck // read-only tool
 
-	recorder, err := sqlitestore.NewReliabilitySampleStore(ctx, store, opts.Logger)
+	recorder, err := openReliabilitySampleStore(ctx, store, opts.Logger)
 	if err != nil {
 		return
 	}

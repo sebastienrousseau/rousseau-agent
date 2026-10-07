@@ -16,6 +16,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	pgstore "github.com/sebastienrousseau/rousseau-agent/internal/state/postgres"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
+	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
 // SearchableStore is the read-side surface every command that
@@ -191,22 +192,17 @@ func openClaudeSessionCache(ctx context.Context, store SearchableStore) (ClaudeS
 // consumes for the four-dimension reliability decomposition
 // (arXiv:2602.16666). Two methods: Record (from the agent hot
 // path, fire-and-forget) and LoadSince (for CLI process
-// invocations reading historical samples from disk).
-//
-// Both drivers (sqlite / postgres) can implement — today only
-// sqlite ships. When the postgres implementation lands it fits
-// under the same interface.
+// invocations reading historical samples from disk). Both drivers
+// implement it.
 type ReliabilityRecorderI interface {
 	Record(reliability.Sample)
 	LoadSince(ctx context.Context, cutoff time.Time) ([]reliability.Sample, error)
 }
 
 // openReliabilitySampleStore constructs the driver-appropriate
-// backing store for the reliability sample stream. Postgres
-// implementation deferred (same pattern as ClaudeSessionCache —
-// SQLite mirror ships first, postgres port follows in a
-// dedicated wave). Returns nil when the store type isn't
-// recognised so the daemon falls back to in-memory only.
+// backing store for the reliability sample stream. An error for an
+// unrecognised store type makes the daemon fall back to in-memory
+// only.
 func openReliabilitySampleStore(ctx context.Context, store SearchableStore, logger *slog.Logger) (ReliabilityRecorderI, error) {
 	switch s := store.(type) {
 	case *sqlitestore.Store:
@@ -215,6 +211,34 @@ func openReliabilitySampleStore(ctx context.Context, store SearchableStore, logg
 		return pgstore.NewReliabilitySampleStore(ctx, s, logger)
 	default:
 		return nil, errors.New("cli: unknown store type for reliability samples")
+	}
+}
+
+// turnJournal is what the daemon needs from a driver's journal of
+// in-flight turns: the router's Begin/End plus the startup drain.
+type turnJournal interface {
+	transport.TurnJournal
+	TakeInterrupted(ctx context.Context, transport string) ([]sqlitestore.InterruptedTurn, error)
+}
+
+// openTurnJournal constructs the driver-appropriate journal of
+// in-flight turns. The result is nil (not a typed nil) on error.
+func openTurnJournal(ctx context.Context, store SearchableStore) (turnJournal, error) {
+	switch s := store.(type) {
+	case *sqlitestore.Store:
+		j, err := sqlitestore.NewTurnJournal(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		return j, nil
+	case *pgstore.Store:
+		j, err := pgstore.NewTurnJournal(ctx, s)
+		if err != nil {
+			return nil, err
+		}
+		return j, nil
+	default:
+		return nil, errors.New("cli: unknown store type for turn journal")
 	}
 }
 

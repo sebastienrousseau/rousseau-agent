@@ -14,7 +14,6 @@ import (
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
-	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 )
 
 // agentProvider is a narrower view of [agent.Provider] used by the
@@ -236,25 +235,21 @@ func newProviderEvalRunner(p agentProvider) reliability.EvalRunner {
 	})
 }
 
-// openEvalRecorder opens the SQLite reliability store so eval
-// samples persist alongside live daemon samples. Nil when the
-// state driver isn't sqlite (postgres port pending
-// process-external invocation from a shell). Returns the
-// recorder + a close callback the caller must defer.
+// openEvalRecorder opens the configured state store's reliability
+// sample store (SQLite or Postgres) so eval samples persist
+// alongside live daemon samples. A store that cannot be opened
+// yields a no-op recorder. Returns the recorder + a close callback
+// the caller must defer.
 func openEvalRecorder(opts *Options) (reliability.Recorder, func()) {
-	if opts == nil || opts.Config == nil {
-		return reliability.NopRecorder{}, nil
-	}
-	dsn := opts.Config.State.DSN
-	if dsn == "" || (opts.Config.State.Driver != "" && opts.Config.State.Driver != "sqlite") {
+	if opts == nil || opts.Config == nil || opts.Config.State.DSN == "" {
 		return reliability.NopRecorder{}, nil
 	}
 	ctx := context.Background()
-	store, err := sqlitestore.Open(ctx, dsn)
+	store, err := openSearchableStore(ctx, opts.Config.State)
 	if err != nil {
 		return reliability.NopRecorder{}, nil
 	}
-	rec, err := sqlitestore.NewReliabilitySampleStore(ctx, store, opts.Logger)
+	rec, err := openReliabilitySampleStore(ctx, store, opts.Logger)
 	if err != nil {
 		_ = store.Close() //nolint:errcheck // best-effort
 		return reliability.NopRecorder{}, nil

@@ -49,6 +49,11 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- The Postgres driver now supports GDPR erasure (`session
+  delete-by-sender`, with bare-identifier resolution), `state.session_ttl`
+  retention, and the interrupted-turn journal, which were SQLite-only.
+  `reliability` and `eval` read and write persisted samples on either
+  driver.
 - OIDC requires `exp` and `iss`; unknown-kid JWKS refreshes are
   rate-limited; a missing audience logs a startup warning.
 - Audit egress is hash-chained by default with a generated HMAC key
