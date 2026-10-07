@@ -67,7 +67,14 @@ FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18
 # fish was removed. bash is the shell contract Claude Code's Bash tool
 # expects, so a second interactive shell added attack surface and a
 # High-severity finding while serving nothing the daemon does.
-RUN apk upgrade --no-cache \
+#
+# APK_REFRESH changes once a day (CI passes the UTC date). Referencing
+# it in this RUN makes BuildKit re-run the upgrade instead of serving
+# the layer from the build cache, which otherwise froze the base
+# packages, and their CVE fixes, until an earlier layer changed.
+ARG APK_REFRESH=unset
+RUN echo "apk refresh: ${APK_REFRESH}" \
+ && apk upgrade --no-cache \
  && apk add --no-cache \
       bash \
       git \
