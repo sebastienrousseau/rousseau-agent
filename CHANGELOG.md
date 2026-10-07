@@ -49,6 +49,12 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- `rousseau evidence` emits a compliance evidence pack: build stamp,
+  config hash and summary, licence state, audit-chain head and HMAC key
+  fingerprint, effective controls, retention settings, the doctor
+  report and, with `--daemon`, readiness and `rousseau_*` metrics, with
+  each field mapped to the EU AI Act, GDPR, DORA, SOC 2 and HIPAA
+  articles in `docs/compliance/`. The pack holds no secrets.
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming
