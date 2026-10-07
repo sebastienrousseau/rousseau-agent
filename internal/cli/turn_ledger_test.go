@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -63,9 +65,15 @@ func TestNotifyInterruptedTurns_ListsCheckpointedSideEffects(t *testing.T) {
 	require.NoError(t, wiring.JIDMap.Put(ctx, "whatsapp:a@s.whatsapp.net", sess.ID))
 	require.NoError(t, wiring.TurnJournal.Begin(ctx, "whatsapp", "a@s.whatsapp.net", "clean the build"))
 
+	// Log to a buffer so a failure shows why no notice went out (a
+	// journal read error is otherwise only a WARN line).
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	var body string
+	calls := 0
 	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", wiring.RestartRecovery("whatsapp"),
-		func(_ context.Context, _, b string) error { body = b; return nil }, silentLogger())
+		func(_ context.Context, _, b string) error { calls++; body = b; return nil }, logger)
+	require.Equal(t, 1, calls, "exactly one notice for the one interrupted turn; log:\n%s", logs.String())
 	assert.Contains(t, body, "- bash rm -rf build")
 
 	// An unknown sender has an empty ledger rather than a new session.

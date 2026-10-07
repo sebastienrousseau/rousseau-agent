@@ -57,10 +57,12 @@ EXEMPTIONS=$(cat <<'EOF'
 cmd/rousseau	capped by an uncoverable func main()
 examples/embed-a2a	capped by an uncoverable func main()
 examples/embed-a2a-federated	capped by an uncoverable func main()
+examples/embed-agent	capped by an uncoverable func main()
 examples/embed-cost	capped by an uncoverable func main()
 examples/embed-identity	capped by an uncoverable func main()
 examples/embed-integrations	capped by an uncoverable func main()
 examples/embed-recall	capped by an uncoverable func main()
+examples/embed-subagent	capped by an uncoverable func main()
 internal/state/postgres	live-PG-only paths; sqlite mirror has full branch coverage; grinding requires expanded testcontainers matrix (Wave-2 storage-layer refactor)
 internal/state/sqlite	FTS5 vector-blend + schema-migration corruption paths; grind planned as part of the storage-layer refactor (Wave-2)
 internal/transport	whatsmeow/signal-cli/Discord-Gateway dial-failure branches need dedicated network fakes; ~5pp gap tracked for Wave-2 hardening
