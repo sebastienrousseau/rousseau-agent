@@ -31,7 +31,7 @@ while IFS= read -r line; do
       ;;
     tools/list)
       if [ "$meta" = yes ]; then
-        printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","ttlMs":60000,"cacheScope":"global","tools":[{"name":"modern_ok","inputSchema":{"type":"object"}}]}}\n' "$id"
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","ttlMs":60000,"cacheScope":"public","tools":[{"name":"modern_ok","inputSchema":{"type":"object"}}]}}\n' "$id"
       else
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"missing _meta protocolVersion"}}\n' "$id"
       fi
