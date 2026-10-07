@@ -179,7 +179,10 @@ directory. `rousseau doctor --json` and `rousseau config validate
 procurement questionnaire can consume: the config command loads the
 file exactly as the daemon would (strict keys, `${VAR}` expansion, a
 missing explicit `--config` is an error) and reports the resolved
-path and effective top-level choices.
+path and effective top-level choices. `rousseau evidence` bundles both, plus
+the licence state, audit-chain head, effective controls and retention
+settings, into one JSON evidence pack mapped to the EU AI Act, GDPR,
+DORA, SOC 2 and HIPAA articles in [`docs/compliance/`](./docs/compliance/).
 
 Once the config is in place, run a transport instead of the TUI:
 

@@ -49,6 +49,12 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- `rousseau evidence` emits a compliance evidence pack: build stamp,
+  config hash and summary, licence state, audit-chain head and HMAC key
+  fingerprint, effective controls, retention settings, the doctor
+  report and, with `--daemon`, readiness and `rousseau_*` metrics, with
+  each field mapped to the EU AI Act, GDPR, DORA, SOC 2 and HIPAA
+  articles in `docs/compliance/`. The pack holds no secrets.
 - MCP client: `tools/list` follows `nextCursor`, so servers that page
   their tools no longer lose everything after the first page; a `ping`
   from the server is answered and other server requests get "method

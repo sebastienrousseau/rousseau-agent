@@ -16,6 +16,29 @@ their assessment — not as a substitute for their assessment.
 | [`soc2-readiness.md`](./soc2-readiness.md) | AICPA Trust Services Criteria (SOC 2 Type II) | Any enterprise procurement RFP |
 | [`../incidents/TEMPLATE.md`](../incidents/TEMPLATE.md) | Postmortem template | Internal incident review |
 
+## Evidence pack
+
+`rousseau evidence` writes one JSON document to hand to a reviewer
+alongside these docs (`--out pack.json` writes it with mode 0600):
+
+| Section | What it shows |
+|---|---|
+| `build` | version, commit, build date, Go toolchain |
+| `config` | SHA-256 of the config file and the secret-free summary `config validate` prints |
+| `license` | tier, subject, validity, expiry, enabled features |
+| `audit` | egress kind, hash chaining, HMAC key source and fingerprint (never the key), chain sequence and head |
+| `controls` | approver mode, default and rule counts, RBAC and OPA, bash sandbox, filesystem root and deny list, tool timeout and output cap |
+| `retention` | `state.session_ttl`, idle timeout, the erasure command |
+| `runtime` | with `--daemon http://host:port`: `/readyz` result and the `rousseau_*` metric samples |
+| `doctor` | the full `rousseau doctor --json` report |
+| `mapping` | which fields support which article, and the doc in this directory that explains the operator's remaining obligations |
+
+Generate a pack per environment at each release and at each audit
+period, and keep them with the change record: two packs with the same
+`config.sha256` and `audit.hmac_key_fingerprint` show the controls did
+not drift. The pack holds no secrets, but it does name file paths and
+the licence subject, so treat it as internal.
+
 ## Honest scope statement
 
 - **What these documents ARE:** the maintainer's good-faith
