@@ -55,6 +55,12 @@ entries change behaviour for existing deployments.
   report and, with `--daemon`, readiness and `rousseau_*` metrics, with
   each field mapped to the EU AI Act, GDPR, DORA, SOC 2 and HIPAA
   articles in `docs/compliance/`. The pack holds no secrets.
+- MCP client: `tools/list` follows `nextCursor`, so servers that page
+  their tools no longer lose everything after the first page; a `ping`
+  from the server is answered and other server requests get "method
+  not found" instead of silence; and a tool result with `isError`
+  passes the server's error text to the model instead of a generic
+  "server reported error".
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming
