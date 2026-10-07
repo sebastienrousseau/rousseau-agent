@@ -122,7 +122,7 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 
 	resp, err := p.http.Do(httpReq)
 	if err != nil {
-		return model.Response{}, fmt.Errorf("vertex: post: %w", err)
+		return model.Response{}, model.NewProviderError(fmt.Errorf("vertex: post: %w", err), 0, nil)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -131,7 +131,10 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 		return model.Response{}, fmt.Errorf("vertex: read: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return model.Response{}, fmt.Errorf("vertex: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400))
+		// Typed so the retry wrapper can tell a 429 from a 400 and
+		// honour Retry-After.
+		return model.Response{}, model.NewProviderError(
+			fmt.Errorf("vertex: HTTP %d: %s", resp.StatusCode, truncate(string(rb), 400)), resp.StatusCode, resp)
 	}
 	return parseVertexResponse(rb)
 }
