@@ -229,18 +229,25 @@ with 100 messages is ~30 KB, so 100k sessions = 3 GB.
 
 ## Limitations shipped today
 
-- **Retention erase, recall and the interrupted-turn journal are
-  SQLite-only.** Under the Postgres driver `state.retention` does
-  not erase idle sessions or senders (GDPR Art. 17 requests must be
-  handled with SQL against the Postgres tables), `recall` vectors are
-  not stored, and a daemon restart does not notify senders whose
-  turn was cut short. The Phase 2 storage contract suite ports all
-  three; until then treat Postgres HA as a session-store topology,
-  not feature parity with SQLite. What *is* guaranteed to match is
-  the `state.Store` contract (save, load, append, divergent-history
-  replace, listing order and caps, per-sender listing, delete):
-  `internal/state/storetest` runs the same cases against both
-  drivers, in CI for every change.
+- **Erasure does not scrub disk blocks.** `session delete-by-sender`
+  and `state.session_ttl` retention work on Postgres (same tables,
+  one transaction), but Postgres has no `secure_delete`: deleted
+  tuples are reclaimed by autovacuum. If a GDPR request requires the
+  bytes to leave the disk, run `VACUUM FULL` on `sessions`,
+  `session_messages`, `session_costs`, `claude_sessions`,
+  `jid_sessions` and `identity_handles` afterwards, and rotate WAL
+  archives on your own schedule.
+- **Interrupted-turn notices are per transport, not per replica.**
+  The journal is shared, so the first replica of a transport to start
+  drains it and notifies every sender whose turn any replica cut off.
+  A turn still running on a live replica is journalled again when it
+  finishes, so a notice can at worst be a duplicate.
+- **Vector recall is not stored on either driver** (the daemon does
+  not wire `recall_vectors`); FTS-backed recall works on both.
+- What is guaranteed to match is the `state.Store` contract (save,
+  load, append, divergent-history replace, listing order and caps,
+  per-sender listing, delete): `internal/state/storetest` runs the
+  same cases against both drivers, in CI for every change.
 - Cron schedules, WhatsApp JID pairings, and session cost
   ledgers stay per-replica. Roadmap §2.4b covers the port.
 - No pgx `pgxpool` tuning surface yet — the stdlib bridge

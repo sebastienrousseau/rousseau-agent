@@ -213,10 +213,12 @@ func (c *Client) handleEvent(ctx context.Context, roomID string, evt timelineEve
 		return
 	}
 	msg := transport.IncomingMessage{
-		From:        evt.Sender,
-		Body:        body,
-		At:          time.Unix(evt.OriginServerTS/1000, (evt.OriginServerTS%1000)*int64(time.Millisecond)),
-		Attachments: attachments,
+		From:         evt.Sender,
+		Body:         body,
+		At:           time.Unix(evt.OriginServerTS/1000, (evt.OriginServerTS%1000)*int64(time.Millisecond)),
+		Conversation: roomID,
+		MessageID:    evt.EventID,
+		Attachments:  attachments,
 	}
 	c.logger.Info("matrix.incoming",
 		slog.String("from", msg.From),
@@ -227,13 +229,17 @@ func (c *Client) handleEvent(ctx context.Context, roomID string, evt timelineEve
 		c.logger.Error("matrix.handler_failed", slog.String("err", err.Error()))
 		return
 	}
-	if reply == "" {
-		return
-	}
-	if err := c.Deliver(ctx, roomID, reply); err != nil {
-		c.logger.Error("matrix.send_failed", slog.String("err", err.Error()))
+	for _, part := range transport.SplitReply(reply, maxTextLen) {
+		if err := c.Deliver(ctx, roomID, part); err != nil {
+			c.logger.Error("matrix.send_failed", slog.String("err", err.Error()))
+			return
+		}
 	}
 }
+
+// maxTextLen keeps one m.room.message well under the 64 KiB event
+// size limit, leaving room for the JSON envelope and signatures.
+const maxTextLen = 32 << 10
 
 // extractBody pulls the text body out of an m.room.message content
 // payload. Only m.text is honoured today; m.notice / m.emote could be

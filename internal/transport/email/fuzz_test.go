@@ -41,6 +41,6 @@ func FuzzBuildMessage(f *testing.F) {
 				t.Fatalf("panic on from=%q to=%q body=%q: %v", from, to, body, r)
 			}
 		}()
-		_ = buildMessage(from, to, body)
+		_ = buildMessage(from, to, body, "", body)
 	})
 }

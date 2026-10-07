@@ -281,8 +281,9 @@ func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
 		Short: "Erase everything stored for one sender (GDPR Art. 17)",
 		Long: "Deletes the sender's sessions (and search index rows), jid mapping, identity\n" +
 			"handles, SSO bindings, cron jobs delivering to them, per-session costs, recall\n" +
-			"vectors and reliability samples, with secure_delete and a WAL checkpoint, then\n" +
-			"removes claude's transcripts of those sessions. The sender is the stored key,\n" +
+			"vectors and reliability samples (on SQLite with secure_delete and a WAL\n" +
+			"checkpoint; on Postgres run VACUUM FULL afterwards if the bytes must leave the\n" +
+			"disk), then removes claude's transcripts of those sessions. The sender is the stored key,\n" +
 			"e.g. whatsapp:15551234567@s.whatsapp.net, or the bare identifier when only one\n" +
 			"transport holds it (it is refused when several do). Stop the daemon first so it does\n" +
 			"not recreate a session mid-erasure. Not covered: the WhatsApp device store\n" +

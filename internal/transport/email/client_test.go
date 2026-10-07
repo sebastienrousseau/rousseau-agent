@@ -277,7 +277,7 @@ func TestExtractBody_EmptyReturnsEmpty(t *testing.T) {
 }
 
 func TestBuildMessage_ContainsHeadersAndBody(t *testing.T) {
-	msg := buildMessage("bot@x", "user@y", "hello")
+	msg := buildMessage("bot@x", "user@y", defaultSubject, "", "hello")
 	s := string(msg)
 	assert.Contains(t, s, "From: bot@x")
 	assert.Contains(t, s, "To: user@y")
