@@ -265,10 +265,12 @@ func (c *Client) handleMessage(ctx context.Context, m messageRecord, handler tra
 		return
 	}
 	msg := transport.IncomingMessage{
-		From:        m.Handle.Address,
-		Body:        body,
-		At:          time.UnixMilli(m.DateCreated).UTC(),
-		Attachments: attachments,
+		From:         m.Handle.Address,
+		Body:         body,
+		At:           time.UnixMilli(m.DateCreated).UTC(),
+		Conversation: m.Chats[0].GUID,
+		MessageID:    m.GUID,
+		Attachments:  attachments,
 	}
 	c.logger.Info("imessage.incoming",
 		slog.String("from", msg.From),

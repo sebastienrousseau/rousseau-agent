@@ -39,7 +39,7 @@ func TestProperty_buildMessage_alwaysContainsBody(t *testing.T) {
 				t.Fatalf("panic on from=%q to=%q body=%q: %v", from, to, body, r)
 			}
 		}()
-		msg := string(buildMessage(from, to, body))
+		msg := string(buildMessage(from, to, defaultSubject, "", body))
 		return strings.Contains(msg, body)
 	}
 	if err := quick.Check(prop, &quick.Config{MaxCount: 500}); err != nil {

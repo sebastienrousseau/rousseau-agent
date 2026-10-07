@@ -21,6 +21,21 @@ type IncomingMessage struct {
 	Body string
 	// At is the server-reported timestamp.
 	At time.Time
+	// Conversation is where the reply goes: the chat, channel, room
+	// or group the message arrived in. It equals From in a direct
+	// chat and differs in a group, where From is one member. Empty
+	// means the transport did not distinguish the two.
+	Conversation string
+	// MessageID is the platform's identifier for this inbound message
+	// (Slack ts, Discord snowflake, Matrix event id, Mail Message-ID,
+	// …), for quoting, reacting or deduplicating. Empty when the
+	// platform has none.
+	MessageID string
+	// Thread identifies the thread or topic the message belongs to
+	// (Slack thread_ts, Telegram forum topic, mail subject) so the
+	// transport can keep its reply in the same thread. Empty when the
+	// message is not in one.
+	Thread string
 	// Attachments carries binary payloads the transport downloaded and
 	// size/mime-verified before delivery. Empty for pure-text
 	// messages. The transport is responsible for sniffing the MIME

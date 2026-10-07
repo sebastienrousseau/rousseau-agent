@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,6 +170,18 @@ func (c *Client) Stop() error {
 // Deliver sends a plain text message to the given recipient (E.164
 // phone number or Signal group id). Suitable as a cron.Delivery target.
 func (c *Client) Deliver(ctx context.Context, recipient, body string) error {
+	return c.sendRPC(ctx, map[string]any{"recipient": []string{recipient}}, body)
+}
+
+// DeliverGroup sends a plain text message to a Signal group by its
+// base64 group id.
+func (c *Client) DeliverGroup(ctx context.Context, groupID, body string) error {
+	return c.sendRPC(ctx, map[string]any{"groupId": groupID}, body)
+}
+
+// sendRPC writes a signal-cli `send` request whose target fields are
+// given by params; the reply header is applied here.
+func (c *Client) sendRPC(ctx context.Context, params map[string]any, body string) error {
 	c.mu.Lock()
 	w := c.stdin
 	c.mu.Unlock()
@@ -178,15 +191,12 @@ func (c *Client) Deliver(ctx context.Context, recipient, body string) error {
 	if c.cfg.ReplyHeader != "" {
 		body = c.cfg.ReplyHeader + body
 	}
-	id := c.nextID.Add(1)
+	params["message"] = body
 	req := jsonRPCRequest{
 		JSONRPC: "2.0",
-		ID:      id,
+		ID:      c.nextID.Add(1),
 		Method:  "send",
-		Params: map[string]any{
-			"recipient": []string{recipient},
-			"message":   body,
-		},
+		Params:  params,
 	}
 	_ = ctx // signal-cli writes are best-effort; no per-request timeout wired
 	return w.write(req)
@@ -250,16 +260,20 @@ func (c *Client) handleReceive(ctx context.Context, params receiveParams, handle
 		return nil
 	}
 	msg := transport.IncomingMessage{
-		From:        params.Envelope.SourceNumber,
-		Body:        body,
-		At:          time.UnixMilli(params.Envelope.Timestamp),
-		Attachments: attachments,
+		From:         from,
+		Body:         body,
+		At:           time.UnixMilli(params.Envelope.Timestamp),
+		Conversation: from,
+		MessageID:    strconv.FormatInt(params.Envelope.Timestamp, 10),
+		Attachments:  attachments,
 	}
-	if msg.From == "" {
-		msg.From = params.Envelope.Source
+	group := params.Envelope.DataMessage.GroupInfo.GroupID
+	if group != "" {
+		msg.Conversation = group
 	}
 	c.logger.Info("signal.incoming",
 		slog.String("from", msg.From),
+		slog.String("group", group),
 		slog.Int("attachments", len(attachments)))
 	reply, err := handler.Handle(ctx, msg)
 	if err != nil {
@@ -268,6 +282,11 @@ func (c *Client) handleReceive(ctx context.Context, params receiveParams, handle
 	}
 	if reply == "" {
 		return nil
+	}
+	// A group message is answered in the group, not by direct
+	// message to whoever sent it.
+	if group != "" {
+		return c.DeliverGroup(ctx, group, reply)
 	}
 	return c.Deliver(ctx, msg.From, reply)
 }
@@ -316,6 +335,12 @@ type receiveEnvelope struct {
 type receiveDataMessage struct {
 	Message     string              `json:"message"`
 	Attachments []receiveAttachment `json:"attachments,omitempty"`
+	// GroupInfo is present when the message was posted in a group.
+	GroupInfo receiveGroupInfo `json:"groupInfo,omitempty"`
+}
+
+type receiveGroupInfo struct {
+	GroupID string `json:"groupId"`
 }
 
 // receiveAttachment mirrors the attachment envelope signal-cli emits

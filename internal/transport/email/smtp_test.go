@@ -116,7 +116,7 @@ func (s *fakeSMTP) session() (from string, rcpt []string, body string, authed bo
 // body are checked on the wire.
 func TestDefaultSendMail_DeliversOverSMTP(t *testing.T) {
 	srv := startFakeSMTP(t)
-	msg := buildMessage("bot@rousseau.example", "user@example.test", "hello there")
+	msg := buildMessage("bot@rousseau.example", "user@example.test", defaultSubject, "", "hello there")
 
 	err := defaultSendMail(srv.addr, "bot@rousseau.example",
 		[]string{"user@example.test"}, msg, "user", "secret")

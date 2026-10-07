@@ -259,21 +259,7 @@ func (c *Client) handleFrame(ctx context.Context, conn WSConn, raw []byte, handl
 // dispatchEvent extracts a message from a parsed events_api payload and
 // forwards it to the handler.
 func (c *Client) dispatchEvent(ctx context.Context, payload eventsAPIPayload, handler transport.Handler) error {
-	if payload.Event.Type != "message" {
-		return nil
-	}
-	// Slack tags plain user attachments with subtype="file_share";
-	// bot edits, joins, and channel-events use other subtypes we do
-	// not want. Empty-subtype and file_share are the two shapes real
-	// user messages take.
-	if payload.Event.SubType != "" && payload.Event.SubType != "file_share" {
-		return nil
-	}
-	// Loop prevention: own bot message.
-	if c.cfg.BotUserID != "" && payload.Event.User == c.cfg.BotUserID {
-		return nil
-	}
-	if payload.Event.BotID != "" {
+	if c.skipEvent(payload.Event) {
 		return nil
 	}
 	body := payload.Event.Text
@@ -285,10 +271,13 @@ func (c *Client) dispatchEvent(ctx context.Context, payload eventsAPIPayload, ha
 		return nil
 	}
 	msg := transport.IncomingMessage{
-		From:        payload.Event.User,
-		Body:        body,
-		At:          time.Now().UTC(),
-		Attachments: attachments,
+		From:         payload.Event.User,
+		Body:         body,
+		At:           time.Now().UTC(),
+		Conversation: payload.Event.Channel,
+		MessageID:    payload.Event.TS,
+		Thread:       payload.Event.ThreadTS,
+		Attachments:  attachments,
 	}
 	c.logger.Info("slack.incoming",
 		slog.String("from", msg.From),
@@ -299,11 +288,45 @@ func (c *Client) dispatchEvent(ctx context.Context, payload eventsAPIPayload, ha
 		c.logger.Error("slack.handler_failed", slog.String("err", err.Error()))
 		return nil
 	}
-	if reply == "" {
-		return nil
-	}
-	return c.postMessage(ctx, payload.Event.Channel, reply)
+	// A message in a thread is answered in that thread; a top-level
+	// message gets a top-level reply, like a human colleague.
+	return c.replyIn(ctx, payload.Event.Channel, payload.Event.ThreadTS, reply)
 }
+
+// skipEvent reports whether an events_api message is not a user
+// message the handler should see.
+func (c *Client) skipEvent(e slackEvent) bool {
+	if e.Type != "message" {
+		return true
+	}
+	// Slack tags plain user attachments with subtype="file_share";
+	// bot edits, joins, and channel-events use other subtypes we do
+	// not want. Empty-subtype and file_share are the two shapes real
+	// user messages take.
+	if e.SubType != "" && e.SubType != "file_share" {
+		return true
+	}
+	// Loop prevention: own bot message, or any bot.
+	if c.cfg.BotUserID != "" && e.User == c.cfg.BotUserID {
+		return true
+	}
+	return e.BotID != ""
+}
+
+// replyIn posts reply to channel (inside threadTS when set), split to
+// the platform cap; an empty reply posts nothing.
+func (c *Client) replyIn(ctx context.Context, channel, threadTS, reply string) error {
+	for _, part := range transport.SplitReply(reply, maxTextLen) {
+		if err := c.postMessageIn(ctx, channel, threadTS, part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// maxTextLen is Slack's documented ceiling for chat.postMessage text
+// before it is truncated; longer replies go out as several messages.
+const maxTextLen = 4000
 
 // collectFileAttachments walks the files array on an inbound event,
 // downloads each with the bot token, and applies the operator's
@@ -393,10 +416,19 @@ func (c *Client) Deliver(ctx context.Context, channelID, body string) error {
 }
 
 func (c *Client) postMessage(ctx context.Context, channel, body string) error {
+	return c.postMessageIn(ctx, channel, "", body)
+}
+
+// postMessageIn posts body to channel, inside the thread threadTS
+// when it is non-empty.
+func (c *Client) postMessageIn(ctx context.Context, channel, threadTS, body string) error {
 	if c.cfg.ReplyHeader != "" {
 		body = c.cfg.ReplyHeader + body
 	}
 	payload := map[string]any{"channel": channel, "text": body}
+	if threadTS != "" {
+		payload["thread_ts"] = threadTS
+	}
 	var resp struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
@@ -495,13 +527,17 @@ type eventsAPIPayload struct {
 }
 
 type slackEvent struct {
-	Type    string      `json:"type"`
-	SubType string      `json:"subtype,omitempty"`
-	User    string      `json:"user,omitempty"`
-	BotID   string      `json:"bot_id,omitempty"`
-	Text    string      `json:"text,omitempty"`
-	Channel string      `json:"channel,omitempty"`
-	Files   []slackFile `json:"files,omitempty"`
+	Type    string `json:"type"`
+	SubType string `json:"subtype,omitempty"`
+	User    string `json:"user,omitempty"`
+	BotID   string `json:"bot_id,omitempty"`
+	Text    string `json:"text,omitempty"`
+	Channel string `json:"channel,omitempty"`
+	// TS is the message's id within the channel; ThreadTS is set on
+	// a message posted inside a thread and names the thread's root.
+	TS       string      `json:"ts,omitempty"`
+	ThreadTS string      `json:"thread_ts,omitempty"`
+	Files    []slackFile `json:"files,omitempty"`
 }
 
 // slackFile is the subset of the Slack file object we need. The full
