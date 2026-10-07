@@ -108,9 +108,17 @@ type Tool struct {
 	InputSchema json.RawMessage `json:"inputSchema"`
 }
 
-// ToolsListResult is the tools/list response.
+// ToolsListParams is the tools/list request payload. Cursor is the
+// previous page's NextCursor; empty asks for the first page.
+type ToolsListParams struct {
+	Cursor string `json:"cursor,omitempty"`
+}
+
+// ToolsListResult is the tools/list response. A non-empty NextCursor
+// means more tools are available on the next page.
 type ToolsListResult struct {
-	Tools []Tool `json:"tools"`
+	Tools      []Tool `json:"tools"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 // ToolsCallParams is the tools/call request payload.

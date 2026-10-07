@@ -119,7 +119,12 @@ func (a *Adapter) Execute(ctx context.Context, input json.RawMessage) (string, e
 	}
 	body := renderContent(result.Content)
 	if result.IsError {
-		return body, fmt.Errorf("mcp %s: server reported error", a.Name())
+		// The agent shows the model the error text, not the body, so
+		// the server's explanation must travel in the error.
+		if body == "" {
+			body = "server reported error"
+		}
+		return body, fmt.Errorf("mcp %s: %s", a.Name(), body)
 	}
 	return body, nil
 }

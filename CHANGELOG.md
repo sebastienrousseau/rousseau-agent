@@ -49,13 +49,12 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
-- Durable turns: the agent saves the session after every complete
-  iteration, and the router saves the sender's message before the turn
-  and the session after a failed, timed-out or cancelled turn. Before,
-  only a successful turn was saved, so a failure lost the message and
-  every tool call that had already run. The restart notice now lists
-  the tool calls that ran before the interruption, read from that
-  checkpoint.
+- MCP client: `tools/list` follows `nextCursor`, so servers that page
+  their tools no longer lose everything after the first page; a `ping`
+  from the server is answered and other server requests get "method
+  not found" instead of silence; and a tool result with `isError`
+  passes the server's error text to the model instead of a generic
+  "server reported error".
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming
@@ -91,6 +90,13 @@ entries change behaviour for existing deployments.
   `--keep_env`; smoke tests run when the binary is present.
 - Email: `email.require_authentication_results` drops mail without a
   `dkim=pass` for the From domain (off by default, warns when off).
+- Durable turns: the agent saves the session after every complete
+  iteration, and the router saves the sender's message before the turn
+  and the session after a failed, timed-out or cancelled turn. Before,
+  only a successful turn was saved, so a failure lost the message and
+  every tool call that had already run. The restart notice now lists
+  the tool calls that ran before the interruption, read from that
+  checkpoint.
 
 Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 

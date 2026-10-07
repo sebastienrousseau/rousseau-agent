@@ -188,13 +188,28 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 // Name returns the configured server name.
 func (c *Client) Name() string { return c.name }
 
-// ListTools returns the tools advertised by the server via tools/list.
+// maxToolPages bounds tools/list pagination so a server that keeps
+// returning a cursor cannot hang startup.
+const maxToolPages = 100
+
+// ListTools returns every tool the server advertises via tools/list,
+// following nextCursor across pages. Before pagination was honoured a
+// server that paged its tools silently lost all but the first page.
 func (c *Client) ListTools(ctx context.Context) ([]mcp.Tool, error) {
-	var result mcp.ToolsListResult
-	if err := c.request(ctx, mcp.MethodToolsList, nil, &result); err != nil {
-		return nil, err
+	var all []mcp.Tool
+	var params any // first page: no params, as before
+	for page := 0; page < maxToolPages; page++ {
+		var result mcp.ToolsListResult
+		if err := c.request(ctx, mcp.MethodToolsList, params, &result); err != nil {
+			return nil, err
+		}
+		all = append(all, result.Tools...)
+		if result.NextCursor == "" {
+			return all, nil
+		}
+		params = mcp.ToolsListParams{Cursor: result.NextCursor}
 	}
-	return result.Tools, nil
+	return nil, fmt.Errorf("mcp/client %s: tools/list did not finish within %d pages", c.name, maxToolPages)
 }
 
 // CallTool invokes name with the given arguments via tools/call.
@@ -356,47 +371,72 @@ func (c *Client) readLoop(stdout io.Reader) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		var env mcp.Envelope
-		if err := json.Unmarshal(line, &env); err != nil {
-			c.logger.Warn("mcp.client.decode_error",
-				slog.String("err", err.Error()),
-				slog.Int("bytes", len(line)),
-			)
-			continue
-		}
-		// Notifications from server (no ID) are logged but ignored;
-		// we don't subscribe to any today.
-		if len(env.ID) == 0 {
-			c.logger.Debug("mcp.client.notification",
-				slog.String("method", env.Method),
-			)
-			continue
-		}
-		var id int64
-		if err := json.Unmarshal(env.ID, &id); err != nil {
-			c.logger.Warn("mcp.client.non_integer_id",
-				slog.String("raw", string(env.ID)),
-			)
-			continue
-		}
-		raw, ok := c.pending.Load(id)
-		if !ok {
-			c.logger.Warn("mcp.client.orphan_response", slog.Int64("id", id))
-			continue
-		}
-		ch := raw.(chan mcp.Envelope)
-		// Non-blocking send: if the requester timed out we've cleaned
-		// up but the response arrived late.
-		select {
-		case ch <- env:
-		default:
-		}
+		c.handleLine(scanner.Bytes())
 	}
 	if err := scanner.Err(); err != nil {
 		c.logger.Warn("mcp.client.stdout_scanner", slog.String("err", err.Error()))
 	}
 	c.logger.Debug("mcp.client.stdout_closed")
+}
+
+// handleLine routes one envelope from the server: a response goes to
+// its pending requester, a request from the server is answered, and a
+// notification is logged.
+func (c *Client) handleLine(line []byte) {
+	var env mcp.Envelope
+	if err := json.Unmarshal(line, &env); err != nil {
+		c.logger.Warn("mcp.client.decode_error",
+			slog.String("err", err.Error()),
+			slog.Int("bytes", len(line)),
+		)
+		return
+	}
+	switch {
+	case len(env.ID) == 0:
+		// Notifications from the server are logged but ignored; we
+		// don't subscribe to any today.
+		c.logger.Debug("mcp.client.notification", slog.String("method", env.Method))
+	case env.Method != "":
+		c.answerServerRequest(env)
+	default:
+		c.deliverResponse(env)
+	}
+}
+
+// answerServerRequest replies to a request the server sent us. Servers
+// may ping a client (and must get an empty result back); everything
+// else this client does not implement gets "method not found" rather
+// than silence, which left a waiting server hung.
+func (c *Client) answerServerRequest(env mcp.Envelope) {
+	reply := mcp.Envelope{JSONRPC: "2.0", ID: env.ID}
+	if env.Method == mcp.MethodPing {
+		reply.Result = json.RawMessage(`{}`)
+	} else {
+		reply.Error = &mcp.RPCError{Code: mcp.CodeMethodNotFound, Message: "method not supported by client: " + env.Method}
+	}
+	if err := c.write(reply); err != nil {
+		c.logger.Warn("mcp.client.reply_failed", slog.String("method", env.Method), slog.String("err", err.Error()))
+	}
+}
+
+// deliverResponse hands a response to the requester waiting on its ID.
+func (c *Client) deliverResponse(env mcp.Envelope) {
+	var id int64
+	if err := json.Unmarshal(env.ID, &id); err != nil {
+		c.logger.Warn("mcp.client.non_integer_id", slog.String("raw", string(env.ID)))
+		return
+	}
+	raw, ok := c.pending.Load(id)
+	if !ok {
+		c.logger.Warn("mcp.client.orphan_response", slog.Int64("id", id))
+		return
+	}
+	// Non-blocking send: if the requester timed out we've cleaned up
+	// but the response arrived late.
+	select {
+	case raw.(chan mcp.Envelope) <- env:
+	default:
+	}
 }
 
 func (c *Client) closedNow() bool {
