@@ -49,6 +49,11 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- The Postgres driver now supports GDPR erasure (`session
+  delete-by-sender`, with bare-identifier resolution), `state.session_ttl`
+  retention, and the interrupted-turn journal, which were SQLite-only.
+  `reliability` and `eval` read and write persisted samples on either
+  driver.
 - Transports carry the conversation, message and thread ids of each
   inbound message (`IncomingMessage.Conversation/MessageID/Thread`);
   Slack and Telegram answer inside the thread or topic the message came
