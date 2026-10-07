@@ -20,9 +20,14 @@ func buildCompressor(cfg config.CompressionConfig, provider agent.Provider) agen
 	if keep == 0 {
 		keep = 8
 	}
+	tokens := cfg.TriggerTokens
+	if tokens == 0 {
+		tokens = 120_000
+	}
 	return &agent.LLMCompressor{
 		Provider:        provider,
 		TriggerMessages: trigger,
+		TriggerTokens:   tokens,
 		KeepRecent:      keep,
 		SummaryPrompt:   cfg.Prompt,
 	}

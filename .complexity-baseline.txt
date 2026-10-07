@@ -76,7 +76,6 @@ cyclo	18	agent	(*Agent).turnWithStats	internal/agent/agent.go
 cyclo	28	agent	checkValue	internal/agent/structured.go
 cyclo	15	agent	Decide	internal/agent/decide.go
 cyclo	12	agent	(*FTSRecall).SystemAppendix	internal/agent/recall.go
-cyclo	11	agent	(*LLMCompressor).Compress	internal/agent/compressor.go
 cyclo	13	agent	(*LLMCompressor).summarise	internal/agent/compressor.go
 cyclo	11	agent	Structured	internal/agent/structured.go
 cyclo	16	agent	summarizeToolInput	internal/agent/tool_summary.go

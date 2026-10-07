@@ -930,6 +930,9 @@ type AgentConfig struct {
 	// bash or MCP call cannot consume the whole turn budget. Default
 	// 10m.
 	ToolTimeout time.Duration `mapstructure:"tool_timeout"`
+	// MaxToolOutputBytes caps the bytes of one tool's output handed
+	// back to the model; the rest is cut with a marker. Default 65536.
+	MaxToolOutputBytes int `mapstructure:"max_tool_output_bytes"`
 	// MaxConcurrentTurns caps agent turns running at once in this
 	// daemon; further turns queue. Each claudecli turn is a separate
 	// claude process. Default 4; 0 means unlimited.
@@ -966,6 +969,10 @@ type CompressionConfig struct {
 	// TriggerMessages is the message count above which compression
 	// engages. Zero uses the default (60).
 	TriggerMessages int `mapstructure:"trigger_messages"`
+	// TriggerTokens is the estimated prompt size above which
+	// compression engages regardless of message count. Zero uses the
+	// default (120000, under every current model's context window).
+	TriggerTokens int `mapstructure:"trigger_tokens"`
 	// KeepRecent is how many recent messages to preserve verbatim.
 	// Zero uses the default (8).
 	KeepRecent int `mapstructure:"keep_recent"`

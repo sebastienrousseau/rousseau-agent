@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/model"
 )
 
 // Compressor rewrites a Session in place so its message count fits
@@ -45,9 +47,15 @@ type LLMCompressor struct {
 	// model is preferable for cost reasons.
 	Provider Provider
 	// TriggerMessages is the message count above which Compress
-	// engages. Zero disables the size trigger (Compress becomes a
-	// no-op for size — a caller may still invoke it deliberately).
+	// engages. Zero disables the count trigger.
 	TriggerMessages int
+	// TriggerTokens is the estimated prompt size (model.EstimateTokens)
+	// above which Compress engages regardless of message count, so a
+	// session of ten messages each carrying a 50 kB tool output is
+	// compressed before it overflows the context window. Zero
+	// disables the token trigger. With both triggers zero, Compress
+	// is a no-op for size.
+	TriggerTokens int
 	// KeepRecent is the number of most-recent messages preserved
 	// verbatim. Zero uses 8.
 	KeepRecent int
@@ -72,21 +80,8 @@ func (c *LLMCompressor) Compress(ctx context.Context, s *Session) (bool, error) 
 	if s == nil || c.Provider == nil {
 		return false, nil
 	}
-	keep := c.KeepRecent
-	if keep == 0 {
-		keep = 8
-	}
-	if c.TriggerMessages == 0 || len(s.Messages) < c.TriggerMessages {
-		return false, nil
-	}
-	if len(s.Messages) <= keep {
-		return false, nil
-	}
-
-	// If the head already carries our marker, another Compress pass
-	// happened; drop the pre-marker section and try again on what's
-	// left. This bounds runaway growth.
-	if c.headAlreadyCompressed(s) && len(s.Messages) < c.TriggerMessages*2 {
+	keep := c.keepRecent()
+	if !c.shouldCompress(s, keep) {
 		return false, nil
 	}
 
@@ -98,16 +93,11 @@ func (c *LLMCompressor) Compress(ctx context.Context, s *Session) (bool, error) 
 		return false, err
 	}
 
-	marker := c.Marker
-	if marker == "" {
-		marker = DefaultCompressorMarker
-	}
-
 	synthetic := Message{
 		Role: RoleUser,
 		Content: []Content{{
 			Kind: ContentText,
-			Text: marker + " (summary of prior " + itoa(len(old)) + " messages):\n\n" + summary,
+			Text: c.marker() + " (summary of prior " + itoa(len(old)) + " messages):\n\n" + summary,
 		}},
 		CreatedAt: time.Now().UTC(),
 	}
@@ -116,14 +106,52 @@ func (c *LLMCompressor) Compress(ctx context.Context, s *Session) (bool, error) 
 	return true, nil
 }
 
+func (c *LLMCompressor) keepRecent() int {
+	if c.KeepRecent == 0 {
+		return 8
+	}
+	return c.KeepRecent
+}
+
+func (c *LLMCompressor) marker() string {
+	if c.Marker == "" {
+		return DefaultCompressorMarker
+	}
+	return c.Marker
+}
+
+// shouldCompress decides whether a pass is due. A head that already
+// carries the marker means an earlier pass happened; the count
+// trigger then waits for double its threshold so a session cannot be
+// re-summarised every few messages, while the token trigger
+// re-engages whenever the estimate is over budget because every pass
+// shrinks the estimate.
+func (c *LLMCompressor) shouldCompress(s *Session, keep int) bool {
+	if !c.overBudget(s) || len(s.Messages) <= keep {
+		return false
+	}
+	if !c.headAlreadyCompressed(s) {
+		return true
+	}
+	if c.TriggerTokens > 0 && model.EstimateTokens(s.Messages) >= c.TriggerTokens {
+		return true
+	}
+	return c.TriggerMessages > 0 && len(s.Messages) >= c.TriggerMessages*2
+}
+
+// overBudget reports whether either trigger fires.
+func (c *LLMCompressor) overBudget(s *Session) bool {
+	if c.TriggerMessages > 0 && len(s.Messages) >= c.TriggerMessages {
+		return true
+	}
+	return c.TriggerTokens > 0 && model.EstimateTokens(s.Messages) >= c.TriggerTokens
+}
+
 func (c *LLMCompressor) headAlreadyCompressed(s *Session) bool {
 	if len(s.Messages) == 0 {
 		return false
 	}
-	marker := c.Marker
-	if marker == "" {
-		marker = DefaultCompressorMarker
-	}
+	marker := c.marker()
 	for _, block := range s.Messages[0].Content {
 		if block.Kind == ContentText && strings.HasPrefix(block.Text, marker) {
 			return true

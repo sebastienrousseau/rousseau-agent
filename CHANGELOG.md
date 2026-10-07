@@ -43,7 +43,12 @@ entries change behaviour for existing deployments.
   failures exit 78.
 - Unknown tool names and mid-tool cancellation produce tool_results
   instead of leaving a dangling `tool_use`; each tool execution is
-  bounded by `agent.tool_timeout` (default 10m).
+  bounded by `agent.tool_timeout` (default 10m) and its output capped at
+  `agent.max_tool_output_bytes` (default 64 KiB) with a truncation marker.
+- Session compression also triggers on an estimated prompt size
+  (`agent.compression.trigger_tokens`, default 120000), so a few
+  messages carrying large tool outputs are condensed before they
+  overflow the context window.
 - OIDC requires `exp` and `iss`; unknown-kid JWKS refreshes are
   rate-limited; a missing audience logs a startup warning.
 - Audit egress is hash-chained by default with a generated HMAC key
