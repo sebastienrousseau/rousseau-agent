@@ -186,6 +186,40 @@ func (*Router) Name() string { return "router" }
 // provider. Emits an observability.RouterDecisions counter with the
 // rule name and chosen provider.
 func (r *Router) Complete(ctx context.Context, req agent.Request) (agent.Response, error) {
+	return r.pick(ctx, req).Complete(ctx, req)
+}
+
+// Stream routes exactly as Complete does, then streams from the chosen
+// child. Without it the router hid streaming from every child: the
+// agent only streams when its provider implements
+// [agent.StreamingProvider]. A child that cannot stream is answered by
+// Complete and replayed as start, one text delta, and result, so the
+// caller's event loop is the same whichever child a rule picks.
+func (r *Router) Stream(ctx context.Context, req agent.Request) (<-chan agent.StreamEvent, <-chan agent.StreamReport, error) {
+	child := r.pick(ctx, req)
+	if sp, ok := child.(agent.StreamingProvider); ok {
+		return sp.Stream(ctx, req)
+	}
+	events := make(chan agent.StreamEvent, 3)
+	report := make(chan agent.StreamReport, 1)
+	go func() {
+		defer close(report)
+		defer close(events)
+		events <- agent.StreamEvent{Kind: agent.StreamStart}
+		resp, err := child.Complete(ctx, req)
+		if err == nil {
+			if text := responseText(resp); text != "" {
+				events <- agent.StreamEvent{Kind: agent.StreamTextDelta, Delta: text}
+			}
+			events <- agent.StreamEvent{Kind: agent.StreamResult}
+		}
+		report <- agent.StreamReport{Response: resp, Err: err}
+	}()
+	return events, report, nil
+}
+
+// pick selects the child for req and records the decision.
+func (r *Router) pick(ctx context.Context, req agent.Request) agent.Provider {
 	key, ruleName := r.selectChild(ctx, req)
 	provider := r.providers[key]
 	observability.RouterDecisions.WithLabelValues(ruleName, key, provider.Name()).Inc()
@@ -196,7 +230,18 @@ func (r *Router) Complete(ctx context.Context, req agent.Request) (agent.Respons
 		slog.Int("last_user_len", lastUserTextLen(req.Messages)),
 		slog.Int("tool_use_count", toolUseCount(req.Messages)),
 	)
-	return provider.Complete(ctx, req)
+	return provider
+}
+
+// responseText joins the text blocks of a response.
+func responseText(resp agent.Response) string {
+	var b strings.Builder
+	for _, c := range resp.Message.Content {
+		if c.Kind == agent.ContentText {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
 }
 
 // selectChild returns (providerKey, ruleName) for the first matching

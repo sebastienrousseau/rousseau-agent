@@ -49,6 +49,10 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- The provider router (`provider: router`) now streams: a turn is
+  streamed from the routed child, and a child without streaming is
+  replayed as one text delta. Before, routing turned token streaming
+  off for every provider behind it.
 - The Postgres driver now supports GDPR erasure (`session
   delete-by-sender`, with bare-identifier resolution), `state.session_ttl`
   retention, and the interrupted-turn journal, which were SQLite-only.
