@@ -502,12 +502,8 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats,
 
 		s.Append(resp.Message)
 
-		if resp.StopReason == StopEndTurn {
-			return resp.Message, nil
-		}
-
 		if resp.StopReason != StopToolUse {
-			return resp.Message, nil
+			return a.finalMessage(s, resp), nil
 		}
 
 		// Inject per-turn state that stateful tools (e.g. spawn_subagent)
@@ -531,6 +527,34 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats,
 	}
 
 	return Message{}, ErrMaxIterations
+}
+
+// TruncationMarker is appended to a reply the model could not finish
+// within its output limit, so the sender sees that the answer was
+// cut rather than mistaking it for complete.
+const TruncationMarker = "\n\n[reply cut off at the model's output limit; ask to continue]"
+
+// finalMessage records how the turn ended and returns the message the
+// caller delivers. A max_tokens stop used to be returned as if the
+// reply were complete; it now carries TruncationMarker (the stored
+// session keeps the model's exact output). Stop reasons the adapter
+// could not map (refusal, pause_turn, stop_sequence) are logged so an
+// operator can see them in the daemon log.
+func (a *Agent) finalMessage(s *Session, resp Response) Message {
+	observability.TurnStops.WithLabelValues(string(resp.StopReason)).Inc()
+	switch resp.StopReason {
+	case StopMaxTokens:
+		a.logger.Warn("agent.reply_truncated",
+			slog.String("session_id", s.ID),
+			slog.Int("output_tokens", resp.Usage.OutputTokens))
+		out := resp.Message
+		out.Content = append(append([]Content(nil), out.Content...),
+			Content{Kind: ContentText, Text: TruncationMarker})
+		return out
+	case StopOther:
+		a.logger.Warn("agent.stop_unmapped", slog.String("session_id", s.ID))
+	}
+	return resp.Message
 }
 
 // systemPrompt composes the base system prompt with any appendix the

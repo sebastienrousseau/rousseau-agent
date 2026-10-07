@@ -92,7 +92,7 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 		Body:        body,
 	})
 	if err != nil {
-		return model.Response{}, fmt.Errorf("bedrock: invoke: %w", err)
+		return model.Response{}, wrapAWSError(fmt.Errorf("bedrock: invoke: %w", err))
 	}
 	return parseBedrockResponse(out.Body)
 }
