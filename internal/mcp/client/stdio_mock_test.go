@@ -66,6 +66,9 @@ while IFS= read -r line; do
           ;;
       esac
       ;;
+    *)
+      [ -n "$id" ] && printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}\n' "$id"
+      ;;
   esac
 done
 `
@@ -219,8 +222,10 @@ func TestClient_ShellMock_EnvOverridesReachSubprocess(t *testing.T) {
 	// arrives intact, so a successful New proves the env plumbing.
 	const script = `
 read -r line
+printf '{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}\n'
+read -r line
 if [ "$ROUSSEAU_MCP_TEST" = "injected" ]; then
-  printf '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"envmock","version":"1.0"},"capabilities":{}}}\n'
+  printf '{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2024-11-05","serverInfo":{"name":"envmock","version":"1.0"},"capabilities":{}}}\n'
 fi
 cat > /dev/null
 `

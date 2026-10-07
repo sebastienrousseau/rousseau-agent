@@ -17,8 +17,9 @@ import (
 )
 
 // fakeMCPServer writes a POSIX-shell MCP server that answers the two
-// requests startMCPClients makes — initialize (id 1) and tools/list
-// (id 2) — and returns its path.
+// requests startMCPClients makes — initialize and tools/list, echoing
+// each request id — answers anything else (the server/discover probe)
+// with "method not found" like a legacy server, and returns its path.
 //
 // A script rather than a compiled helper keeps the test hermetic and
 // fast: no `go build` at test time, no network, and the real
@@ -27,12 +28,16 @@ func fakeMCPServer(t *testing.T, toolsJSON string) string {
 	t.Helper()
 	script := `#!/bin/sh
 while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/^{"jsonrpc":"2.0","id":\([0-9][0-9]*\).*/\1/p')
   case "$line" in
     *'"method":"initialize"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"0.1"}}}'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"fake","version":"0.1"}}}\n' "$id"
       ;;
     *'"method":"tools/list"'*)
-      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":` + toolsJSON + `}}'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":%s}}\n' "$id" '` + toolsJSON + `'
+      ;;
+    *)
+      [ -n "$id" ] && printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}\n' "$id"
       ;;
   esac
 done

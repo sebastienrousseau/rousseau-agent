@@ -4,7 +4,7 @@
 cognit	20	a2a	decodeDataURI	internal/a2a/fetch.go
 cognit	20	a2a	VerifyAgentCard	internal/a2a/sign.go
 cognit	18	agent	(*Agent).DecideExternal	internal/agent/external.go
-cognit	38	agent	(*Agent).turnWithStats	internal/agent/agent.go
+cognit	36	agent	(*Agent).turnWithStats	internal/agent/agent.go
 cognit	50	agent	checkValue	internal/agent/structured.go
 cognit	16	agent	lastUserText	internal/agent/recall.go
 cognit	20	agent	(*LLMCompressor).summarise	internal/agent/compressor.go
@@ -18,7 +18,7 @@ cognit	18	claudecli	EraseTranscripts	internal/llm/claudecli/session_recover.go
 cognit	24	claudecli	lastUserContent	internal/llm/claudecli/client.go
 cognit	20	claudecli	parseStream	internal/llm/claudecli/stream.go
 cognit	20	claudecli	(*Provider).drainStream	internal/llm/claudecli/stream.go
-cognit	39	cli	assembleDaemon	internal/cli/daemon.go
+cognit	37	cli	assembleDaemon	internal/cli/daemon.go
 cognit	16	cli	buildA2AClients	internal/cli/a2a_daemon.go
 cognit	18	cli	buildA2AServer	internal/cli/a2a_daemon.go
 cognit	18	cli	buildRateLimiters	internal/cli/wiring.go
@@ -72,7 +72,7 @@ cognit	17	whatsapp	(*Client).Start	internal/transport/whatsapp/client.go
 cognit	23	whatsapp	Dispatch	internal/transport/whatsapp/dispatch.go
 cyclo	14	a2a	decodeDataURI	internal/a2a/fetch.go
 cyclo	12	a2a	VerifyAgentCard	internal/a2a/sign.go
-cyclo	18	agent	(*Agent).turnWithStats	internal/agent/agent.go
+cyclo	17	agent	(*Agent).turnWithStats	internal/agent/agent.go
 cyclo	28	agent	checkValue	internal/agent/structured.go
 cyclo	15	agent	Decide	internal/agent/decide.go
 cyclo	12	agent	(*FTSRecall).SystemAppendix	internal/agent/recall.go
@@ -93,7 +93,7 @@ cyclo	13	claudecli	parseStream	internal/llm/claudecli/stream.go
 cyclo	13	claudecli	(*Provider).Complete	internal/llm/claudecli/client.go
 cyclo	11	claudecli	(*Provider).CompleteStructured	internal/llm/claudecli/structured.go
 cyclo	13	claudecli	(*Provider).drainStream	internal/llm/claudecli/stream.go
-cyclo	34	cli	assembleDaemon	internal/cli/daemon.go
+cyclo	33	cli	assembleDaemon	internal/cli/daemon.go
 cyclo	15	cli	buildA2AServer	internal/cli/a2a_daemon.go
 cyclo	13	cli	buildChildProvider	internal/cli/provider.go
 cyclo	12	cli	buildRateLimiters	internal/cli/wiring.go
@@ -109,11 +109,10 @@ cyclo	11	cli	printReport	internal/cli/migrate.go
 cyclo	11	cli	(*setupWizard).askAll	internal/cli/setup.go
 cyclo	11	cli	(*vectorRecall).SystemAppendix	internal/cli/vector_recall.go
 cyclo	11	cli	wrapWithRisk	internal/cli/approver.go
-cyclo	14	client	(*Client).request	internal/mcp/client/client.go
+cyclo	12	client	(*Client).request	internal/mcp/client/client.go
 cyclo	18	client	(*Client).SubmitTask	internal/a2a/client/client.go
 cyclo	13	client	(*Client).SubscribeToTask	internal/a2a/client/spec_v1.go
 cyclo	11	client	mergeEnv	internal/mcp/client/client.go
-cyclo	12	client	New	internal/mcp/client/client.go
 cyclo	13	email	(*Client).pollOnce	internal/transport/email/client.go
 cyclo	13	email	New	internal/transport/email/client.go
 cyclo	11	google	(*Client).do	internal/tools/integrations/google/client.go

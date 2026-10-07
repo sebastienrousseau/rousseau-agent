@@ -42,7 +42,7 @@
 - [Transports](#transports) — nine chat surfaces behind one interface
 - [LLM providers](#llm-providers) — six backends, one `Provider` contract
 - [Tools and integrations](#tools-and-integrations) — six built-ins, 26 native integration tools, Composio
-- [MCP](#mcp) — server and client, spec revision 2024-11-05
+- [MCP](#mcp) — server and client; the client speaks 2026-07-28 and every earlier revision
 - [Skills](#skills) — Markdown skills, optional SSH signature enforcement
 - [Recall, scheduling, and sub-agents](#recall-scheduling-and-sub-agents) — memory, cron, fan-out
 - [Agent-to-Agent (A2A)](#agent-to-agent-a2a) — peer protocol surface
@@ -335,8 +335,10 @@ credentials.
 
 ## MCP
 
-Both halves of the Model Context Protocol are implemented against spec
-revision **2024-11-05**.
+Both halves of the Model Context Protocol are implemented. The client
+speaks the stateless revision **2026-07-28** and falls back to the
+`initialize` handshake (2025-11-25 down to 2024-11-05) for older
+servers; the server implements **2024-11-05**.
 
 **Server** (`internal/mcp`, `rousseau mcp`) speaks JSON-RPC 2.0 over
 stdio and exposes the daemon's tools and sessions to any MCP-capable
@@ -346,7 +348,12 @@ decoder carries a fuzz target (`internal/mcp/fuzz_test.go`).
 **Client** (`internal/mcp/client`, adapted into the registry by
 `internal/tools/mcp`) consumes tools published by external MCP servers.
 Servers declared under `mcp.clients` are spawned when the daemon starts;
-each tool they advertise is registered as `mcp:<name>:<tool>`.
+each tool they advertise is registered as `mcp:<name>:<tool>`. At
+startup the client probes each server with `server/discover`; a server
+that answers is used statelessly (version and client info in every
+request's `_meta`), and any other answer, or none within 3 s, falls
+back to `initialize`. The client declares no capabilities, so servers
+never ask it for sampling, elicitation or roots.
 
 ```yaml
 mcp:
