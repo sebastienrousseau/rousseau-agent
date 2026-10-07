@@ -55,6 +55,12 @@ entries change behaviour for existing deployments.
   not found" instead of silence; and a tool result with `isError`
   passes the server's error text to the model instead of a generic
   "server reported error".
+- MCP client speaks protocol revision 2026-07-28: it probes each server
+  with `server/discover` and, when the server answers, sends the version
+  and client info in every request's `_meta` with no `initialize`.
+  Other servers fall back to `initialize`, now offering 2025-11-25 and
+  accepting 2025-06-18, 2025-03-26 or 2024-11-05; any other negotiated
+  version is refused. Abandoned requests send `notifications/cancelled`.
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming

@@ -93,6 +93,13 @@ func main() {
 			reply(out, env.ID, map[string]any{
 				"content": []map[string]any{{"type": "text", "text": text}},
 			})
+		default:
+			// Like a legacy server: unknown requests (the
+			// server/discover probe) get "method not found".
+			if len(env.ID) > 0 {
+				out.WriteString(` + "`" + `{"jsonrpc":"2.0","id":` + "`" + ` + string(env.ID) + ` + "`" + `,"error":{"code":-32601,"message":"method not found"}}` + "`" + ` + "\n")
+				out.Flush()
+			}
 		}
 	}
 }
