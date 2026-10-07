@@ -42,5 +42,6 @@ func TestBuildCompressor_AppliesDefaults(t *testing.T) {
 	llm, ok := c.(*agent.LLMCompressor)
 	assert.True(t, ok)
 	assert.Equal(t, 60, llm.TriggerMessages)
+	assert.Equal(t, 120_000, llm.TriggerTokens)
 	assert.Equal(t, 8, llm.KeepRecent)
 }

@@ -31,6 +31,11 @@ type Options struct {
 	// default (10 minutes). Without it a hung bash or MCP call
 	// consumed the whole turn budget.
 	ToolTimeout time.Duration
+	// MaxToolOutputBytes caps the bytes of a tool's output that are
+	// handed back to the model; longer output is cut with a marker
+	// so one `cat` of a log file cannot fill the context window.
+	// Zero uses the default (64 KiB).
+	MaxToolOutputBytes int
 	// SystemPrompt is prepended to every request.
 	SystemPrompt string
 	// Approver is consulted before each tool execution. Nil uses

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -43,6 +44,27 @@ func (a *Agent) runTools(ctx context.Context, m Message, sessionID string) ([]Co
 // defaultToolTimeout bounds one tool execution when Options.ToolTimeout
 // is zero.
 const defaultToolTimeout = 10 * time.Minute
+
+// defaultMaxToolOutputBytes caps tool output handed to the model when
+// Options.MaxToolOutputBytes is zero.
+const defaultMaxToolOutputBytes = 64 << 10
+
+// boundOutput cuts tool output at the configured byte cap, on a UTF-8
+// boundary, with a marker telling the model how much it did not see.
+func (a *Agent) boundOutput(out string) string {
+	limit := a.opts.MaxToolOutputBytes
+	if limit <= 0 {
+		limit = defaultMaxToolOutputBytes
+	}
+	if len(out) <= limit {
+		return out
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(out[cut]) {
+		cut--
+	}
+	return out[:cut] + fmt.Sprintf("\n[output truncated: %d of %d bytes shown]", cut, len(out))
+}
 
 func (a *Agent) toolTimeout() time.Duration {
 	if a.opts.ToolTimeout > 0 {
@@ -180,7 +202,7 @@ func (a *Agent) executeTool(ctx context.Context, tool tools.Tool, use *ToolUse, 
 	toolSpan.End()
 
 	done := progress.Event{Kind: progress.KindToolFinished, Tool: use.Name, Detail: detail, Elapsed: time.Since(toolStart)}
-	result := &ToolResult{ToolUseID: use.ID, Output: out}
+	result := &ToolResult{ToolUseID: use.ID, Output: a.boundOutput(out)}
 	auditResult := "success"
 	auditDetail := map[string]any{"elapsed_ms": time.Since(toolStart).Milliseconds()}
 	if err != nil {

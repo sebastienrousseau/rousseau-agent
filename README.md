@@ -501,11 +501,13 @@ agent:
   max_iterations: 32
   session_idle_timeout: 12h      # fresh chat session after this much idle; 0 = never
   turn_timeout: 30m              # stop a chat turn (and its claude process) after this; 0 = no limit
+  tool_timeout: 10m              # bound one tool call inside a turn
+  max_tool_output_bytes: 65536   # cut longer tool output with a marker so one cat cannot fill the context
   max_concurrent_turns: 4        # agent turns running at once; more queue; 0 = unlimited
   skills_dir: ~/.config/rousseau/skills
   compression:
     enabled: true
-    trigger_messages: 60
+    trigger_messages: 60         # or when the estimated prompt reaches trigger_tokens (default 120000)
     keep_recent: 8
   approver:
     mode: pattern
