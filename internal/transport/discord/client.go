@@ -307,10 +307,12 @@ func (c *Client) handleMessage(ctx context.Context, m discordMessage, handler tr
 		return nil
 	}
 	msg := transport.IncomingMessage{
-		From:        m.Author.ID,
-		Body:        body,
-		At:          time.Now().UTC(),
-		Attachments: attachments,
+		From:         m.Author.ID,
+		Body:         body,
+		At:           time.Now().UTC(),
+		Conversation: m.ChannelID,
+		MessageID:    m.ID,
+		Attachments:  attachments,
 	}
 	c.logger.Info("discord.incoming",
 		slog.String("from", msg.From),
@@ -321,11 +323,17 @@ func (c *Client) handleMessage(ctx context.Context, m discordMessage, handler tr
 		c.logger.Error("discord.handler_failed", slog.String("err", err.Error()))
 		return nil
 	}
-	if reply == "" {
-		return nil
+	for _, part := range transport.SplitReply(reply, maxTextLen) {
+		if err := c.postMessage(ctx, m.ChannelID, part); err != nil {
+			return err
+		}
 	}
-	return c.postMessage(ctx, m.ChannelID, reply)
+	return nil
 }
+
+// maxTextLen is Discord's hard cap on message content; longer replies
+// go out as several messages.
+const maxTextLen = 2000
 
 // Deliver posts to a channel id. Suitable as a cron.Delivery target.
 func (c *Client) Deliver(ctx context.Context, channelID, body string) error {

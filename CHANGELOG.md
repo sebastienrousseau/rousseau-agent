@@ -54,6 +54,14 @@ entries change behaviour for existing deployments.
   retention, and the interrupted-turn journal, which were SQLite-only.
   `reliability` and `eval` read and write persisted samples on either
   driver.
+- Transports carry the conversation, message and thread ids of each
+  inbound message (`IncomingMessage.Conversation/MessageID/Thread`);
+  Slack and Telegram answer inside the thread or topic the message came
+  from, email replies thread under the inbound Message-ID with a
+  "Re: " subject, and Signal group messages are answered in the group
+  instead of by direct message. Replies longer than a platform cap are
+  split into several messages (Telegram 4096, Discord 2000, Slack
+  4000, Matrix 32 KiB, WhatsApp 60000) instead of being rejected.
 - OIDC requires `exp` and `iss`; unknown-kid JWKS refreshes are
   rate-limited; a missing audience logs a startup warning.
 - Audit egress is hash-chained by default with a generated HMAC key

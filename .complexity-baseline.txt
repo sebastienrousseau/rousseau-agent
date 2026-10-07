@@ -134,12 +134,11 @@ cyclo	15	router	New	internal/llm/router/router.go
 cyclo	11	router	ruleMatches	internal/llm/router/router.go
 cyclo	11	server	(*Server).handleEvents	internal/a2a/server/server.go
 cyclo	11	server	(*Server).handleSpecSubscribeFor	internal/a2a/server/spec_v1_routes.go
-cyclo	11	signal	(*Client).handleReceive	internal/transport/signal/client.go
+cyclo	12	signal	(*Client).handleReceive	internal/transport/signal/client.go
 cyclo	27	skills	DiscoverSpec	internal/skills/discover.go
 cyclo	13	skills	ParseSkillMD	internal/skills/spec.go
 cyclo	11	skills	ResolveResource	internal/skills/resource.go
 cyclo	11	skills	(*SSHKeygenVerifier).Verify	internal/skills/verify.go
-cyclo	13	slack	(*Client).dispatchEvent	internal/transport/slack/client.go
 cyclo	13	sms	New	internal/transport/sms/client.go
 cyclo	11	sqlite	loadSession	internal/state/sqlite/messages.go
 cyclo	25	sqlite	Migrate	internal/state/sqlite/migrate.go
@@ -151,7 +150,7 @@ cyclo	18	sqlite	(*Store).Save	internal/state/sqlite/messages.go
 cyclo	12	sso	(*OIDCDirectory).VerifyToken	internal/auth/sso/oidc.go
 cyclo	13	sso	parseJWK	internal/auth/sso/oidc.go
 cyclo	11	subagent	Spawn	internal/agent/subagent/spawn.go
-cyclo	14	telegram	(*Client).route	internal/transport/telegram/client.go
+cyclo	13	telegram	(*Client).route	internal/transport/telegram/client.go
 cyclo	11	toolgate	RunHook	internal/toolgate/toolgate.go
 cyclo	38	transport	(*Router).Handle	internal/transport/router.go
 cyclo	11	transport	(*Router).handleIdentityCommand	internal/transport/router_session_cmds.go
@@ -160,4 +159,5 @@ cyclo	11	tui	renderHistory	internal/tui/model.go
 cyclo	11	vertex	toVertexContent	internal/llm/vertex/client.go
 cyclo	14	whatsapp	(*Client).Start	internal/transport/whatsapp/client.go
 cyclo	19	whatsapp	Dispatch	internal/transport/whatsapp/dispatch.go
+cyclo	11	whatsapp	handleTextMessage	internal/transport/whatsapp/dispatch.go
 cyclo	14	whatsapp	ResolveInbound	internal/transport/whatsapp/resolve.go

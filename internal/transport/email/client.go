@@ -159,13 +159,37 @@ func (c *Client) Stop() error {
 // Deliver posts a plain-text message to the given email address via
 // SMTP. body is prepended with ReplyHeader when configured.
 func (c *Client) Deliver(_ context.Context, to, body string) error {
+	return c.reply(to, "", "", body)
+}
+
+// reply sends body to `to` as an answer in the thread of the inbound
+// mail: the subject gains "Re: " and In-Reply-To / References carry
+// the inbound Message-ID so mail clients file it under the original.
+// Empty subject and id produce a fresh top-level message.
+func (c *Client) reply(to, subject, inReplyTo, body string) error {
 	if c.cfg.ReplyHeader != "" {
 		body = c.cfg.ReplyHeader + body
 	}
-	msg := buildMessage(c.cfg.From, to, body)
+	msg := buildMessage(c.cfg.From, to, replySubject(subject), inReplyTo, body)
 	return c.cfg.SendMail(c.cfg.SMTPAddr, c.cfg.From, []string{to}, msg,
 		c.cfg.SMTPUsername, c.cfg.SMTPPassword)
 }
+
+// replySubject derives the reply subject: "Re: " is prepended once,
+// and an empty subject falls back to the fixed default.
+func replySubject(subject string) string {
+	subject = strings.TrimSpace(subject)
+	switch {
+	case subject == "":
+		return defaultSubject
+	case strings.HasPrefix(strings.ToLower(subject), "re:"):
+		return subject
+	default:
+		return "Re: " + subject
+	}
+}
+
+const defaultSubject = "rousseau-agent reply"
 
 // pollOnce opens an IMAP session, searches UNSEEN, dispatches each
 // unread message, and closes the session.
@@ -213,12 +237,15 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 			continue
 		}
 		msg := transport.IncomingMessage{
-			From: from,
-			Body: body,
-			At:   time.Now().UTC(),
+			From:         from,
+			Body:         body,
+			At:           time.Now().UTC(),
+			Conversation: from,
+			Thread:       subject,
 		}
 		if m.Envelope != nil {
 			msg.At = m.Envelope.Date
+			msg.MessageID = m.Envelope.MessageID
 		}
 		c.logger.Info("email.incoming", slog.String("from", from), slog.String("subject", subject))
 		// The turn runs off the poll loop so one long turn does not hold
@@ -230,7 +257,7 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 				return
 			}
 			if reply != "" {
-				if err := c.Deliver(ctx, from, reply); err != nil {
+				if err := c.reply(from, subject, msg.MessageID, reply); err != nil {
 					c.logger.Error("email.send_failed", slog.String("err", err.Error()))
 				}
 			}
@@ -320,12 +347,17 @@ func stripHeaders(raw string) string {
 	return raw
 }
 
-// buildMessage renders a plain-text RFC 5322 message.
-func buildMessage(from, to, body string) []byte {
+// buildMessage renders a plain-text RFC 5322 message. A non-empty
+// inReplyTo threads it under that Message-ID.
+func buildMessage(from, to, subject, inReplyTo, body string) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", to)
-	fmt.Fprintf(&b, "Subject: rousseau-agent reply\r\n")
+	fmt.Fprintf(&b, "Subject: %s\r\n", sanitizeHeader(subject))
+	if inReplyTo = sanitizeHeader(inReplyTo); inReplyTo != "" {
+		fmt.Fprintf(&b, "In-Reply-To: %s\r\n", inReplyTo)
+		fmt.Fprintf(&b, "References: %s\r\n", inReplyTo)
+	}
 	fmt.Fprintf(&b, "Content-Type: text/plain; charset=utf-8\r\n")
 	fmt.Fprintf(&b, "\r\n")
 	b.WriteString(body)
@@ -407,3 +439,9 @@ func splitHostPort(addr string) (host, port string, ok bool) {
 
 // Compile-time interface satisfaction check.
 var _ transport.Transport = (*Client)(nil)
+
+// sanitizeHeader strips CR and LF so a crafted inbound subject or
+// Message-ID cannot inject extra headers into the reply.
+func sanitizeHeader(v string) string {
+	return strings.TrimSpace(strings.NewReplacer("\r", "", "\n", "").Replace(v))
+}

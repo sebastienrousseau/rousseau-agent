@@ -149,8 +149,39 @@ func (c *Client) Deliver(ctx context.Context, chat, body string) error {
 	if err != nil {
 		return fmt.Errorf("telegram: parse chat id %q: %w", chat, err)
 	}
+	return c.send(ctx, chatID, 0, body)
+}
+
+// send posts body to chatID, inside the forum topic threadID when it
+// is non-zero. The caller has already applied the reply header.
+func (c *Client) send(ctx context.Context, chatID, threadID int64, body string) error {
 	payload := map[string]any{"chat_id": chatID, "text": body}
+	if threadID != 0 {
+		payload["message_thread_id"] = threadID
+	}
 	return c.call(ctx, "sendMessage", payload, nil)
+}
+
+// maxTextLen is the Bot API's hard cap on sendMessage text; longer
+// replies go out as several messages.
+const maxTextLen = 4096
+
+// reply delivers the handler's reply to the chat and topic the
+// inbound message came from, split to the platform cap.
+func (c *Client) reply(ctx context.Context, m *telegramMessage, reply string) {
+	threadID := int64(0)
+	if m.IsTopicMessage {
+		threadID = m.MessageThreadID
+	}
+	for _, part := range transport.SplitReply(reply, maxTextLen) {
+		if c.cfg.ReplyHeader != "" {
+			part = c.cfg.ReplyHeader + part
+		}
+		if err := c.send(ctx, m.Chat.ID, threadID, part); err != nil {
+			c.logger.Error("telegram.send_failed", slog.String("err", err.Error()))
+			return
+		}
+	}
 }
 
 // route decides whether to invoke the handler for an update.
@@ -184,10 +215,15 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 	// From is the sending user (identity); the reply goes back to the
 	// chat the message arrived in, which differs in groups.
 	msg := transport.IncomingMessage{
-		From:        sender,
-		Body:        text,
-		At:          time.Unix(u.Message.Date, 0),
-		Attachments: attachments,
+		From:         sender,
+		Body:         text,
+		At:           time.Unix(u.Message.Date, 0),
+		Conversation: chatID,
+		MessageID:    strconv.FormatInt(u.Message.MessageID, 10),
+		Attachments:  attachments,
+	}
+	if u.Message.IsTopicMessage {
+		msg.Thread = strconv.FormatInt(u.Message.MessageThreadID, 10)
 	}
 	c.logger.Info("telegram.incoming",
 		slog.String("from", msg.From),
@@ -198,12 +234,7 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 		c.logger.Error("telegram.handler_failed", slog.String("err", err.Error()))
 		return
 	}
-	if reply == "" {
-		return
-	}
-	if err := c.Deliver(ctx, chatID, reply); err != nil {
-		c.logger.Error("telegram.send_failed", slog.String("err", err.Error()))
-	}
+	c.reply(ctx, u.Message, reply)
 }
 
 // transcribeAudio downloads the message's voice or audio blob and
@@ -408,15 +439,20 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	MessageID int64               `json:"message_id"`
-	Date      int64               `json:"date"`
-	Text      string              `json:"text"`
-	Caption   string              `json:"caption,omitempty"`
-	Chat      telegramChat        `json:"chat"`
-	From      *telegramUser       `json:"from,omitempty"`
-	Voice     *telegramVoice      `json:"voice,omitempty"`
-	Audio     *telegramAudio      `json:"audio,omitempty"`
-	Photo     []telegramPhotoSize `json:"photo,omitempty"`
+	MessageID int64 `json:"message_id"`
+	// MessageThreadID names the forum topic a message was posted in;
+	// it is only meaningful when IsTopicMessage is set, since a
+	// plain reply also carries it.
+	MessageThreadID int64               `json:"message_thread_id,omitempty"`
+	IsTopicMessage  bool                `json:"is_topic_message,omitempty"`
+	Date            int64               `json:"date"`
+	Text            string              `json:"text"`
+	Caption         string              `json:"caption,omitempty"`
+	Chat            telegramChat        `json:"chat"`
+	From            *telegramUser       `json:"from,omitempty"`
+	Voice           *telegramVoice      `json:"voice,omitempty"`
+	Audio           *telegramAudio      `json:"audio,omitempty"`
+	Photo           []telegramPhotoSize `json:"photo,omitempty"`
 }
 
 // telegramPhotoSize is one rendition of an inbound photo. The Bot

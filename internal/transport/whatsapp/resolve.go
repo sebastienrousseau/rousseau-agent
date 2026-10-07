@@ -134,9 +134,11 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 
 	return Resolved{
 		Msg: transport.IncomingMessage{
-			From: from.String(),
-			Body: body,
-			At:   evt.Info.Timestamp,
+			From:         from.String(),
+			Body:         body,
+			At:           evt.Info.Timestamp,
+			Conversation: evt.Info.Chat.String(),
+			MessageID:    evt.Info.ID,
 		},
 		Chat: evt.Info.Chat,
 	}
