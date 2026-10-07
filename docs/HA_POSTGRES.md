@@ -236,7 +236,11 @@ with 100 messages is ~30 KB, so 100k sessions = 3 GB.
   not stored, and a daemon restart does not notify senders whose
   turn was cut short. The Phase 2 storage contract suite ports all
   three; until then treat Postgres HA as a session-store topology,
-  not feature parity with SQLite.
+  not feature parity with SQLite. What *is* guaranteed to match is
+  the `state.Store` contract (save, load, append, divergent-history
+  replace, listing order and caps, per-sender listing, delete):
+  `internal/state/storetest` runs the same cases against both
+  drivers, in CI for every change.
 - Cron schedules, WhatsApp JID pairings, and session cost
   ledgers stay per-replica. Roadmap §2.4b covers the port.
 - No pgx `pgxpool` tuning surface yet — the stdlib bridge
