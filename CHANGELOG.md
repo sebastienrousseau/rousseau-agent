@@ -110,6 +110,13 @@ entries change behaviour for existing deployments.
   `--keep_env`; smoke tests run when the binary is present.
 - Email: `email.require_authentication_results` drops mail without a
   `dkim=pass` for the From domain (off by default, warns when off).
+- Durable turns: the agent saves the session after every complete
+  iteration, and the router saves the sender's message before the turn
+  and the session after a failed, timed-out or cancelled turn. Before,
+  only a successful turn was saved, so a failure lost the message and
+  every tool call that had already run. The restart notice now lists
+  the tool calls that ran before the interruption, read from that
+  checkpoint.
 
 Ships in `v0.0.2` alongside the roadmap Wave 1-3 delivery.
 

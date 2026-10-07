@@ -32,6 +32,7 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/ratelimit"
 	"github.com/sebastienrousseau/rousseau-agent/internal/reliability"
 	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
+	"github.com/sebastienrousseau/rousseau-agent/internal/senderkey"
 	"github.com/sebastienrousseau/rousseau-agent/internal/state"
 	sqlitestore "github.com/sebastienrousseau/rousseau-agent/internal/state/sqlite"
 	"github.com/sebastienrousseau/rousseau-agent/internal/toolgate"
@@ -566,9 +567,12 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		MaxToolOutputBytes: cfg.Agent.MaxToolOutputBytes,
 		SystemPrompt:       systemPrompt(cfg.Agent.SystemPrompt),
 		Approver:           approver,
-		Compressor:         buildCompressor(cfg.Agent.Compression, provider),
-		SkillsProvider:     skillsProv,
-		RecallProvider:     buildRecallProvider(concrete),
+		// Durable turns: every complete iteration is saved, so a
+		// restart loses at most the one in flight.
+		Checkpoint:     func(ctx context.Context, s *agent.Session) error { return sessions.Save(ctx, s) },
+		Compressor:     buildCompressor(cfg.Agent.Compression, provider),
+		SkillsProvider: skillsProv,
+		RecallProvider: buildRecallProvider(concrete),
 		// CostRecorder wraps a driver-agnostic costWriter — both
 		// sqlite.SessionCostStore and postgres.SessionCostStore
 		// satisfy the widened interface. Kept in the sqlite
@@ -1219,16 +1223,67 @@ func runSessionRetention(ctx context.Context, store idleSessionEraser, ttl, inte
 	}
 }
 
+// maxLedgerLines bounds the tool calls listed in a restart notice.
+const maxLedgerLines = 10
+
 // interruptedNotice is sent to a sender whose turn a restart cut off.
-func interruptedNotice(preview string) string {
-	return "I was restarted while working on your message (\"" + preview + "\"), so you did not get a reply. " +
-		"Some steps may already have run; ask me what state things are in, or send it again."
+// ledger lists the tool calls that ran before the cut, from the
+// checkpointed session, so the sender knows which side effects
+// happened instead of being told only that "some steps may have run".
+func interruptedNotice(preview string, ledger []agent.LedgerEntry) string {
+	var b strings.Builder
+	b.WriteString("I was restarted while working on your message (\"" + preview + "\"), so you did not get a reply.")
+	if len(ledger) == 0 {
+		b.WriteString(" Nothing had run yet; send it again when you are ready.")
+		return b.String()
+	}
+	b.WriteString(" Before the restart I had run:")
+	for i, e := range ledger {
+		if i == maxLedgerLines {
+			fmt.Fprintf(&b, "\n- …and %d more", len(ledger)-maxLedgerLines)
+			break
+		}
+		b.WriteString("\n- " + e.Tool)
+		if e.Detail != "" {
+			b.WriteString(" " + e.Detail)
+		}
+		if e.Failed {
+			b.WriteString(" (failed or unfinished)")
+		}
+	}
+	b.WriteString("\nAsk me what state things are in before sending it again.")
+	return b.String()
+}
+
+// ledgerFunc returns the tool calls of sender's latest turn on a
+// transport.
+type ledgerFunc func(ctx context.Context, sender string) []agent.LedgerEntry
+
+// TurnLedger looks up the side effects of sender's latest turn on
+// transportName from the checkpointed session. It never creates a
+// session; an unknown sender has an empty ledger.
+func (w *daemonWiring) TurnLedger(transportName string) ledgerFunc {
+	return func(ctx context.Context, sender string) []agent.LedgerEntry {
+		if w.JIDMap == nil || w.Sessions == nil {
+			return nil
+		}
+		id, ok, err := w.JIDMap.Get(ctx, senderkey.Make(transportName, sender))
+		if err != nil || !ok {
+			return nil
+		}
+		sess, err := w.Sessions.Load(ctx, id)
+		if err != nil {
+			return nil
+		}
+		return agent.TurnLedger(sess)
+	}
 }
 
 // notifyInterruptedTurns tells each sender whose turn on transport was
-// cut off by the last shutdown, once deliver can reach them. It takes
-// (and clears) the journal entries, so each notice is sent once.
-func notifyInterruptedTurns(ctx context.Context, j turnJournal, transportName string, deliver func(ctx context.Context, to, body string) error, logger *slog.Logger) {
+// cut off by the last shutdown, once deliver can reach them, listing
+// what had already run when ledger is set. It takes (and clears) the
+// journal entries, so each notice is sent once.
+func notifyInterruptedTurns(ctx context.Context, j turnJournal, transportName string, ledger ledgerFunc, deliver func(ctx context.Context, to, body string) error, logger *slog.Logger) {
 	if j == nil {
 		return
 	}
@@ -1238,10 +1293,14 @@ func notifyInterruptedTurns(ctx context.Context, j turnJournal, transportName st
 		return
 	}
 	for _, t := range turns {
-		if err := deliver(ctx, t.Sender, interruptedNotice(t.Preview)); err != nil {
+		var entries []agent.LedgerEntry
+		if ledger != nil {
+			entries = ledger(ctx, t.Sender)
+		}
+		if err := deliver(ctx, t.Sender, interruptedNotice(t.Preview, entries)); err != nil {
 			logger.Warn("turn_journal.notify_failed", slog.String("to", t.Sender), slog.String("err", err.Error()))
 			continue
 		}
-		logger.Info("turn_journal.notified", slog.String("transport", transportName), slog.String("to", t.Sender))
+		logger.Info("turn_journal.notified", slog.String("transport", transportName), slog.String("to", t.Sender), slog.Int("tool_calls", len(entries)))
 	}
 }
