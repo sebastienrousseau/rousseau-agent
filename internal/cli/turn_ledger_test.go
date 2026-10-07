@@ -64,7 +64,7 @@ func TestNotifyInterruptedTurns_ListsCheckpointedSideEffects(t *testing.T) {
 	require.NoError(t, wiring.TurnJournal.Begin(ctx, "whatsapp", "a@s.whatsapp.net", "clean the build"))
 
 	var body string
-	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", wiring.TurnLedger("whatsapp"),
+	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", wiring.RestartRecovery("whatsapp"),
 		func(_ context.Context, _, b string) error { body = b; return nil }, silentLogger())
 	assert.Contains(t, body, "- bash rm -rf build")
 

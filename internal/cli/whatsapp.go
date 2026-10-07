@@ -111,7 +111,7 @@ func newWhatsAppCmd(opts *Options) *cobra.Command {
 					}
 					time.Sleep(time.Second)
 				}
-				notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", wiring.TurnLedger("whatsapp"), client.Deliver, opts.Logger)
+				notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", wiring.RestartRecovery("whatsapp"), client.Deliver, opts.Logger)
 			}()
 			opts.Logger.Info("whatsapp.starting", "store", dsn, "allowlist", len(allowlist))
 			err = client.Start(ctx, wiring.TransportHandler("whatsapp", opts.Logger))

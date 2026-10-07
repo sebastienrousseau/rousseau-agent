@@ -26,7 +26,7 @@ func TestOpenTurnJournal_SQLiteRoundTrip(t *testing.T) {
 	require.NoError(t, j.Begin(ctx, "whatsapp", "alice", "plan the trip"))
 
 	var sent []string
-	notifyInterruptedTurns(ctx, j, "whatsapp", nil, func(_ context.Context, to, body string) error {
+	notifyInterruptedTurns(ctx, j, "whatsapp", restartRecovery{}, func(_ context.Context, to, body string) error {
 		sent = append(sent, to+"|"+body)
 		return nil
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -39,5 +39,5 @@ func TestOpenTurnJournal_UnknownStoreIsNilInterface(t *testing.T) {
 	j, err := openTurnJournal(context.Background(), nil)
 	assert.Error(t, err)
 	assert.Nil(t, j, "a failed open must not return a typed nil the daemon would call")
-	notifyInterruptedTurns(context.Background(), j, "x", nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	notifyInterruptedTurns(context.Background(), j, "x", restartRecovery{}, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }

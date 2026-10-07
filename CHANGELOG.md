@@ -75,6 +75,18 @@ entries change behaviour for existing deployments.
   client's version when it is 2025-11-25, 2025-06-18, 2025-03-26 or
   2024-11-05 instead of always answering 2024-11-05. Unknown
   notifications are no longer answered with an error.
+- Durable turns: the agent saves the session after every complete
+  iteration, and the router saves the sender's message before the turn
+  and the session after a failed, timed-out or cancelled turn. Before,
+  only a successful turn was saved, so a failure lost the message and
+  every tool call that had already run. The restart notice now lists
+  the tool calls that ran before the interruption, read from that
+  checkpoint.
+- `agent.resume_interrupted` (off by default) continues a turn a
+  restart cut off from its last checkpoint and delivers the reply,
+  marked as resumed; a turn that had finished but whose reply was never
+  delivered is re-sent without a model call. If resuming fails, the
+  sender gets the notice listing what had run.
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming
