@@ -31,6 +31,12 @@ type Options struct {
 	// default (10 minutes). Without it a hung bash or MCP call
 	// consumed the whole turn budget.
 	ToolTimeout time.Duration
+	// Checkpoint, when set, is called after every complete iteration
+	// (tool results appended, session well-formed) so a crash or
+	// restart mid-turn loses at most the iteration in flight. The
+	// daemon wires it to the session store. Errors are logged, not
+	// fatal.
+	Checkpoint func(ctx context.Context, s *Session) error
 	// MaxToolOutputBytes caps the bytes of a tool's output that are
 	// handed back to the model; longer output is cut with a marker
 	// so one `cat` of a log file cannot fill the context window.
@@ -525,6 +531,7 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats,
 		// the session stays well-formed for the next turn.
 		if len(results) > 0 {
 			s.Append(Message{Role: RoleUser, Content: results})
+			a.checkpoint(ctx, s)
 		}
 		if err != nil {
 			return Message{}, err
@@ -532,6 +539,18 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats,
 	}
 
 	return Message{}, ErrMaxIterations
+}
+
+// checkpoint persists s through Options.Checkpoint. It runs detached
+// from ctx's cancellation: a cancelled turn is exactly the one whose
+// progress must still be saved.
+func (a *Agent) checkpoint(ctx context.Context, s *Session) {
+	if a.opts.Checkpoint == nil {
+		return
+	}
+	if err := a.opts.Checkpoint(context.WithoutCancel(ctx), s); err != nil {
+		a.logger.Warn("agent.checkpoint_failed", slog.String("session_id", s.ID), slog.String("err", err.Error()))
+	}
 }
 
 // TruncationMarker is appended to a reply the model could not finish

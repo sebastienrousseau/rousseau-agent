@@ -49,6 +49,13 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- Durable turns: the agent saves the session after every complete
+  iteration, and the router saves the sender's message before the turn
+  and the session after a failed, timed-out or cancelled turn. Before,
+  only a successful turn was saved, so a failure lost the message and
+  every tool call that had already run. The restart notice now lists
+  the tool calls that ran before the interruption, read from that
+  checkpoint.
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming
