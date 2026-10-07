@@ -137,9 +137,11 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 		}
 		res = Resolved{
 			Msg: transport.IncomingMessage{
-				From: resolveFrom(in.Event, in.OwnID).String(),
-				Body: text,
-				At:   in.Event.Info.Timestamp,
+				From:         resolveFrom(in.Event, in.OwnID).String(),
+				Body:         text,
+				At:           in.Event.Info.Timestamp,
+				Conversation: in.Event.Info.Chat.String(),
+				MessageID:    in.Event.Info.ID,
 			},
 			Chat: in.Event.Info.Chat,
 		}
@@ -168,10 +170,12 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 		}
 		res = Resolved{
 			Msg: transport.IncomingMessage{
-				From:        resolveFrom(in.Event, in.OwnID).String(),
-				Body:        imageMsg.GetCaption(),
-				At:          in.Event.Info.Timestamp,
-				Attachments: []transport.Attachment{*att},
+				From:         resolveFrom(in.Event, in.OwnID).String(),
+				Body:         imageMsg.GetCaption(),
+				At:           in.Event.Info.Timestamp,
+				Conversation: in.Event.Info.Chat.String(),
+				MessageID:    in.Event.Info.ID,
+				Attachments:  []transport.Attachment{*att},
 			},
 			Chat: in.Event.Info.Chat,
 		}
@@ -312,10 +316,12 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 	// emits its own terminal render ("● done in Ns · N tools") via
 	// the bus when the turn's Publisher fires KindTurnFinished.
 	hb.abort(context.Background())
-	if err := in.Sender.SendText(ctx, res.Chat, PrependHeader(reply, in.Header)); err != nil {
-		log.Error("whatsapp.send_failed", slog.String("err", err.Error()))
-		react(context.Background(), "❌")
-		return
+	for _, part := range transport.SplitReply(reply, maxTextLen) {
+		if err := in.Sender.SendText(ctx, res.Chat, PrependHeader(part, in.Header)); err != nil {
+			log.Error("whatsapp.send_failed", slog.String("err", err.Error()))
+			react(context.Background(), "❌")
+			return
+		}
 	}
 	react(context.Background(), "✅")
 }
@@ -324,6 +330,10 @@ func handleTextMessage(ctx context.Context, in DispatchInput, res Resolved, log 
 // blocks the reply flow. Reactions are best-effort UX; missing one is
 // far cheaper than a stuck handler.
 const reactionTimeout = 3 * time.Second
+
+// maxTextLen keeps one text message under WhatsApp's 65536-character
+// ceiling; longer replies go out as several messages.
+const maxTextLen = 60000
 
 // reactorFor returns a closure that reacts to the current inbound
 // event when the sender supports it. When the sender does not
