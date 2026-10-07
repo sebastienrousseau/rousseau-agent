@@ -2,8 +2,6 @@ package cli
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,32 +10,38 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 )
 
-// openTurnJournal dispatches on the store's driver; on SQLite the
-// journal round-trips Begin/TakeInterrupted, and notifyInterruptedTurns
-// delivers one notice per interrupted sender.
-func TestOpenTurnJournal_SQLiteRoundTrip(t *testing.T) {
+// TestNotifyInterruptedTurns pins the restart notice: assembleDaemon
+// wires a journal on SQLite, a turn left open by the previous process
+// is delivered to its sender once, quoting the message start, and
+// other transports' entries are left alone.
+func TestNotifyInterruptedTurns(t *testing.T) {
+	opts := makeDaemonOpts(t)
+	opts.Config.Provider = "anthropic"
+	opts.Config.Anthropic = config.AnthropicConfig{APIKey: "sk-test", Model: "claude"}
+	wiring, err := assembleDaemon(context.Background(), opts, nil)
+	require.NoError(t, err)
+	defer func() { _ = wiring.Cleanup() }() //nolint:errcheck // test cleanup
+	require.NotNil(t, wiring.TurnJournal, "SQLite deployments get a journal")
+
 	ctx := context.Background()
-	store, err := openSearchableStore(ctx, config.StateConfig{Path: t.TempDir() + "/s.db"})
-	require.NoError(t, err)
-	defer func() { _ = store.Close() }() //nolint:errcheck // test cleanup
+	require.NoError(t, wiring.TurnJournal.Begin(ctx, "whatsapp", "a@s.whatsapp.net", "deploy staging"))
+	require.NoError(t, wiring.TurnJournal.Begin(ctx, "telegram", "42", "other"))
 
-	j, err := openTurnJournal(ctx, store)
-	require.NoError(t, err)
-	require.NoError(t, j.Begin(ctx, "whatsapp", "alice", "plan the trip"))
-
-	var sent []string
-	notifyInterruptedTurns(ctx, j, "whatsapp", func(_ context.Context, to, body string) error {
-		sent = append(sent, to+"|"+body)
+	type sent struct{ to, body string }
+	var got []sent
+	deliver := func(_ context.Context, to, body string) error {
+		got = append(got, sent{to, body})
 		return nil
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	require.Len(t, sent, 1)
-	assert.Contains(t, sent[0], "alice|")
-	assert.Contains(t, sent[0], "plan the trip")
-}
+	}
+	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", deliver, silentLogger())
+	notifyInterruptedTurns(ctx, wiring.TurnJournal, "whatsapp", deliver, silentLogger())
 
-func TestOpenTurnJournal_UnknownStoreIsNilInterface(t *testing.T) {
-	j, err := openTurnJournal(context.Background(), nil)
-	assert.Error(t, err)
-	assert.Nil(t, j, "a failed open must not return a typed nil the daemon would call")
-	notifyInterruptedTurns(context.Background(), j, "x", nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.Len(t, got, 1, "each interrupted turn is announced once")
+	assert.Equal(t, "a@s.whatsapp.net", got[0].to)
+	assert.Contains(t, got[0].body, `"deploy staging"`)
+	assert.Contains(t, got[0].body, "restarted")
+
+	left, err := wiring.TurnJournal.TakeInterrupted(ctx, "telegram")
+	require.NoError(t, err)
+	assert.Len(t, left, 1)
 }
