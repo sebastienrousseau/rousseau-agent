@@ -86,7 +86,7 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 
 	resp, err := p.client.Messages.New(ctx, params)
 	if err != nil {
-		return model.Response{}, fmt.Errorf("anthropic: complete: %w", err)
+		return model.Response{}, wrapAPIError("anthropic: complete", err)
 	}
 
 	assistant, err := fromSDKResponse(resp)
@@ -193,6 +193,19 @@ func toSDKTools(in []tools.Definition, cacheTools bool) []sdk.ToolUnionParam {
 		out = append(out, sdk.ToolUnionParam{OfTool: toolParam})
 	}
 	return out
+}
+
+// wrapAPIError turns an SDK error into a model.ProviderError carrying
+// the HTTP status and Retry-After, so the retry and breaker wrappers
+// classify on structure rather than error text. Non-API errors (dial,
+// context) are wrapped with status 0.
+func wrapAPIError(prefix string, err error) error {
+	wrapped := fmt.Errorf("%s: %w", prefix, err)
+	var ae *sdk.Error
+	if errors.As(err, &ae) {
+		return model.NewProviderError(wrapped, ae.StatusCode, ae.Response)
+	}
+	return model.NewProviderError(wrapped, 0, nil)
 }
 
 // toSDKInputSchema maps a tool's JSON-Schema object onto the SDK's

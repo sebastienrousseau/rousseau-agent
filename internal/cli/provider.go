@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
@@ -13,70 +14,125 @@ import (
 	openaillm "github.com/sebastienrousseau/rousseau-agent/internal/llm/openai"
 	"github.com/sebastienrousseau/rousseau-agent/internal/llm/router"
 	vertexllm "github.com/sebastienrousseau/rousseau-agent/internal/llm/vertex"
+	"github.com/sebastienrousseau/rousseau-agent/internal/resilience"
 )
 
 // buildProvider selects and constructs the LLM provider from Config.
 // Callers should treat missing prerequisites (API key, binary) as
 // user-facing errors and abort the command with the returned message.
 func buildProvider(cfg *config.Config) (agent.Provider, error) {
+	p, err := buildBareProvider(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return wrapResilience(p, cfg), nil
+}
+
+// wrapResilience layers retries (outer) over the circuit breaker
+// (inner) on API providers. claudecli manages its own retries and the
+// router wraps each child itself, so both pass through untouched.
+// Streaming is preserved: both wrappers forward Stream when the
+// wrapped provider implements it.
+func wrapResilience(p agent.Provider, cfg *config.Config) agent.Provider {
 	switch cfg.Provider {
-	case "", "claudecli":
-		extraArgs := cfg.ClaudeCLI.ExtraArgs
-		if cfg.ClaudeCLI.Bare {
-			// Prepend so operator ExtraArgs can still override or
-			// re-enable specific bits if they need to.
-			extraArgs = append([]string{"--bare"}, extraArgs...)
-		}
-		return claudecli.New(claudecli.Config{
-			Binary:         cfg.ClaudeCLI.Binary,
-			Model:          cfg.ClaudeCLI.Model,
-			PermissionMode: cfg.ClaudeCLI.PermissionMode,
-			ExtraArgs:      extraArgs,
-		}), nil
-	case "anthropic":
-		if cfg.Anthropic.APIKey == "" {
-			return nil, errors.New("provider=anthropic but ANTHROPIC_API_KEY is not set (env var or anthropic.api_key in config)")
-		}
-		return anthropic.New(anthropic.Config{
-			APIKey:    cfg.Anthropic.APIKey,
-			Model:     cfg.Anthropic.Model,
-			MaxTokens: cfg.Anthropic.MaxTokens,
+	case "", "claudecli", "router":
+		return p
+	}
+	r := cfg.Resilience
+	if r.CircuitBreaker.MaxFailures > 0 {
+		p = resilience.Breaker(p, resilience.BreakerConfig{
+			MaxFailures: r.CircuitBreaker.MaxFailures,
+			Interval:    time.Duration(r.CircuitBreaker.IntervalMS) * time.Millisecond,
+			Timeout:     time.Duration(r.CircuitBreaker.TimeoutMS) * time.Millisecond,
+			HalfOpenMax: r.CircuitBreaker.HalfOpenMax,
 		})
-	case "openai":
-		return buildOpenAILike("openai", cfg.OpenAI)
-	case "openrouter":
-		return buildOpenAILike("openrouter", cfg.OpenRouter)
-	case "ollama":
-		return buildOpenAILike("ollama", cfg.Ollama)
-	case "bedrock":
-		if cfg.Bedrock.Region == "" {
-			return nil, errors.New("provider=bedrock but bedrock.region is empty")
-		}
-		if cfg.Bedrock.Model == "" {
-			return nil, errors.New("provider=bedrock but bedrock.model is empty")
-		}
-		return bedrockllm.New(context.Background(), bedrockllm.Config{
-			Region:    cfg.Bedrock.Region,
-			Model:     cfg.Bedrock.Model,
-			Profile:   cfg.Bedrock.Profile,
-			MaxTokens: cfg.Bedrock.MaxTokens,
-		})
-	case "vertex":
-		if cfg.Vertex.Project == "" || cfg.Vertex.Region == "" || cfg.Vertex.Model == "" {
-			return nil, errors.New("provider=vertex requires vertex.{project, region, model}")
-		}
-		return vertexllm.New(context.Background(), vertexllm.Config{
-			Project:         cfg.Vertex.Project,
-			Region:          cfg.Vertex.Region,
-			Model:           cfg.Vertex.Model,
-			CredentialsFile: cfg.Vertex.CredentialsFile,
-			MaxTokens:       cfg.Vertex.MaxTokens,
-		})
-	case "router":
-		return buildRouter(cfg)
-	default:
+	}
+	if r.Retry.MaxAttempts == 1 {
+		return p
+	}
+	return resilience.Retry(p, resilience.RetryConfig{
+		MaxAttempts:   r.Retry.MaxAttempts,
+		BaseDelay:     time.Duration(r.Retry.BaseDelayMS) * time.Millisecond,
+		MaxDelay:      time.Duration(r.Retry.MaxDelayMS) * time.Millisecond,
+		MaxRetryAfter: time.Duration(r.Retry.MaxRetryAfterMS) * time.Millisecond,
+	})
+}
+
+// buildBareProvider constructs the configured provider without any
+// resilience wrapping.
+func buildBareProvider(cfg *config.Config) (agent.Provider, error) {
+	build, ok := providerBuilders[cfg.Provider]
+	if !ok {
 		return nil, fmt.Errorf("unknown provider %q (want claudecli/anthropic/openai/openrouter/ollama/bedrock/vertex/router)", cfg.Provider)
 	}
+	return build(cfg)
+}
+
+// providerBuilders maps the config.provider value to its constructor.
+var providerBuilders = map[string]func(*config.Config) (agent.Provider, error){
+	"":           buildClaudeCLI,
+	"claudecli":  buildClaudeCLI,
+	"anthropic":  buildAnthropic,
+	"openai":     func(cfg *config.Config) (agent.Provider, error) { return buildOpenAILike("openai", cfg.OpenAI) },
+	"openrouter": func(cfg *config.Config) (agent.Provider, error) { return buildOpenAILike("openrouter", cfg.OpenRouter) },
+	"ollama":     func(cfg *config.Config) (agent.Provider, error) { return buildOpenAILike("ollama", cfg.Ollama) },
+	"bedrock":    buildBedrock,
+	"vertex":     buildVertex,
+	"router":     buildRouter,
+}
+
+func buildClaudeCLI(cfg *config.Config) (agent.Provider, error) {
+	extraArgs := cfg.ClaudeCLI.ExtraArgs
+	if cfg.ClaudeCLI.Bare {
+		// Prepend so operator ExtraArgs can still override or
+		// re-enable specific bits if they need to.
+		extraArgs = append([]string{"--bare"}, extraArgs...)
+	}
+	return claudecli.New(claudecli.Config{
+		Binary:         cfg.ClaudeCLI.Binary,
+		Model:          cfg.ClaudeCLI.Model,
+		PermissionMode: cfg.ClaudeCLI.PermissionMode,
+		ExtraArgs:      extraArgs,
+	}), nil
+}
+
+func buildAnthropic(cfg *config.Config) (agent.Provider, error) {
+	if cfg.Anthropic.APIKey == "" {
+		return nil, errors.New("provider=anthropic but ANTHROPIC_API_KEY is not set (env var or anthropic.api_key in config)")
+	}
+	return anthropic.New(anthropic.Config{
+		APIKey:    cfg.Anthropic.APIKey,
+		Model:     cfg.Anthropic.Model,
+		MaxTokens: cfg.Anthropic.MaxTokens,
+	})
+}
+
+func buildBedrock(cfg *config.Config) (agent.Provider, error) {
+	if cfg.Bedrock.Region == "" {
+		return nil, errors.New("provider=bedrock but bedrock.region is empty")
+	}
+	if cfg.Bedrock.Model == "" {
+		return nil, errors.New("provider=bedrock but bedrock.model is empty")
+	}
+	return bedrockllm.New(context.Background(), bedrockllm.Config{
+		Region:    cfg.Bedrock.Region,
+		Model:     cfg.Bedrock.Model,
+		Profile:   cfg.Bedrock.Profile,
+		MaxTokens: cfg.Bedrock.MaxTokens,
+	})
+}
+
+func buildVertex(cfg *config.Config) (agent.Provider, error) {
+	if cfg.Vertex.Project == "" || cfg.Vertex.Region == "" || cfg.Vertex.Model == "" {
+		return nil, errors.New("provider=vertex requires vertex.{project, region, model}")
+	}
+	return vertexllm.New(context.Background(), vertexllm.Config{
+		Project:         cfg.Vertex.Project,
+		Region:          cfg.Vertex.Region,
+		Model:           cfg.Vertex.Model,
+		CredentialsFile: cfg.Vertex.CredentialsFile,
+		MaxTokens:       cfg.Vertex.MaxTokens,
+	})
 }
 
 // buildRouter constructs a [router.Router] from cfg.Router. Each named

@@ -89,7 +89,7 @@ func consumeStream(stream *sdkssestream.Stream[sdk.MessageStreamEventUnion], eve
 		}
 	}
 	if err := stream.Err(); err != nil {
-		return model.Response{}, fmt.Errorf("anthropic: stream: %w", err)
+		return model.Response{}, wrapAPIError("anthropic: stream", err)
 	}
 
 	assistant, err := fromAssembledMessage(&message)

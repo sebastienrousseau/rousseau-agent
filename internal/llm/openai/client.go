@@ -91,9 +91,21 @@ func (p *Provider) Complete(ctx context.Context, req model.Request) (model.Respo
 	}
 	resp, err := p.client.Chat.Completions.New(ctx, params)
 	if err != nil {
-		return model.Response{}, fmt.Errorf("openai: complete: %w", err)
+		return model.Response{}, wrapAPIError(p.Name()+": complete", err)
 	}
 	return fromSDKResponse(resp)
+}
+
+// wrapAPIError turns an SDK error into a model.ProviderError carrying
+// the HTTP status and Retry-After, so the retry and breaker wrappers
+// classify on structure rather than error text.
+func wrapAPIError(prefix string, err error) error {
+	wrapped := fmt.Errorf("%s: %w", prefix, err)
+	var ae *sdk.Error
+	if errors.As(err, &ae) {
+		return model.NewProviderError(wrapped, ae.StatusCode, ae.Response)
+	}
+	return model.NewProviderError(wrapped, 0, nil)
 }
 
 // -- conversions -------------------------------------------------------

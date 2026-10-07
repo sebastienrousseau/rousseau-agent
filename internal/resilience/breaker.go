@@ -48,8 +48,11 @@ func (c BreakerConfig) applyDefaults() BreakerConfig {
 // When the breaker is Open, Complete returns [gobreaker.ErrOpenState]
 // immediately without touching the wrapped provider.
 type BreakerProvider struct {
-	inner    model.Provider
-	breaker  *gobreaker.CircuitBreaker[model.Response]
+	inner model.Provider
+	// breaker is untyped so Complete and Stream share one failure
+	// tally: an upstream that refuses streams is as down as one that
+	// refuses completions.
+	breaker  *gobreaker.CircuitBreaker[any]
 	resource string
 }
 
@@ -81,10 +84,47 @@ func NewBreakerProvider(inner model.Provider, cfg BreakerConfig) *BreakerProvide
 		},
 	}
 
-	b := gobreaker.NewCircuitBreaker[model.Response](settings)
+	b := gobreaker.NewCircuitBreaker[any](settings)
 	observability.CircuitState.WithLabelValues(resource).Set(stateFloat(gobreaker.StateClosed))
 
 	return &BreakerProvider{inner: inner, breaker: b, resource: resource}
+}
+
+// Breaker wraps inner with a circuit breaker. When inner implements
+// model.StreamingProvider the returned provider does too, so wrapping
+// no longer silently downgrades the agent loop to non-streaming.
+func Breaker(inner model.Provider, cfg BreakerConfig) model.Provider {
+	b := NewBreakerProvider(inner, cfg)
+	if s, ok := inner.(model.StreamingProvider); ok {
+		return &breakerStreamingProvider{BreakerProvider: b, streamer: s}
+	}
+	return b
+}
+
+// breakerStreamingProvider runs Stream's establishment through the
+// breaker; a stream that fails after it was established reports its
+// error to the caller without counting against the breaker, since the
+// upstream did answer.
+type breakerStreamingProvider struct {
+	*BreakerProvider
+	streamer model.StreamingProvider
+}
+
+type streamHandles struct {
+	events <-chan model.StreamEvent
+	report <-chan model.StreamReport
+}
+
+func (p *breakerStreamingProvider) Stream(ctx context.Context, req model.Request) (<-chan model.StreamEvent, <-chan model.StreamReport, error) {
+	v, err := p.breaker.Execute(func() (any, error) {
+		ev, rep, err := p.streamer.Stream(ctx, req)
+		return streamHandles{events: ev, report: rep}, err
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	h := v.(streamHandles) //nolint:forcetypeassert // Execute returns what the closure returned
+	return h.events, h.report, nil
 }
 
 // Name reports the wrapped provider's name — the wrapper is
@@ -98,9 +138,13 @@ func (p *BreakerProvider) Name() string { return p.inner.Name() }
 // surfaced to the caller — only the breaker's health metric is
 // spared.
 func (p *BreakerProvider) Complete(ctx context.Context, req model.Request) (model.Response, error) {
-	return p.breaker.Execute(func() (model.Response, error) {
+	v, err := p.breaker.Execute(func() (any, error) {
 		return p.inner.Complete(ctx, req)
 	})
+	if err != nil {
+		return model.Response{}, err
+	}
+	return v.(model.Response), nil //nolint:forcetypeassert // Execute returns what the closure returned
 }
 
 // stateFloat maps a gobreaker state to the value the prometheus
