@@ -49,6 +49,12 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- MCP client: `tools/list` follows `nextCursor`, so servers that page
+  their tools no longer lose everything after the first page; a `ping`
+  from the server is answered and other server requests get "method
+  not found" instead of silence; and a tool result with `isError`
+  passes the server's error text to the model instead of a generic
+  "server reported error".
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming

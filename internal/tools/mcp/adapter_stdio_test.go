@@ -126,7 +126,7 @@ func TestAdapter_ExecuteServerReportedError(t *testing.T) {
 
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "mcp mcp:shellmock:boom: server reported error")
+	assert.ErrorContains(t, err, "mcp mcp:shellmock:boom: the tool blew up", "the server's error text reaches the model")
 	assert.Equal(t, "the tool blew up", out, "the body is still returned for the model")
 }
 
