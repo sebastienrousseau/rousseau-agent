@@ -42,7 +42,7 @@
 - [Transports](#transports) — nine chat surfaces behind one interface
 - [LLM providers](#llm-providers) — six backends, one `Provider` contract
 - [Tools and integrations](#tools-and-integrations) — six built-ins, 26 native integration tools, Composio
-- [MCP](#mcp) — server and client, spec revision 2024-11-05
+- [MCP](#mcp) — server and client, protocol revision 2026-07-28 with fallback to every earlier revision
 - [Skills](#skills) — Markdown skills, optional SSH signature enforcement
 - [Recall, scheduling, and sub-agents](#recall-scheduling-and-sub-agents) — memory, cron, fan-out
 - [Agent-to-Agent (A2A)](#agent-to-agent-a2a) — peer protocol surface
@@ -179,7 +179,10 @@ directory. `rousseau doctor --json` and `rousseau config validate
 procurement questionnaire can consume: the config command loads the
 file exactly as the daemon would (strict keys, `${VAR}` expansion, a
 missing explicit `--config` is an error) and reports the resolved
-path and effective top-level choices.
+path and effective top-level choices. `rousseau evidence` bundles both, plus
+the licence state, audit-chain head, effective controls and retention
+settings, into one JSON evidence pack mapped to the EU AI Act, GDPR,
+DORA, SOC 2 and HIPAA articles in [`docs/compliance/`](./docs/compliance/).
 
 Once the config is in place, run a transport instead of the TUI:
 
@@ -335,18 +338,27 @@ credentials.
 
 ## MCP
 
-Both halves of the Model Context Protocol are implemented against spec
-revision **2024-11-05**.
+Both halves of the Model Context Protocol are implemented against the
+stateless revision **2026-07-28**, and both fall back to the
+`initialize` handshake (2025-11-25 down to 2024-11-05) for older peers.
 
 **Server** (`internal/mcp`, `rousseau mcp`) speaks JSON-RPC 2.0 over
 stdio and exposes the daemon's tools and sessions to any MCP-capable
-client — Claude Desktop, IDE extensions, or another agent. The protocol
+client — Claude Desktop, IDE extensions, or another agent. It answers
+`server/discover`, serves 2026-07-28 requests without `initialize`, and
+negotiates the newest shared revision for clients that still send
+`initialize`. The protocol
 decoder carries a fuzz target (`internal/mcp/fuzz_test.go`).
 
 **Client** (`internal/mcp/client`, adapted into the registry by
 `internal/tools/mcp`) consumes tools published by external MCP servers.
 Servers declared under `mcp.clients` are spawned when the daemon starts;
-each tool they advertise is registered as `mcp:<name>:<tool>`.
+each tool they advertise is registered as `mcp:<name>:<tool>`. At
+startup the client probes each server with `server/discover`; a server
+that answers is used statelessly (version and client info in every
+request's `_meta`), and any other answer, or none within 3 s, falls
+back to `initialize`. The client declares no capabilities, so servers
+never ask it for sampling, elicitation or roots.
 
 ```yaml
 mcp:
@@ -501,6 +513,7 @@ agent:
   max_iterations: 32
   session_idle_timeout: 12h      # fresh chat session after this much idle; 0 = never
   turn_timeout: 30m              # stop a chat turn (and its claude process) after this; 0 = no limit
+  resume_interrupted: false      # true: continue a turn a restart cut off from its checkpoint instead of only notifying
   tool_timeout: 10m              # bound one tool call inside a turn
   max_tool_output_bytes: 65536   # cut longer tool output with a marker so one cat cannot fill the context
   max_concurrent_turns: 4        # agent turns running at once; more queue; 0 = unlimited

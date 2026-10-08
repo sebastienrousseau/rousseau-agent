@@ -99,7 +99,7 @@ The Q3/Q4 items that used to occupy §2 and §3 of this doc are all landed. Loca
 - **Session compression** — `internal/agent/compressor.go` with `LLMCompressor` that summarises the oldest slice into a synthetic `[rousseau-compressed]` marker message. Config: `agent.compression.{enabled, trigger_messages, trigger_tokens, keep_recent, prompt}` (defaults 60/120000/8).
 - **Cross-session recall** — `internal/agent/recall.go` extracts keywords from the latest user message and composes hits as a `# Related prior sessions` appendix.
 - **Signal transport** — `internal/transport/signal/` shells out to `signal-cli --output=json -a <account> jsonRpc`. Same Router / allowlist / handler contract as WhatsApp.
-- **MCP server surface** — `internal/mcp/` implements stdio JSON-RPC 2.0 against MCP revision `2024-11-05`. Read-only tools: `rousseau_search_sessions`, `rousseau_list_sessions`, `rousseau_read_session`, `rousseau_cron_list`. `rousseau mcp` starts the server.
+- **MCP server surface** — `internal/mcp/` implements stdio JSON-RPC 2.0 against MCP revision `2026-07-28` (`server/discover`, stateless `_meta` requests), negotiating 2025-11-25 down to 2024-11-05 for `initialize`-era clients. Read-only tools: `rousseau_search_sessions`, `rousseau_list_sessions`, `rousseau_read_session`, `rousseau_cron_list`. `rousseau mcp` starts the server.
 - **Skills / self-improving prompts** — `internal/skills/` loads Markdown+YAML skills from `~/.local/share/rousseau/skills/`; substring-matched triggers splice the skill body into the system prompt as an `# Active skills` appendix.
 
 ### 1.11 5-week competitor-gap campaign (2026-07-16 → 2026-08-29) — shipped in full

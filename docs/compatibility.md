@@ -101,12 +101,14 @@ Image digests are pinned in the release notes so consumers can
 
 ## MCP protocol
 
-- MCP server API version is negotiated per-connection; the server
-  supports the version advertised by MCP `latest` at the time of the
-  release. Older client versions are supported for **at least six
+- MCP server API version is negotiated per request (2026-07-28,
+  via `_meta`) or per connection (`initialize` revisions 2025-11-25,
+  2025-06-18, 2025-03-26 and 2024-11-05); the server supports the
+  version advertised by MCP `latest` at the time of the release. Older client versions are supported for **at least six
   months** after they are deprecated by the MCP spec.
-- Once the MCP client (ROADMAP W1.3) lands, the same contract will
-  apply to client-side protocol handling.
+- The MCP client speaks 2026-07-28 (detected with `server/discover`)
+  and the `initialize` revisions 2025-11-25, 2025-06-18, 2025-03-26
+  and 2024-11-05. The same deprecation contract applies.
 
 ## Providers and transports
 

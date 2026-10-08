@@ -53,20 +53,7 @@ func newConfigValidateCmd(opts *Options) *cobra.Command {
 			if cfg == nil {
 				return fmt.Errorf("config: nothing loaded")
 			}
-			s := configSummary{
-				Path:           resolvedConfigPath(opts.ConfigPath),
-				Provider:       cfg.Provider,
-				StateDriver:    driverName(cfg.State),
-				MCPClients:     len(cfg.MCP.Clients),
-				AuditEgress:    cfg.Observability.AuditEgress.Kind,
-				BashSandbox:    cfg.Tools.Bash.Sandbox.Kind,
-				WorkspaceRoot:  cfg.Tools.FS.Root,
-				UnknownKeysOff: os.Getenv("ROUSSEAU_CONFIG_ALLOW_UNKNOWN") != "1",
-			}
-			if s.BashSandbox == "" {
-				s.BashSandbox = "none"
-			}
-			s.Transports = configuredTransports(cfg)
+			s := summarizeConfig(opts)
 			w := cmd.OutOrStdout()
 			if asJSON {
 				enc := json.NewEncoder(w)
@@ -88,6 +75,27 @@ func newConfigValidateCmd(opts *Options) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit the summary as JSON")
 	return cmd
+}
+
+// summarizeConfig builds the secret-free summary `config validate`
+// prints and the evidence pack embeds.
+func summarizeConfig(opts *Options) configSummary {
+	cfg := opts.Config
+	s := configSummary{
+		Path:           resolvedConfigPath(opts.ConfigPath),
+		Provider:       cfg.Provider,
+		StateDriver:    driverName(cfg.State),
+		MCPClients:     len(cfg.MCP.Clients),
+		AuditEgress:    cfg.Observability.AuditEgress.Kind,
+		BashSandbox:    cfg.Tools.Bash.Sandbox.Kind,
+		WorkspaceRoot:  cfg.Tools.FS.Root,
+		UnknownKeysOff: os.Getenv("ROUSSEAU_CONFIG_ALLOW_UNKNOWN") != "1",
+		Transports:     configuredTransports(cfg),
+	}
+	if s.BashSandbox == "" {
+		s.BashSandbox = "none"
+	}
+	return s
 }
 
 // configuredTransports lists the chat transports that have the one

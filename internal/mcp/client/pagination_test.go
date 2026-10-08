@@ -28,6 +28,9 @@ while IFS= read -r line; do
           ;;
       esac
       ;;
+    *)
+      [ -n "$id" ] && printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}\n' "$id"
+      ;;
   esac
 done
 `
@@ -43,6 +46,9 @@ while IFS= read -r line; do
       ;;
     tools/list)
       printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[],"nextCursor":"again"}}\n' "$id"
+      ;;
+    *)
+      [ -n "$id" ] && printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}\n' "$id"
       ;;
   esac
 done

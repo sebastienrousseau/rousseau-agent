@@ -55,6 +55,9 @@ type Config struct {
 	// RequestTimeout bounds how long a single tools/list or tools/call
 	// waits for a response. Zero uses 60s.
 	RequestTimeout time.Duration
+	// DiscoverTimeout bounds the server/discover probe that detects a
+	// 2026-07-28 server before falling back to initialize. Zero uses 3s.
+	DiscoverTimeout time.Duration
 	// Logger is used for lifecycle + error logs. Nil uses slog.Default.
 	Logger *slog.Logger
 	// ClientVersion is the rousseau daemon's own build version, sent
@@ -71,10 +74,15 @@ type Config struct {
 type Client struct {
 	name    string
 	version string // rousseau daemon version, sent on initialize.
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	logger  *slog.Logger
-	timeout time.Duration
+	// protocolVersion is the negotiated revision; modern is set when it
+	// is the stateless 2026-07-28 one (no initialize, _meta on every
+	// request).
+	protocolVersion string
+	modern          bool
+	cmd             *exec.Cmd
+	stdin           io.WriteCloser
+	logger          *slog.Logger
+	timeout         time.Duration
 
 	// writeMu serialises frames onto stdin. Pipe writes are atomic
 	// only up to PIPE_BUF (4 KiB on Linux); two concurrent tool calls
@@ -108,19 +116,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	if cfg.Name == "" {
 		return nil, errors.New("mcp/client: Config.Name is required")
 	}
-	startTimeout := cfg.StartTimeout
-	if startTimeout <= 0 {
-		startTimeout = 30 * time.Second
-	}
-	requestTimeout := cfg.RequestTimeout
-	if requestTimeout <= 0 {
-		requestTimeout = 60 * time.Second
-	}
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	logger = logger.With(slog.String("mcp_server", cfg.Name))
+	cfg = withDefaults(cfg)
+	startTimeout, requestTimeout := cfg.StartTimeout, cfg.RequestTimeout
+	logger := cfg.Logger.With(slog.String("mcp_server", cfg.Name))
 
 	// #nosec G204 -- cfg.Command is operator-supplied, same trust
 	// boundary as any subprocess in the tool registry. Callers vet
@@ -146,10 +144,6 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	stderrBuf := newBoundedBuffer(8 * 1024)
-	clientVersion := cfg.ClientVersion
-	if clientVersion == "" {
-		clientVersion = "unknown"
-	}
 	c := &Client{
 		name:      cfg.Name,
 		cmd:       cmd,
@@ -158,7 +152,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		timeout:   requestTimeout,
 		done:      make(chan struct{}),
 		stderrBuf: stderrBuf,
-		version:   clientVersion,
+		version:   cfg.ClientVersion,
 	}
 
 	// Drain stderr into the bounded buffer so we can surface it in
@@ -170,19 +164,38 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	// envelope to the pending channel keyed by ID.
 	go c.readLoop(stdout)
 
-	// Handshake: send initialize, wait for the result, then send
-	// notifications/initialized. If any step fails, kill the process
-	// and return the error.
+	// Handshake: probe for a 2026-07-28 server, else initialize. If it
+	// fails, kill the process and return the error.
 	handshakeCtx, cancel := context.WithTimeout(ctx, startTimeout)
 	defer cancel()
 
-	if err := c.initialize(handshakeCtx); err != nil {
+	if err := c.handshake(handshakeCtx, cfg.DiscoverTimeout); err != nil {
 		_ = c.Close() //nolint:errcheck // best-effort cleanup after handshake failure
 		return nil, fmt.Errorf("mcp/client %s: initialize: %w", cfg.Name, err)
 	}
 
-	logger.Info("mcp.client.ready", slog.String("command", cfg.Command))
+	logger.Info("mcp.client.ready", slog.String("command", cfg.Command), slog.String("protocol_version", c.protocolVersion))
 	return c, nil
+}
+
+// withDefaults fills the zero-valued Config fields New relies on.
+func withDefaults(cfg Config) Config {
+	if cfg.StartTimeout <= 0 {
+		cfg.StartTimeout = 30 * time.Second
+	}
+	if cfg.RequestTimeout <= 0 {
+		cfg.RequestTimeout = 60 * time.Second
+	}
+	if cfg.DiscoverTimeout <= 0 {
+		cfg.DiscoverTimeout = defaultDiscoverTimeout
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.ClientVersion == "" {
+		cfg.ClientVersion = "unknown"
+	}
+	return cfg
 }
 
 // Name returns the configured server name.
@@ -265,7 +278,7 @@ func (c *Client) Close() error {
 // in the spec.
 func (c *Client) initialize(ctx context.Context) error {
 	params := mcp.InitializeParams{
-		ProtocolVersion: mcp.ProtocolVersion,
+		ProtocolVersion: mcp.LatestLegacyProtocolVersion,
 	}
 	params.ClientInfo.Name = "rousseau-agent"
 	params.ClientInfo.Version = c.version
@@ -273,6 +286,12 @@ func (c *Client) initialize(ctx context.Context) error {
 	if err := c.request(ctx, mcp.MethodInitialize, params, &result); err != nil {
 		return err
 	}
+	// The server answers with the version it will speak; a client that
+	// does not support it must not continue.
+	if !mcp.IsLegacyProtocolVersion(result.ProtocolVersion) {
+		return fmt.Errorf("%w: server chose %q", errNoMutualVersion, result.ProtocolVersion)
+	}
+	c.protocolVersion = result.ProtocolVersion
 	c.logger.Info("mcp.client.initialized",
 		slog.String("server_name", result.ServerInfo.Name),
 		slog.String("server_version", result.ServerInfo.Version),
@@ -295,6 +314,13 @@ func (c *Client) request(ctx context.Context, method string, params, result any)
 	c.pending.Store(id, respCh)
 	defer c.pending.Delete(id)
 
+	if c.modern {
+		withM, err := withMeta(params, c.modernMeta())
+		if err != nil {
+			return fmt.Errorf("mcp/client %s: %s params: %w", c.name, method, err)
+		}
+		params = withM
+	}
 	env, err := buildRequest(id, method, params)
 	if err != nil {
 		return err
@@ -314,22 +340,34 @@ func (c *Client) request(ctx context.Context, method string, params, result any)
 
 	select {
 	case resp := <-respCh:
-		if resp.Error != nil {
-			return fmt.Errorf("mcp/client %s: server returned error on %s: [%d] %s", c.name, method, resp.Error.Code, resp.Error.Message)
-		}
-		if result != nil && len(resp.Result) > 0 {
-			if err := json.Unmarshal(resp.Result, result); err != nil {
-				return fmt.Errorf("mcp/client %s: decode %s result: %w", c.name, method, err)
-			}
-		}
-		return nil
+		return c.decodeResponse(method, resp, result)
 	case <-ctx.Done():
+		c.cancelRequest(id, "cancelled by client")
 		return ctx.Err()
 	case <-timer.C:
+		c.cancelRequest(id, "timed out")
 		return fmt.Errorf("mcp/client %s: %s timed out after %s", c.name, method, timeout)
 	case <-c.done:
 		return errors.New("mcp/client: closed while awaiting response")
 	}
+}
+
+// decodeResponse turns a response envelope into result or an error.
+func (c *Client) decodeResponse(method string, resp mcp.Envelope, result any) error {
+	if resp.Error != nil {
+		return &RPCError{Server: c.name, Method: method, Code: resp.Error.Code, Message: resp.Error.Message, Data: resp.Error.Data}
+	}
+	if c.modern {
+		if err := checkResultType(resp.Result); err != nil {
+			return fmt.Errorf("mcp/client %s: %s: %w", c.name, method, err)
+		}
+	}
+	if result != nil && len(resp.Result) > 0 {
+		if err := json.Unmarshal(resp.Result, result); err != nil {
+			return fmt.Errorf("mcp/client %s: decode %s result: %w", c.name, method, err)
+		}
+	}
+	return nil
 }
 
 // notify sends a JSON-RPC notification (no ID, no response).

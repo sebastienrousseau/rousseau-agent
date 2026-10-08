@@ -389,25 +389,17 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 
 	if userMsg, ok := buildUserMessage(msg, r.transport); ok {
 		sess.Append(userMsg)
+		// Persist the sender's message before the turn runs: a turn
+		// cut off by a crash, timeout or restart must not lose it.
+		r.saveSession(ctx, sess)
 	}
-	if r.journal != nil && r.transport != "" {
-		if err := r.journal.Begin(ctx, r.transport, msg.From, msg.Body); err != nil {
-			r.logger.Warn("router.journal_failed", slog.String("err", err.Error()))
-		}
-		defer func() {
-			// Background: the turn's ctx may already be cancelled
-			// (timeout, /cancel), and the record must still clear.
-			if err := r.journal.End(context.Background(), r.transport, msg.From); err != nil {
-				r.logger.Warn("router.journal_failed", slog.String("err", err.Error()))
-			}
-		}()
-	}
+	defer r.journalTurn(ctx, msg.From, msg.Body)()
 	final, err := r.runTurn(ctx, sess)
+	// Save on failure too: tool calls that already ran are side
+	// effects the next turn's model must see in the history.
+	r.saveSession(ctx, sess)
 	if err != nil {
 		return "", fmt.Errorf("router: turn: %w", err)
-	}
-	if err := r.store.Save(ctx, sess); err != nil {
-		r.logger.Warn("router.save_failed", slog.String("err", err.Error()))
 	}
 	reply := firstText(final)
 	if rotatedFrom != "" {
@@ -415,6 +407,32 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 			r.idleAfter, shortSessionID(rotatedFrom), reply)
 	}
 	return reply, nil
+}
+
+// journalTurn records that from's turn has started and returns the
+// func that records its end. Without a journal both are no-ops.
+func (r *Router) journalTurn(ctx context.Context, from, body string) func() {
+	if r.journal == nil || r.transport == "" {
+		return func() {}
+	}
+	if err := r.journal.Begin(ctx, r.transport, from, body); err != nil {
+		r.logger.Warn("router.journal_failed", slog.String("err", err.Error()))
+	}
+	return func() {
+		// Background: the turn's ctx may already be cancelled
+		// (timeout, /cancel), and the record must still clear.
+		if err := r.journal.End(context.Background(), r.transport, from); err != nil {
+			r.logger.Warn("router.journal_failed", slog.String("err", err.Error()))
+		}
+	}
+}
+
+// saveSession persists sess, detached from ctx's cancellation so a
+// cancelled or timed-out turn still records its progress.
+func (r *Router) saveSession(ctx context.Context, sess *agent.Session) {
+	if err := r.store.Save(context.WithoutCancel(ctx), sess); err != nil {
+		r.logger.Warn("router.save_failed", slog.String("err", err.Error()))
+	}
 }
 
 // syncCommands lists every leading token the router answers

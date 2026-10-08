@@ -14,10 +14,36 @@ import "encoding/json"
 
 // Protocol identifier constants.
 const (
-	// ProtocolVersion is the MCP revision this server implements.
-	ProtocolVersion = "2024-11-05"
+	// ModernProtocolVersion is the stateless revision: no initialize
+	// handshake, version and capabilities in every request's _meta.
+	ModernProtocolVersion = "2026-07-28"
+	// LatestLegacyProtocolVersion is the newest revision that still
+	// uses the initialize handshake.
+	LatestLegacyProtocolVersion = "2025-11-25"
 	// jsonRPCVersion is always "2.0" for MCP.
 	jsonRPCVersion = "2.0"
+)
+
+// LegacyProtocolVersions are the initialize-handshake revisions this
+// module speaks, newest first.
+var LegacyProtocolVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
+
+// IsLegacyProtocolVersion reports whether v is one of
+// LegacyProtocolVersions.
+func IsLegacyProtocolVersion(v string) bool {
+	for _, l := range LegacyProtocolVersions {
+		if l == v {
+			return true
+		}
+	}
+	return false
+}
+
+// _meta keys the 2026-07-28 revision requires on every request.
+const (
+	MetaProtocolVersion    = "io.modelcontextprotocol/protocolVersion"
+	MetaClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
+	MetaClientInfo         = "io.modelcontextprotocol/clientInfo"
 )
 
 // Method names published by the server.
@@ -31,6 +57,10 @@ const (
 	MethodPromptsList   = "prompts/list"
 	MethodShutdown      = "shutdown"
 	MethodPing          = "ping"
+	// MethodDiscover is the 2026-07-28 replacement for initialize.
+	MethodDiscover = "server/discover"
+	// MethodCancelled tells the peer a request was abandoned.
+	MethodCancelled = "notifications/cancelled"
 )
 
 // Envelope is the JSON-RPC 2.0 request / notification / response
@@ -59,7 +89,20 @@ const (
 	CodeInvalidParams  = -32602
 	CodeInternalError  = -32603
 	CodeToolNotFound   = -32000
+	// CodeMissingClientCapability (2026-07-28): the call needs a
+	// capability the client did not declare.
+	CodeMissingClientCapability = -32021
+	// CodeUnsupportedProtocolVersion (2026-07-28): the server does not
+	// speak the requested revision; data.supported lists what it does.
+	CodeUnsupportedProtocolVersion = -32022
 )
+
+// DiscoverResult is the server/discover response (2026-07-28).
+type DiscoverResult struct {
+	SupportedVersions []string        `json:"supportedVersions"`
+	Capabilities      json.RawMessage `json:"capabilities,omitempty"`
+	Instructions      string          `json:"instructions,omitempty"`
+}
 
 // InitializeParams is the payload sent by the host at the start of a
 // session. rousseau only inspects the client's protocol version — we

@@ -49,12 +49,44 @@ entries change behaviour for existing deployments.
   (`agent.compression.trigger_tokens`, default 120000), so a few
   messages carrying large tool outputs are condensed before they
   overflow the context window.
+- `rousseau evidence` emits a compliance evidence pack: build stamp,
+  config hash and summary, licence state, audit-chain head and HMAC key
+  fingerprint, effective controls, retention settings, the doctor
+  report and, with `--daemon`, readiness and `rousseau_*` metrics, with
+  each field mapped to the EU AI Act, GDPR, DORA, SOC 2 and HIPAA
+  articles in `docs/compliance/`. The pack holds no secrets.
 - MCP client: `tools/list` follows `nextCursor`, so servers that page
   their tools no longer lose everything after the first page; a `ping`
   from the server is answered and other server requests get "method
   not found" instead of silence; and a tool result with `isError`
   passes the server's error text to the model instead of a generic
   "server reported error".
+- MCP client speaks protocol revision 2026-07-28: it probes each server
+  with `server/discover` and, when the server answers, sends the version
+  and client info in every request's `_meta` with no `initialize`.
+  Other servers fall back to `initialize`, now offering 2025-11-25 and
+  accepting 2025-06-18, 2025-03-26 or 2024-11-05; any other negotiated
+  version is refused. Abandoned requests send `notifications/cancelled`.
+- MCP server (`rousseau mcp`) speaks protocol revision 2026-07-28: it
+  answers `server/discover`, serves requests that carry the version in
+  `_meta` without `initialize` (results marked `resultType: complete`,
+  `tools/list` with cache hints), and refuses other stateless versions
+  with -32022 and the supported list. `initialize` now echoes the
+  client's version when it is 2025-11-25, 2025-06-18, 2025-03-26 or
+  2024-11-05 instead of always answering 2024-11-05. Unknown
+  notifications are no longer answered with an error.
+- Durable turns: the agent saves the session after every complete
+  iteration, and the router saves the sender's message before the turn
+  and the session after a failed, timed-out or cancelled turn. Before,
+  only a successful turn was saved, so a failure lost the message and
+  every tool call that had already run. The restart notice now lists
+  the tool calls that ran before the interruption, read from that
+  checkpoint.
+- `agent.resume_interrupted` (off by default) continues a turn a
+  restart cut off from its last checkpoint and delivers the reply,
+  marked as resumed; a turn that had finished but whose reply was never
+  delivered is re-sent without a model call. If resuming fails, the
+  sender gets the notice listing what had run.
 - The provider router (`provider: router`) now streams: a turn is
   streamed from the routed child, and a child without streaming is
   replayed as one text delta. Before, routing turned token streaming

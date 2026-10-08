@@ -107,11 +107,36 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	return scanner.Err()
 }
 
+// staticResults answers the methods whose result never varies.
+var staticResults = map[string]any{
+	MethodPing:          struct{}{},
+	MethodResourcesList: map[string]any{"resources": []any{}},
+	MethodPromptsList:   map[string]any{"prompts": []any{}},
+	MethodShutdown:      struct{}{},
+}
+
 // dispatch routes a single envelope to the appropriate handler.
-// Returns nil when the envelope was a notification (no response).
+// Returns nil when the envelope was a notification (no response). A
+// request naming a protocol version in params._meta is a 2026-07-28
+// stateless request; anything else is the initialize-era protocol.
 func (s *Server) dispatch(ctx context.Context, env Envelope) *Envelope {
 	if env.JSONRPC != jsonRPCVersion {
 		return errorResponse(env.ID, CodeInvalidRequest, "expected jsonrpc=2.0")
+	}
+	meta, stateless := requestMeta(env.Params)
+	if !stateless {
+		return s.route(ctx, env)
+	}
+	if bad := checkStatelessMeta(env, meta); bad != nil {
+		return bad
+	}
+	return markComplete(s.route(ctx, env), env.Method)
+}
+
+// route answers one request or notification by method.
+func (s *Server) route(ctx context.Context, env Envelope) *Envelope {
+	if result, ok := staticResults[env.Method]; ok {
+		return okResponse(env.ID, result)
 	}
 	switch env.Method {
 	case MethodInitialize:
@@ -119,28 +144,35 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) *Envelope {
 	case MethodInitialized:
 		// Notification — no reply.
 		return nil
-	case MethodPing:
-		return okResponse(env.ID, struct{}{})
+	case MethodDiscover:
+		return s.handleDiscover(env)
 	case MethodToolsList:
 		return s.handleToolsList(env)
 	case MethodToolsCall:
 		return s.handleToolsCall(ctx, env)
-	case MethodResourcesList:
-		return okResponse(env.ID, map[string]any{"resources": []any{}})
-	case MethodPromptsList:
-		return okResponse(env.ID, map[string]any{"prompts": []any{}})
-	case MethodShutdown:
-		return okResponse(env.ID, struct{}{})
 	default:
+		if len(env.ID) == 0 {
+			// Unknown notifications (e.g. notifications/cancelled for a
+			// call that already finished) are ignored, not answered.
+			return nil
+		}
 		return errorResponse(env.ID, CodeMethodNotFound, "method not found: "+env.Method)
 	}
 }
 
+// handleInitialize negotiates the initialize-era revision: the
+// client's version is echoed when the server speaks it, otherwise the
+// server answers with its newest initialize-era revision and the
+// client decides whether to continue.
 func (s *Server) handleInitialize(env Envelope) *Envelope {
-	// The client's protocol version is informational for now — we
-	// declare ours and hope negotiation via capabilities is enough.
+	var params InitializeParams
+	_ = json.Unmarshal(env.Params, &params) //nolint:errcheck // missing or malformed params negotiate the default
+	version := LatestLegacyProtocolVersion
+	if IsLegacyProtocolVersion(params.ProtocolVersion) {
+		version = params.ProtocolVersion
+	}
 	return okResponse(env.ID, InitializeResult{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: version,
 		ServerInfo:      s.info,
 		Capabilities: ServerCapabilities{
 			Tools: &ToolCapability{ListChanged: false},
