@@ -10,6 +10,15 @@ updates:
     labels:
       - dependencies
       - go
+    # One PR per family instead of one per module: the otel modules move
+    # together, and so do the golang.org/x modules.
+    groups:
+      opentelemetry:
+        patterns:
+          - "go.opentelemetry.io/*"
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -39,3 +48,15 @@ updates:
     labels:
       - dependencies
       - docker
+    groups:
+      docker:
+        patterns:
+          - "*"
+    # A new Go minor or Node major changes the build toolchain, so it is
+    # a deliberate change (go.mod's toolchain line, Node LTS timing), not
+    # a weekly bump. Digest and patch updates still come through.
+    ignore:
+      - dependency-name: "golang"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
