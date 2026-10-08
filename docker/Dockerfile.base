@@ -32,7 +32,7 @@
 #   docker pull mcr.microsoft.com/devcontainers/base:ubuntu
 #   docker inspect --format '{{index .RepoDigests 0}}' \
 #     mcr.microsoft.com/devcontainers/base:ubuntu
-FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:0455d069f6d0bef82131385092fd44c00315b60ac07a19eb969fb2e50bf59583
+FROM mcr.microsoft.com/devcontainers/base:ubuntu@sha256:edfb983aab9c579a385dc23c57d7d3703f5ec920124d99c16204a2cac465aab4
 
 ARG DEBIAN_FRONTEND=noninteractive
 
