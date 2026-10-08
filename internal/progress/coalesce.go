@@ -38,8 +38,12 @@ type State struct {
 	// Outcome is the terminal Kind (KindTurnFinished, KindError,
 	// KindCancelled) once Terminal is set.
 	Outcome Kind
-	// Err carries the failure text for a terminal KindError.
+	// Err carries the failure text for a terminal KindError. It is
+	// never rendered into chat; see Ref.
 	Err string
+	// Ref is the reference id of a terminal failure, rendered in place
+	// of Err so the reader can quote it to whoever reads the logs.
+	Ref string
 	// Bullets is the ordered log of one action per line the turn has
 	// taken so far — the render draws them with a leading glyph
 	// (● success, ✗ failure, ⊘ denied) above the spinner, mirroring
@@ -183,6 +187,7 @@ func (c *Coalescer) Absorb(ev Event) {
 		c.st.Terminal = true
 		c.st.Outcome = ev.Kind
 		c.st.Err = ev.Err
+		c.st.Ref = ev.Ref
 		c.st.Running = nil
 	}
 }

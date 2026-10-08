@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -192,7 +193,7 @@ func newSessionSearchCmd(opts *Options) *cobra.Command {
 			return nil
 		},
 	}
-	c.Flags().IntVar(&limit, "limit", 20, "cap on hits returned")
+	c.Flags().IntVar(&limit, "limit", sqlitestore.DefaultSearchLimit, fmt.Sprintf("cap on hits returned (1..%d)", sqlitestore.MaxSearchLimit))
 	return c
 }
 
@@ -287,7 +288,8 @@ func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
 			"e.g. whatsapp:15551234567@s.whatsapp.net, or the bare identifier when only one\n" +
 			"transport holds it (it is refused when several do). Stop the daemon first so it does\n" +
 			"not recreate a session mid-erasure. Not covered: the WhatsApp device store\n" +
-			"(whatsapp.db), sessions saved before sender tracking, and backups.",
+			"(whatsapp.db), sessions saved before sender tracking, and backups (SQLite migration\n" +
+			"backups next to the database are listed for you to delete; on Postgres, your pg_dumps).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !confirm {
@@ -314,21 +316,33 @@ func newSessionDeleteBySenderCmd(opts *Options) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("store erased, but claude transcripts were not: %w", err)
 			}
-			out := cmd.OutOrStdout()
-			_, _ = fmt.Fprintf(out, "erased %s: %d session(s), %d claude transcript file(s)\n", key, len(rep.SessionIDs), files) //nolint:errcheck // CLI output
-			tables := make([]string, 0, len(rep.Rows))
-			for t := range rep.Rows {
-				tables = append(tables, t)
-			}
-			sort.Strings(tables)
-			for _, t := range tables {
-				_, _ = fmt.Fprintf(out, "  %-20s %d row(s)\n", t, rep.Rows[t]) //nolint:errcheck // CLI output
-			}
+			printEraseReport(cmd.OutOrStdout(), key, rep, files)
 			return nil
 		},
 	}
 	c.Flags().BoolVar(&confirm, "yes", false, "confirm erasure")
 	return c
+}
+
+// printEraseReport writes what an erasure removed, then any backups
+// that still hold the erased data.
+func printEraseReport(out io.Writer, key string, rep sqlitestore.EraseReport, files int) {
+	_, _ = fmt.Fprintf(out, "erased %s: %d session(s), %d claude transcript file(s)\n", key, len(rep.SessionIDs), files) //nolint:errcheck // CLI output
+	tables := make([]string, 0, len(rep.Rows))
+	for t := range rep.Rows {
+		tables = append(tables, t)
+	}
+	sort.Strings(tables)
+	for _, t := range tables {
+		_, _ = fmt.Fprintf(out, "  %-20s %d row(s)\n", t, rep.Rows[t]) //nolint:errcheck // CLI output
+	}
+	if len(rep.Backups) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(out, "migration backups still hold the erased data; delete them (or re-take them) to complete the erasure:") //nolint:errcheck // CLI output
+	for _, b := range rep.Backups {
+		_, _ = fmt.Fprintf(out, "  %s\n", b) //nolint:errcheck // CLI output
+	}
 }
 
 // senderKeyLister is implemented by stores that can map a bare sender

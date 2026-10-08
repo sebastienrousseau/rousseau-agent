@@ -91,3 +91,16 @@ func TestLogger_NilIsNoop(t *testing.T) {
 		t.Error("Logger: WithLogger(_, nil) should not overwrite existing logger")
 	}
 }
+
+func TestSystemPrompt_RoundTrip(t *testing.T) {
+	ctx := toolcontext.WithSystemPrompt(context.Background(), "be terse")
+	if got := toolcontext.SystemPrompt(ctx); got != "be terse" {
+		t.Errorf("SystemPrompt = %q, want %q", got, "be terse")
+	}
+	if got := toolcontext.SystemPrompt(context.Background()); got != "" {
+		t.Errorf("SystemPrompt on empty ctx = %q, want empty", got)
+	}
+	if got := toolcontext.SystemPrompt(toolcontext.WithSystemPrompt(ctx, "")); got != "be terse" {
+		t.Errorf("WithSystemPrompt(_, \"\") overwrote existing prompt: %q", got)
+	}
+}

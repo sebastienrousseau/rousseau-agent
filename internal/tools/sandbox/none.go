@@ -14,7 +14,9 @@ type None struct{}
 // Kind returns "none".
 func (*None) Kind() string { return "none" }
 
-// Run executes cmd via os/exec with no additional isolation.
+// Run executes cmd via os/exec with no additional isolation. Output is
+// capped at [DefaultOutputCap] while the command runs, and on
+// cancellation the whole process group is killed.
 func (*None) Run(ctx context.Context, cmd Command) (Result, error) {
 	if cmd.Path == "" {
 		return Result{}, errors.New("sandbox/none: Command.Path is required")
@@ -29,9 +31,10 @@ func (*None) Run(ctx context.Context, cmd Command) (Result, error) {
 	if len(cmd.Stdin) > 0 {
 		c.Stdin = bytes.NewReader(cmd.Stdin)
 	}
-	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
+	PrepareCommand(c)
+	buf := NewCappedBuffer(DefaultOutputCap)
+	c.Stdout = buf
+	c.Stderr = buf
 
 	err := c.Run()
 	res := Result{CombinedOutput: buf.String()}

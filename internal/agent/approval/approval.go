@@ -46,9 +46,13 @@ package approval
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +74,12 @@ type Rule struct {
 	// Timeout bounds how long the approver waits for the count
 	// to be reached. Zero uses [DefaultTimeout].
 	Timeout time.Duration
+	// ApproverGroups, when set, restricts who may vote: only a voter
+	// whose verified SSO identity carries one of these groups
+	// (exact match on [sso.Identity.Groups]) counts toward
+	// NeededApprovals or can deny. Empty lets any signed-in subject
+	// other than the requester vote.
+	ApproverGroups []string
 }
 
 // DefaultTimeout is the fallback timeout when a Rule leaves
@@ -91,13 +101,24 @@ const (
 
 // PendingRecord is one in-flight approval request.
 type PendingRecord struct {
-	Token       string
-	Tool        string
-	Requester   string // SSO subject; never anonymous — Approver refuses to enqueue without one
-	SessionID   string
-	RequestedAt time.Time
-	ExpiresAt   time.Time
-	NeededCount int
+	Token     string
+	Tool      string
+	Requester string // SSO subject; never anonymous — Approver refuses to enqueue without one
+	SessionID string
+	// InputSHA256 is the hex SHA-256 of the exact tool input the vote
+	// is about. /approve must quote its first DigestPrefixLen
+	// characters, so a vote cannot land on a different call.
+	InputSHA256 string
+	// InputSummary is a short, human-readable form of the input
+	// (path, command line, query) shown to voters.
+	InputSummary string
+	RequestedAt  time.Time
+	ExpiresAt    time.Time
+	NeededCount  int
+	// ApproverGroups restricts voters to members of these SSO
+	// groups; empty means any signed-in non-requester. See
+	// [Rule.ApproverGroups].
+	ApproverGroups []string
 
 	// Votes records approver → verdict. Distinct-approver
 	// guarantee: map keys deduplicate.
@@ -178,29 +199,91 @@ func randomToken() string {
 	return hex.EncodeToString(b[:])
 }
 
+// DigestPrefixLen is how many hex characters of InputSHA256 a voter
+// quotes in /approve.
+const DigestPrefixLen = 8
+
+// PendingInput describes one request for votes.
+type PendingInput struct {
+	Tool      string
+	Input     json.RawMessage
+	Requester string
+	SessionID string
+	Needed    int
+	Timeout   time.Duration
+	// ApproverGroups restricts voters; see [Rule.ApproverGroups].
+	ApproverGroups []string
+}
+
 // Enqueue records a pending request and returns it. The
 // [Approver] passes the returned record to [Wait].
-func (p *PendingManager) Enqueue(ctx context.Context, tool, requester, sessionID string, needed int, timeout time.Duration) *PendingRecord {
+func (p *PendingManager) Enqueue(ctx context.Context, in PendingInput) *PendingRecord {
+	timeout := in.Timeout
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	sum := sha256.Sum256(in.Input)
 	now := p.nowFn()
 	rec := &PendingRecord{
-		Token:       p.tokenGen(),
-		Tool:        tool,
-		Requester:   requester,
-		SessionID:   sessionID,
-		RequestedAt: now,
-		ExpiresAt:   now.Add(timeout),
-		NeededCount: needed,
-		Votes:       map[string]Verdict{},
-		resolved:    make(chan struct{}),
+		Token:          p.tokenGen(),
+		Tool:           in.Tool,
+		Requester:      in.Requester,
+		SessionID:      in.SessionID,
+		InputSHA256:    hex.EncodeToString(sum[:]),
+		InputSummary:   agent.SummarizeToolInput(in.Tool, in.Input),
+		RequestedAt:    now,
+		ExpiresAt:      now.Add(timeout),
+		NeededCount:    in.Needed,
+		ApproverGroups: slices.Clone(in.ApproverGroups),
+		Votes:          map[string]Verdict{},
+		resolved:       make(chan struct{}),
 	}
 	p.mu.Lock()
 	p.records[rec.Token] = rec
 	p.mu.Unlock()
 	p.emitter.EmitApprovalRequest(ctx, *rec)
 	return rec
+}
+
+// Lookup returns a copy of the live record for token.
+func (p *PendingManager) Lookup(token string) (PendingRecord, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, ok := p.records[token]
+	if !ok {
+		return PendingRecord{}, false
+	}
+	return rec.snapshot(), true
+}
+
+// List returns copies of every live record, oldest first.
+func (p *PendingManager) List() []PendingRecord {
+	p.mu.Lock()
+	out := make([]PendingRecord, 0, len(p.records))
+	for _, rec := range p.records {
+		out = append(out, rec.snapshot())
+	}
+	p.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].RequestedAt.Before(out[j].RequestedAt) })
+	return out
+}
+
+// snapshot copies the exported fields; callers hold p.mu.
+func (r *PendingRecord) snapshot() PendingRecord {
+	cp := *r
+	cp.Votes = make(map[string]Verdict, len(r.Votes))
+	for k, v := range r.Votes {
+		cp.Votes[k] = v
+	}
+	cp.resolved = nil
+	return cp
+}
+
+// DigestMatches reports whether prefix is a DigestPrefixLen-or-longer
+// prefix of the record's input digest.
+func (r PendingRecord) DigestMatches(prefix string) bool {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	return len(prefix) >= DigestPrefixLen && strings.HasPrefix(r.InputSHA256, prefix)
 }
 
 // Wait blocks until the record resolves (count reached, denied,
@@ -262,6 +345,8 @@ func (p *PendingManager) finalise(ctx context.Context, rec *PendingRecord, verdi
 // Rules:
 //   - unknown token → VoteResultUnknownToken
 //   - approver is the original requester → VoteResultSelfApproveRejected
+//   - rule has approver groups and ctx's verified identity is not the
+//     approver or is in none of them → VoteResultNotInApproverGroup
 //   - already voted → VoteResultDuplicateVote (idempotent)
 //   - deny → VoteResultDenied; record resolved immediately
 //   - approve; count not yet reached → VoteResultCounted (returns current/needed)
@@ -279,28 +364,15 @@ func (p *PendingManager) Vote(ctx context.Context, token, approver string, verdi
 	// The map access + resolved check + Votes mutation all
 	// need the mutex; unlock only at the end of the branch
 	// that doesn't reach the finalise path.
-	select {
-	case <-rec.resolved:
+	if kind, rejected := rec.rejectVote(ctx, approver); rejected {
 		p.mu.Unlock()
-		return VoteResult{Kind: VoteResultAlreadyResolved}
-	default:
-	}
-	if approver == rec.Requester {
-		p.mu.Unlock()
-		p.emitter.EmitApprovalVote(ctx, token, approver, verdict, false)
-		return VoteResult{Kind: VoteResultSelfApproveRejected}
-	}
-	if _, already := rec.Votes[approver]; already {
-		p.mu.Unlock()
-		return VoteResult{Kind: VoteResultDuplicateVote}
+		if kind.audited() {
+			p.emitter.EmitApprovalVote(ctx, token, approver, verdict, false)
+		}
+		return VoteResult{Kind: kind}
 	}
 	rec.Votes[approver] = verdict
-	countedApprovals := 0
-	for _, v := range rec.Votes {
-		if v == VerdictApprove {
-			countedApprovals++
-		}
-	}
+	countedApprovals := rec.approvals()
 	p.mu.Unlock()
 
 	p.emitter.EmitApprovalVote(ctx, token, approver, verdict, true)
@@ -316,8 +388,60 @@ func (p *PendingManager) Vote(ctx context.Context, token, approver string, verdi
 	return VoteResult{Kind: VoteResultCounted, Approvals: countedApprovals, Needed: rec.NeededCount}
 }
 
+// rejectVote reports why approver may not vote on r, if they may
+// not. Caller holds p.mu.
+func (r *PendingRecord) rejectVote(ctx context.Context, approver string) (VoteResultKind, bool) {
+	select {
+	case <-r.resolved:
+		return VoteResultAlreadyResolved, true
+	default:
+	}
+	if approver == r.Requester {
+		return VoteResultSelfApproveRejected, true
+	}
+	if !r.mayVote(ctx, approver) {
+		return VoteResultNotInApproverGroup, true
+	}
+	if _, already := r.Votes[approver]; already {
+		return VoteResultDuplicateVote, true
+	}
+	return 0, false
+}
+
+// mayVote applies the approver-group restriction: with groups set,
+// the voter must be the verified identity on ctx and carry one of
+// them. The voter string alone is not trusted for group membership.
+func (r *PendingRecord) mayVote(ctx context.Context, approver string) bool {
+	if len(r.ApproverGroups) == 0 {
+		return true
+	}
+	id, ok := sso.IdentityFromContext(ctx)
+	if !ok || id.Subject != approver {
+		return false
+	}
+	return slices.ContainsFunc(id.Groups, func(g string) bool { return slices.Contains(r.ApproverGroups, g) })
+}
+
+// approvals counts the approve votes. Caller holds p.mu.
+func (r *PendingRecord) approvals() int {
+	n := 0
+	for _, v := range r.Votes {
+		if v == VerdictApprove {
+			n++
+		}
+	}
+	return n
+}
+
 // VoteResultKind is the enum of Vote outcomes.
 type VoteResultKind int
+
+// audited reports whether a rejected vote of this kind is still
+// written to the audit trail (as not counted): attempts by the wrong
+// person are worth a record, duplicates and late votes are not.
+func (k VoteResultKind) audited() bool {
+	return k == VoteResultSelfApproveRejected || k == VoteResultNotInApproverGroup
+}
 
 // VoteResultKind constants.
 const (
@@ -347,6 +471,10 @@ const (
 	// before this vote landed (approver's chat message raced
 	// the timeout, for instance).
 	VoteResultAlreadyResolved
+	// VoteResultNotInApproverGroup means the rule names approver
+	// groups and the voter's verified identity is in none of them
+	// (or is not the voter's). Audited but not counted.
+	VoteResultNotInApproverGroup
 )
 
 // VoteResult carries the Vote outcome + progress counters.
@@ -378,6 +506,8 @@ func (r VoteResult) String() string {
 		return "denied"
 	case VoteResultAlreadyResolved:
 		return "already resolved"
+	case VoteResultNotInApproverGroup:
+		return "you are not in an approver group for this request"
 	default:
 		return "unknown result"
 	}
@@ -417,15 +547,25 @@ func NewApprover(rules []Rule, inner agent.Approver, pending *PendingManager) (*
 // Approve satisfies [agent.Approver]. Blocks until the pending
 // entry resolves or the ctx / timeout fires.
 func (a *Approver) Approve(ctx context.Context, req agent.ApprovalRequest) (agent.Decision, string) {
+	// Policy first: a group, Rego, risk or pattern deny ends the
+	// request before anyone is asked to vote. An inner allow does not
+	// skip the vote for a covered tool.
+	if d, why := a.inner.Approve(ctx, req); d == agent.DecisionDeny {
+		return d, why
+	}
 	rule, covered := a.rules[strings.ToLower(req.ToolName)]
 	if !covered {
-		return a.inner.Approve(ctx, req)
+		return agent.DecisionAllow, ""
 	}
 	id, ok := sso.IdentityFromContext(ctx)
 	if !ok || id.Subject == "" {
 		return agent.DecisionDeny, "governance: multi-party approval requires an authenticated requester (sign in via /login)"
 	}
-	rec := a.pending.Enqueue(ctx, req.ToolName, id.Subject, req.SessionID, rule.NeededApprovals, rule.Timeout)
+	rec := a.pending.Enqueue(ctx, PendingInput{
+		Tool: req.ToolName, Input: req.Input, Requester: id.Subject,
+		SessionID: req.SessionID, Needed: rule.NeededApprovals, Timeout: rule.Timeout,
+		ApproverGroups: rule.ApproverGroups,
+	})
 	return a.pending.Wait(ctx, rec)
 }
 

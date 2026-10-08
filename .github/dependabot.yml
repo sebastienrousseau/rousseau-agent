@@ -24,3 +24,18 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # Base-image digests in docker/Dockerfile* (L-28). Dependabot bumps a
+  # `FROM image:tag@sha256:…` pin to the tag's new digest. The ARG-held
+  # pins (DOTFILES_REF, tool versions and sums) are outside its reach:
+  # see .github/workflows/dotfiles-pin.yml and the refresh notes in each
+  # Dockerfile.
+  - package-ecosystem: docker
+    directory: "/docker"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(docker)"
+    labels:
+      - dependencies
+      - docker

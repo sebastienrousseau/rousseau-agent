@@ -19,13 +19,16 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +64,26 @@ type Server struct {
 	// Zero-value skips signing — cards are served unsigned.
 	SigningKey ed25519.PrivateKey
 
+	// PublicURL is the operator-configured external base URL
+	// (a2a.server.public_url). The well-known AgentCard is signed only
+	// when it is set, and then always advertises this URL. Empty
+	// serves a request-derived card unsigned: a URL taken from Host /
+	// X-Forwarded-Host is attacker-controlled and must never carry
+	// the operator's signature.
+	PublicURL string
+	// TrustedProxies lists the reverse-proxy networks
+	// (a2a.server.trusted_proxies) whose X-Forwarded-Proto /
+	// X-Forwarded-Host headers are honoured. A request whose
+	// RemoteAddr is outside every prefix has those headers ignored.
+	TrustedProxies []netip.Prefix
+	// Logger receives operational warnings. Nil uses slog.Default.
+	Logger *slog.Logger
+
+	// MaxInflightPerPeer caps running tasks per peer. Zero uses 4.
+	MaxInflightPerPeer int
+	// MaxInflight caps running tasks across all peers. Zero uses 32.
+	MaxInflight int
+
 	// TaskRetention is how long a terminal task stays queryable
 	// before it is evicted from memory. Zero uses 10 minutes. Without
 	// eviction every accepted task (payload plus up to 256 updates)
@@ -69,16 +92,37 @@ type Server struct {
 
 	mu    sync.Mutex
 	tasks map[string]*taskState
+	// inflight counts running tasks per owner; inflightTotal across
+	// all owners. Guarded by mu.
+	inflight      map[string]int
+	inflightTotal int
 	// baseCtx is the Serve context; task handlers derive from it so
 	// shutdown cancels them. Nil (tests calling spawnTask directly)
 	// falls back to context.Background.
 	baseCtx context.Context
 	// running joins task goroutines on shutdown.
 	running sync.WaitGroup
+	// unsignedOnce limits the "card served unsigned" warning to one
+	// line per process.
+	unsignedOnce sync.Once
+}
+
+// logger returns s.Logger or slog.Default.
+func (s *Server) logger() *slog.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	return slog.Default()
 }
 
 // defaultTaskRetention is the terminal-task eviction delay.
 const defaultTaskRetention = 10 * time.Minute
+
+// Default in-flight caps: per authenticated peer and server-wide.
+const (
+	defaultMaxInflightPerPeer = 4
+	defaultMaxInflight        = 32
+)
 
 // shutdownJoinTimeout bounds how long Serve waits for running task
 // handlers after cancelling them.
@@ -120,10 +164,7 @@ func (s *Server) serveListener(ctx context.Context, ln net.Listener) error {
 	s.baseCtx = taskCtx
 	s.mu.Unlock()
 
-	srv := &http.Server{
-		Handler:           s.mux(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := HTTPServer(s.mux())
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	select {
@@ -140,6 +181,19 @@ func (s *Server) serveListener(ctx context.Context, ln net.Listener) error {
 			return nil
 		}
 		return err
+	}
+}
+
+// HTTPServer returns the http.Server the A2A endpoint is served with:
+// header, body and idle deadlines bound slow or parked connections.
+// There is deliberately no WriteTimeout — SSE task streams stay open
+// for as long as the task runs.
+func HTTPServer(h http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 }
 
@@ -188,7 +242,7 @@ func (s *Server) handleCard(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	var task a2a.Task
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&task); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid task body: "+err.Error())
+		writeErr(w, http.StatusBadRequest, s.peerError("invalid task body", err))
 		return
 	}
 	if task.TaskID == "" {
@@ -198,9 +252,12 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "task must set prompt or skill_name")
 		return
 	}
-	task.Peer = peerFromContext(r.Context())
 
-	state := s.spawnTask(task)
+	state, err := s.spawnTask(r.Context(), task)
+	if err != nil {
+		writeErr(w, spawnErrStatus(err), s.spawnErrText(err))
+		return
+	}
 	writeJSON(w, http.StatusAccepted, map[string]string{
 		"task_id": state.id,
 		"status":  string(a2a.TaskStatusRunning),
@@ -209,7 +266,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	state := s.lookup(id)
+	state := s.lookupFor(r.Context(), id)
 	if state == nil {
 		writeErr(w, http.StatusNotFound, "unknown task_id")
 		return
@@ -257,7 +314,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	state := s.lookup(id)
+	state := s.lookupFor(r.Context(), id)
 	if state == nil {
 		writeErr(w, http.StatusNotFound, "unknown task_id")
 		return
@@ -274,10 +331,7 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 	if len(s.Auth) == 0 {
 		return h
 	}
-	tokens := make(map[string]struct{}, len(s.Auth))
-	for _, t := range s.Auth {
-		tokens[t] = struct{}{}
-	}
+	tokens := newTokenSet(s.Auth)
 	return func(w http.ResponseWriter, r *http.Request) {
 		hdr := r.Header.Get("Authorization")
 		if !strings.HasPrefix(hdr, "Bearer ") {
@@ -286,12 +340,38 @@ func (s *Server) authed(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		tok := strings.TrimPrefix(hdr, "Bearer ")
-		if _, ok := tokens[tok]; !ok {
+		if !tokens.contains(tok) {
 			writeErr(w, http.StatusForbidden, "invalid bearer token")
 			return
 		}
 		h(w, r.WithContext(context.WithValue(r.Context(), peerKey{}, PeerID(tok))))
 	}
+}
+
+// tokenSet is the bearer-token allowlist. It keeps only SHA-256
+// digests, so the plaintext tokens are not retained by the middleware,
+// and matches a presented token against every entry with
+// subtle.ConstantTimeCompare, so neither a map lookup's hashing and
+// bucket walk nor an early exit leaks how close a guess came.
+type tokenSet struct{ digests [][sha256.Size]byte }
+
+func newTokenSet(tokens []string) tokenSet {
+	ds := make([][sha256.Size]byte, 0, len(tokens))
+	for _, t := range tokens {
+		ds = append(ds, sha256.Sum256([]byte(t)))
+	}
+	return tokenSet{digests: ds}
+}
+
+// contains reports whether tok is in the set. It compares against all
+// entries without short-circuiting.
+func (ts tokenSet) contains(tok string) bool {
+	sum := sha256.Sum256([]byte(tok))
+	match := 0
+	for i := range ts.digests {
+		match |= subtle.ConstantTimeCompare(sum[:], ts.digests[i][:])
+	}
+	return match == 1
 }
 
 // peerKey is the context key for the authenticated peer identity.
@@ -313,56 +393,129 @@ func peerFromContext(ctx context.Context) string {
 	return id
 }
 
+// errTaskExists is returned by spawnTask when a client-chosen TaskID
+// is already in use. Routes map it to 409 / JSON-RPC -32602.
+var errTaskExists = errors.New("task id already exists")
+
+// errTooManyTasks is returned by spawnTask when the peer or the server
+// is at its in-flight cap. Routes map it to 429 / JSON-RPC -32029.
+var errTooManyTasks = errors.New("too many running tasks; retry later")
+
+// spawnErrStatus maps a spawnTask error to its REST status.
+func spawnErrStatus(err error) int {
+	switch {
+	case errors.Is(err, errTaskExists):
+		return http.StatusConflict
+	case errors.Is(err, errTooManyTasks):
+		return http.StatusTooManyRequests
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 // spawnTask records a new task, launches its Handler in a goroutine,
 // and returns the taskState so the caller can compose the response.
-func (s *Server) spawnTask(task a2a.Task) *taskState {
+//
+// The task's Peer is always taken from ctx (the authenticated request
+// context), never from the caller, so no route can omit or forge it.
+// The task is owned by that peer: lookupFor hides it from any other.
+// A TaskID that is already registered is refused with errTaskExists
+// rather than replacing the running task, and a peer (or the server)
+// at its in-flight cap is refused with errTooManyTasks.
+func (s *Server) spawnTask(ctx context.Context, task a2a.Task) (*taskState, error) {
+	task.Peer = peerFromContext(ctx)
 	s.mu.Lock()
 	base := s.baseCtx
 	s.mu.Unlock()
 	if base == nil {
 		base = context.Background()
 	}
-	ctx, cancel := context.WithCancel(base)
+	taskCtx, cancel := context.WithCancel(base)
 	state := &taskState{
 		id:     task.TaskID,
+		owner:  task.Peer,
 		task:   task,
 		cancel: cancel,
 		status: a2a.TaskStatusRunning,
 	}
-	s.mu.Lock()
-	s.tasks[state.id] = state
-	s.mu.Unlock()
+	if err := s.register(state); err != nil {
+		cancel()
+		return nil, err
+	}
 
 	s.running.Add(1)
-	go func() {
-		defer s.running.Done()
-		defer s.scheduleEvict(state.id)
-		emit := func(upd a2a.TaskUpdate) {
-			if upd.TaskID == "" {
-				upd.TaskID = state.id
-			}
-			if upd.At.IsZero() {
-				upd.At = time.Now().UTC()
-			}
-			state.emit(upd)
-		}
-		err := s.Handler.OnTask(ctx, task, emit)
-		if err != nil && !state.isTerminal() {
-			emit(a2a.TaskUpdate{
-				Status:      a2a.TaskStatusFailed,
-				Message:     err.Error(),
-				FailureCode: "handler_error",
-			})
-			return
-		}
-		// Handler returned nil but never emitted a terminal update —
-		// synthesize a completed marker so subscribers unblock.
-		if !state.isTerminal() {
-			emit(a2a.TaskUpdate{Status: a2a.TaskStatusCompleted})
-		}
-	}()
+	go s.runTask(taskCtx, state)
+	return state, nil
+}
 
-	return state
+// register adds state to the task map and takes an in-flight slot for
+// its owner, unless the id is taken or a cap is reached.
+func (s *Server) register(state *taskState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, taken := s.tasks[state.id]; taken {
+		return errTaskExists
+	}
+	if s.inflightTotal >= capOr(s.MaxInflight, defaultMaxInflight) ||
+		s.inflight[state.owner] >= capOr(s.MaxInflightPerPeer, defaultMaxInflightPerPeer) {
+		return errTooManyTasks
+	}
+	if s.inflight == nil {
+		s.inflight = make(map[string]int)
+	}
+	s.inflight[state.owner]++
+	s.inflightTotal++
+	s.tasks[state.id] = state
+	return nil
+}
+
+// release returns owner's in-flight slot when its task finishes.
+func (s *Server) release(owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inflightTotal--
+	if s.inflight[owner]--; s.inflight[owner] <= 0 {
+		delete(s.inflight, owner)
+	}
+}
+
+// capOr returns n, or def when n is not positive.
+func capOr(n, def int) int {
+	if n > 0 {
+		return n
+	}
+	return def
+}
+
+// runTask runs the Handler for one task and guarantees a terminal
+// update. Runs on its own goroutine; s.running tracks it.
+func (s *Server) runTask(ctx context.Context, state *taskState) {
+	defer s.running.Done()
+	defer s.scheduleEvict(state.id)
+	defer s.release(state.owner)
+	emit := func(upd a2a.TaskUpdate) {
+		if upd.TaskID == "" {
+			upd.TaskID = state.id
+		}
+		if upd.At.IsZero() {
+			upd.At = time.Now().UTC()
+		}
+		state.emit(upd)
+	}
+	err := s.Handler.OnTask(ctx, state.task, emit)
+	if err != nil && !state.isTerminal() {
+		emit(a2a.TaskUpdate{
+			Status:      a2a.TaskStatusFailed,
+			Message:     s.peerError("task failed", err, slog.String("task_id", state.id)),
+			FailureCode: "handler_error",
+		})
+		return
+	}
+	// Handler returned nil but never emitted a terminal update —
+	// synthesize a completed marker so subscribers unblock.
+	if !state.isTerminal() {
+		emit(a2a.TaskUpdate{Status: a2a.TaskStatusCompleted})
+	}
 }
 
 // scheduleEvict drops a finished task from the map after
@@ -399,6 +552,17 @@ func (s *Server) lookup(id string) *taskState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tasks[id]
+}
+
+// lookupFor returns the task only when the peer in ctx owns it. A
+// task owned by another peer is reported exactly like a missing one
+// so a peer cannot probe for other peers' task ids.
+func (s *Server) lookupFor(ctx context.Context, id string) *taskState {
+	state := s.lookup(id)
+	if state == nil || state.owner != peerFromContext(ctx) {
+		return nil
+	}
+	return state
 }
 
 // ---- helpers ---------------------------------------------------------

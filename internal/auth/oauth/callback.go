@@ -48,34 +48,7 @@ func (b *Broker) Serve(ctx context.Context, providerName, accountID string, open
 
 	resultC := make(chan CallbackResult, 1)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/oauth/callback/"+providerName, func(w http.ResponseWriter, r *http.Request) {
-		gotState := r.URL.Query().Get("state")
-		if gotState != state {
-			http.Error(w, "state mismatch", http.StatusBadRequest)
-			resultC <- CallbackResult{Err: errors.New("oauth: state mismatch on callback")}
-			return
-		}
-		if oerr := r.URL.Query().Get("error"); oerr != "" {
-			desc := r.URL.Query().Get("error_description")
-			http.Error(w, oerr+": "+desc, http.StatusBadRequest)
-			resultC <- CallbackResult{Err: fmt.Errorf("oauth: %s: %s", oerr, desc)}
-			return
-		}
-		code := r.URL.Query().Get("code")
-		if code == "" {
-			http.Error(w, "missing code", http.StatusBadRequest)
-			resultC <- CallbackResult{Err: errors.New("oauth: missing code on callback")}
-			return
-		}
-		tok, err := b.Complete(r.Context(), state, code, accountID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			resultC <- CallbackResult{Err: err}
-			return
-		}
-		_, _ = w.Write([]byte(callbackSuccessHTML)) //nolint:errcheck // best-effort UI
-		resultC <- CallbackResult{Provider: providerName, AccountID: accountID, Token: tok}
-	})
+	mux.HandleFunc("/oauth/callback/"+providerName, b.callbackHandler(providerName, accountID, state, resultC, logger))
 
 	srv := &http.Server{
 		Handler:      mux,
@@ -89,7 +62,9 @@ func (b *Broker) Serve(ctx context.Context, providerName, accountID string, open
 		_ = srv.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown
 	}()
 
-	logger.Info("oauth.await_callback", slog.String("provider", providerName), slog.String("url", authURL))
+	// The auth URL carries the CSRF state; it goes to openBrowser
+	// only, never to the log.
+	logger.Info("oauth.await_callback", slog.String("provider", providerName))
 	if openBrowser != nil {
 		if err := openBrowser(authURL); err != nil {
 			logger.Warn("oauth.open_browser_failed", slog.String("err", err.Error()))
@@ -127,4 +102,49 @@ func StateURL(host, providerName, state, code string) string {
 		RawQuery: url.Values{"state": {state}, "code": {code}}.Encode(),
 	}
 	return u.String()
+}
+
+// callbackHandler serves the provider's redirect. A request whose
+// state does not match is answered 400 and otherwise ignored: a stray
+// or forged hit on the loopback port must not abort the operator's
+// real flow, which keeps waiting for the genuine redirect.
+func (b *Broker) callbackHandler(providerName, accountID, state string, resultC chan<- CallbackResult, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("state") != state {
+			logger.Warn("oauth.callback_state_mismatch", slog.String("provider", providerName))
+			http.Error(w, "state mismatch", http.StatusBadRequest)
+			return
+		}
+		if oerr := q.Get("error"); oerr != "" {
+			desc := q.Get("error_description")
+			http.Error(w, oerr+": "+desc, http.StatusBadRequest)
+			deliverResult(resultC, CallbackResult{Err: fmt.Errorf("oauth: %s: %s", oerr, desc)})
+			return
+		}
+		code := q.Get("code")
+		if code == "" {
+			http.Error(w, "missing code", http.StatusBadRequest)
+			deliverResult(resultC, CallbackResult{Err: errors.New("oauth: missing code on callback")})
+			return
+		}
+		tok, err := b.Complete(r.Context(), state, code, accountID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			deliverResult(resultC, CallbackResult{Err: err})
+			return
+		}
+		_, _ = w.Write([]byte(callbackSuccessHTML)) //nolint:errcheck // best-effort UI
+		deliverResult(resultC, CallbackResult{Provider: providerName, AccountID: accountID, Token: tok})
+	}
+}
+
+// deliverResult hands res to Serve without ever blocking: the first
+// result wins and later ones (a duplicate redirect, a reload) are
+// dropped instead of parking the handler goroutine forever.
+func deliverResult(ch chan<- CallbackResult, res CallbackResult) {
+	select {
+	case ch <- res:
+	default:
+	}
 }

@@ -49,6 +49,9 @@ type Config struct {
 	// signing domain matching the From address. Without it the
 	// allow-list keys on a header anyone can forge.
 	RequireAuthResults bool
+	// TrustedAuthservID is the authserv-id our receiving MTA writes in
+	// Authentication-Results. Only headers carrying it are trusted.
+	TrustedAuthservID string
 
 	// IMAPClientFactory is optional test injection; nil uses
 	// imapclient.DialTLS.
@@ -93,15 +96,33 @@ type Client struct {
 
 // New constructs a Client.
 func New(cfg Config, logger *slog.Logger) (*Client, error) {
-	if cfg.IMAPAddr == "" || cfg.IMAPUsername == "" || cfg.IMAPPassword == "" {
-		return nil, errors.New("email: IMAP settings are required")
+	if err := cfg.validate(); err != nil {
+		return nil, err
 	}
-	if cfg.SMTPAddr == "" || cfg.SMTPUsername == "" || cfg.SMTPPassword == "" {
-		return nil, errors.New("email: SMTP settings are required")
+	cfg = cfg.withDefaults()
+	if logger == nil {
+		logger = slog.Default()
 	}
-	if cfg.From == "" {
-		return nil, errors.New("email: From is required")
+	return &Client{cfg: cfg, logger: logger}, nil
+}
+
+// validate rejects a Config the client cannot run with.
+func (cfg Config) validate() error {
+	switch {
+	case cfg.IMAPAddr == "" || cfg.IMAPUsername == "" || cfg.IMAPPassword == "":
+		return errors.New("email: IMAP settings are required")
+	case cfg.SMTPAddr == "" || cfg.SMTPUsername == "" || cfg.SMTPPassword == "":
+		return errors.New("email: SMTP settings are required")
+	case cfg.From == "":
+		return errors.New("email: From is required")
+	case cfg.RequireAuthResults && strings.TrimSpace(cfg.TrustedAuthservID) == "":
+		return errors.New("email: TrustedAuthservID is required with RequireAuthResults")
 	}
+	return nil
+}
+
+// withDefaults fills the optional fields.
+func (cfg Config) withDefaults() Config {
 	if cfg.Mailbox == "" {
 		cfg.Mailbox = "INBOX"
 	}
@@ -114,10 +135,7 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if cfg.SendMail == nil {
 		cfg.SendMail = defaultSendMail
 	}
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Client{cfg: cfg, logger: logger}, nil
+	return cfg
 }
 
 // Name returns the transport identifier.
@@ -217,7 +235,7 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 
 	fetch := client.Fetch(set, &imap.FetchOptions{
 		Envelope: true,
-		// The full body first (extractBody reads the first non-header
+		// The full message first (readFull parses the first non-header
 		// section), then just the Authentication-Results header the
 		// DKIM gate inspects.
 		BodySection: []*imap.FetchItemBodySection{
@@ -241,6 +259,7 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 			Body:         body,
 			At:           time.Now().UTC(),
 			Conversation: from,
+			IsDirect:     true, // mail to the bot's mailbox is one-to-one
 			Thread:       subject,
 		}
 		if m.Envelope != nil {
@@ -281,21 +300,27 @@ func (c *Client) pollOnce(ctx context.Context, handler transport.Handler) error 
 
 // admit decides whether a fetched message reaches the handler and
 // returns its sender, subject and body. Empty senders or bodies are
-// skipped; with RequireAuthResults, mail the MTA did not authenticate
-// for the From domain is dropped with a warning.
+// skipped; automatic mail (auto-replies, bounces, list traffic) is
+// dropped so two responders cannot ping-pong; with RequireAuthResults,
+// mail the MTA did not authenticate for the From domain is dropped
+// with a warning.
 func (c *Client) admit(m *imapclient.FetchMessageBuffer) (from, subject, body string, ok bool) {
 	from = envelopeFrom(m)
 	if m.Envelope != nil {
 		subject = m.Envelope.Subject
 	}
-	body = extractBody(m)
+	header, body := readFull(m)
 	if body == "" {
 		body = subject
 	}
 	if body == "" || from == "" {
 		return "", "", "", false
 	}
-	if c.cfg.RequireAuthResults && !authResultsPass(m, from) {
+	if reason := autoReplyReason(header, from); reason != "" {
+		c.logger.Info("email.dropped_auto", slog.String("from", from), slog.String("reason", reason))
+		return "", "", "", false
+	}
+	if c.cfg.RequireAuthResults && !authResultsPass(m, from, c.cfg.TrustedAuthservID) {
 		c.logger.Warn("email.dropped_unauthenticated",
 			slog.String("from", from),
 			slog.String("reason", "no Authentication-Results dkim=pass for the From domain"))
@@ -316,27 +341,9 @@ func envelopeFrom(m *imapclient.FetchMessageBuffer) string {
 	return strings.ToLower(a.Mailbox + "@" + a.Host)
 }
 
-// extractBody pulls plain-text out of a fetched IMAP message. Full
-// MIME multipart handling is left for a future upgrade; today we look
-// at the first BodySection buffer and treat it as UTF-8 text.
-func extractBody(m *imapclient.FetchMessageBuffer) string {
-	if m == nil {
-		return ""
-	}
-	for _, section := range m.BodySection {
-		if len(section.Bytes) == 0 || isHeaderSection(section.Section) {
-			continue
-		}
-		text := string(section.Bytes)
-		text = stripHeaders(text)
-		return strings.TrimSpace(text)
-	}
-	return ""
-}
-
 // stripHeaders drops everything up to the first blank line (RFC 5322
-// header/body separator). Extremely primitive; real MIME parsing lives
-// in a future PR.
+// header/body separator). It is the fallback for mail net/mail cannot
+// parse; see readFull.
 func stripHeaders(raw string) string {
 	if i := strings.Index(raw, "\r\n\r\n"); i >= 0 {
 		return raw[i+4:]
@@ -348,7 +355,9 @@ func stripHeaders(raw string) string {
 }
 
 // buildMessage renders a plain-text RFC 5322 message. A non-empty
-// inReplyTo threads it under that Message-ID.
+// inReplyTo threads it under that Message-ID. Every message carries
+// Auto-Submitted: auto-replied (RFC 3834) so other responders do not
+// answer it.
 func buildMessage(from, to, subject, inReplyTo, body string) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", from)
@@ -358,6 +367,7 @@ func buildMessage(from, to, subject, inReplyTo, body string) []byte {
 		fmt.Fprintf(&b, "In-Reply-To: %s\r\n", inReplyTo)
 		fmt.Fprintf(&b, "References: %s\r\n", inReplyTo)
 	}
+	fmt.Fprintf(&b, "Auto-Submitted: auto-replied\r\n")
 	fmt.Fprintf(&b, "Content-Type: text/plain; charset=utf-8\r\n")
 	fmt.Fprintf(&b, "\r\n")
 	b.WriteString(body)

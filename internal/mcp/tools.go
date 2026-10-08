@@ -115,7 +115,7 @@ func searchSessionsTool(be SessionsBackend) ToolSpec {
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{"type": "string", "description": "FTS5 query"},
-				"limit": map[string]any{"type": "integer", "description": "Cap hits returned. Default 20."},
+				"limit": limitSchema("Cap hits returned."),
 			},
 			"required": []string{"query"},
 		}),
@@ -130,7 +130,7 @@ func searchSessionsTool(be SessionsBackend) ToolSpec {
 			if strings.TrimSpace(in.Query) == "" {
 				return nil, errors.New("query is required")
 			}
-			hits, err := be.Search(ctx, in.Query, sqlitestore.SearchOptions{Limit: in.Limit})
+			hits, err := be.Search(ctx, in.Query, sqlitestore.SearchOptions{Limit: sqlitestore.ClampSearchLimit(in.Limit)})
 			if err != nil {
 				return nil, err
 			}
@@ -156,7 +156,7 @@ func listSessionsTool(be SessionsBackend) ToolSpec {
 		InputSchema: mustSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"limit": map[string]any{"type": "integer", "description": "Cap rows returned. Default 20."},
+				"limit": limitSchema("Cap rows returned."),
 			},
 		}),
 		Handler: func(ctx context.Context, args json.RawMessage) ([]Content, error) {
@@ -164,7 +164,9 @@ func listSessionsTool(be SessionsBackend) ToolSpec {
 				Limit int `json:"limit"`
 			}
 			_ = json.Unmarshal(args, &in) //nolint:errcheck // arguments are optional; zero-value default is acceptable
-			hits, err := be.List(ctx, in.Limit)
+			// Store.List treats limit <= 0 as "every session"; the tool
+			// never asks for that.
+			hits, err := be.List(ctx, sqlitestore.ClampSearchLimit(in.Limit))
 			if err != nil {
 				return nil, err
 			}
@@ -252,6 +254,17 @@ func cronListTool(be SessionsBackend) ToolSpec {
 			}
 			return TextContent(strings.TrimSpace(sb.String())), nil
 		},
+	}
+}
+
+// limitSchema is the JSON Schema of a session tool's limit argument;
+// the handlers clamp to the same bounds.
+func limitSchema(desc string) map[string]any {
+	return map[string]any{
+		"type":        "integer",
+		"minimum":     1,
+		"maximum":     sqlitestore.MaxSearchLimit,
+		"description": fmt.Sprintf("%s Default %d, at most %d.", desc, sqlitestore.DefaultSearchLimit, sqlitestore.MaxSearchLimit),
 	}
 }
 

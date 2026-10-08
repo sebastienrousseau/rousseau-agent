@@ -210,16 +210,21 @@ func (s *Scheduler) fire(job sqlitestore.CronJob) {
 	reply, err := s.cfg.Runner.RunOnce(ctx, job.Prompt)
 	elapsed := time.Since(start)
 	if err != nil {
+		// The error can embed a child process's output (claude CLI
+		// provider), so chat gets a ref and the log gets the detail.
+		ref := progress.NewRef()
+		s.logger.Error("cron.run_failed",
+			slog.String("job", job.Name),
+			slog.String("ref", ref),
+			slog.String("err", err.Error()),
+			slog.Duration("elapsed", elapsed))
 		s.publish(ctx, job, progress.Event{
 			Kind:    progress.KindError,
 			Text:    job.Name,
-			Err:     err.Error(),
+			Err:     progress.FailureText(ref),
+			Ref:     ref,
 			Elapsed: elapsed,
 		})
-		s.logger.Error("cron.run_failed",
-			slog.String("job", job.Name),
-			slog.String("err", err.Error()),
-			slog.Duration("elapsed", elapsed))
 		return
 	}
 

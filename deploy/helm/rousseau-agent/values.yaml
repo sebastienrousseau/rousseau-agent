@@ -12,11 +12,15 @@ serviceAccount:
   annotations: {}
 
 image:
-  # Two image flavours ship: `latest` (bundles the claude CLI —
-  # "unbox and run") and `distroless-latest` (daemon only, TLS
-  # roots from the base image). Pick per your compliance posture.
+  # Two image flavours ship per release tag vX.Y.Z:
+  #   distroless  `distroless-vX.Y.Z` — daemon only, no shell, runs as
+  #               UID 65532 (matches podSecurityContext below). Default.
+  #   full        `vX.Y.Z` — bundles the claude CLI and a toolchain;
+  #               runs as UID 1000, so also set
+  #               podSecurityContext.runAsUser/runAsGroup/fsGroup to 1000.
+  flavour: distroless
   repository: ghcr.io/sebastienrousseau/rousseau-agent
-  tag: ""                  # defaults to .Chart.appVersion — override for pinning
+  tag: ""                  # empty → derived from flavour + .Chart.appVersion; set to pin
   pullPolicy: IfNotPresent
   # imagePullSecrets: [{name: ghcr-io}]   # uncomment for private registries
   imagePullSecrets: []
@@ -91,8 +95,13 @@ persistence:
   # existingClaim: my-pvc       # bring your own PVC
   existingClaim: ""
 
-# Container ports. rousseau exposes Prometheus metrics + an OTLP
-# tracer endpoint by default; port 9090 is the metrics scrape target.
+# Metrics port. The daemon only listens when observability.metrics_addr
+# is set, so whenever probes or the ServiceMonitor are enabled the chart
+# writes `observability.metrics_addr: ":<metricsPort>"` into the
+# rendered config.yaml and starts the daemon with --config pointing at
+# it. Setting config.observability.metrics_addr yourself is allowed
+# only if it ends in the same port; rendering fails otherwise, so the
+# probes can never target a port the daemon does not serve.
 service:
   type: ClusterIP
   metricsPort: 9090
@@ -135,10 +144,10 @@ resources:
     cpu: 1000m
     memory: 1Gi
 
-# Liveness / readiness probes. The daemon exposes /healthz on the
-# metrics port. Failing readiness pulls the pod out of the Service
-# without killing it — matters when your restarts kick the WhatsApp
-# QR pairing.
+# Liveness / readiness probes. The daemon exposes /healthz and /readyz
+# on the metrics port (service.metricsPort, enabled automatically).
+# Failing readiness pulls the pod out of the Service without killing
+# it — matters when your restarts kick the WhatsApp QR pairing.
 probes:
   liveness:
     enabled: true
@@ -170,8 +179,24 @@ strategy:
 # is on a slow network.
 terminationGracePeriodSeconds: 30
 
+# Optional NetworkPolicy. Off by default because it needs a CNI that
+# enforces policy. When enabled, the pod accepts traffic only on the
+# metrics port, and only from metricsFrom peers (empty → no ingress at
+# all; probes come from the kubelet and are not affected on most
+# CNIs). Egress is limited to DNS plus TCP to egressPorts (LLM
+# providers and chat transports are HTTPS/WSS), plus anything in
+# extraEgress (e.g. a Postgres or OTLP collector).
+networkPolicy:
+  enabled: false
+  metricsFrom: []
+  # metricsFrom:
+  #   - namespaceSelector:
+  #       matchLabels: {kubernetes.io/metadata.name: monitoring}
+  egressPorts: [443]
+  extraEgress: []
+
 # Extra objects to render alongside the main manifests. Useful for
-# NetworkPolicy, ExternalSecret refs, or PodDisruptionBudget.
+# ExternalSecret refs or a PodDisruptionBudget.
 extraManifests: []
 # extraManifests:
 #   - apiVersion: policy/v1

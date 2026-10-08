@@ -21,9 +21,27 @@ type SearchHit struct {
 	Rank float64
 }
 
+// Search result limits: zero means DefaultSearchLimit, and every
+// driver clamps Limit to 1..MaxSearchLimit.
+const (
+	DefaultSearchLimit = 20
+	MaxSearchLimit     = 200
+)
+
+// ClampSearchLimit maps a requested limit onto 1..MaxSearchLimit,
+// with zero meaning DefaultSearchLimit. A negative limit must never
+// reach SQL: SQLite reads LIMIT -1 as no limit at all.
+func ClampSearchLimit(n int) int {
+	if n == 0 {
+		return DefaultSearchLimit
+	}
+	return min(max(n, 1), MaxSearchLimit)
+}
+
 // SearchOptions tunes a search.
 type SearchOptions struct {
-	// Limit caps returned hits. Zero uses 20.
+	// Limit caps returned hits. Zero uses DefaultSearchLimit; values
+	// are clamped to 1..MaxSearchLimit.
 	Limit int
 	// SnippetChars is the target snippet length in characters. Zero
 	// uses 200.
@@ -44,7 +62,21 @@ func (s *Store) EnsureSearch(ctx context.Context) error {
 // returns the best hit per session, ranked by bm25. query uses FTS5
 // syntax (bare words, "phrases", prefix*).
 func (s *Store) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchHit, error) {
-	return s.search(ctx, "", query, opts, "sqlite: search")
+	return s.search(ctx, scope{}, query, opts, "sqlite: search")
+}
+
+// SearchScoped runs Search restricted to sessions whose sender equals
+// sender exactly, the empty sender included (local `rousseau chat`
+// sessions). Automatic recall uses it: one sender's history must never
+// reach another sender's prompt.
+func (s *Store) SearchScoped(ctx context.Context, sender, query string, opts SearchOptions) ([]SearchHit, error) {
+	return s.search(ctx, scope{sender: sender, on: true}, query, opts, "sqlite: scoped search")
+}
+
+// scope restricts a search to one sender when on is set.
+type scope struct {
+	sender string
+	on     bool
 }
 
 // SearchBySender runs Search but restricts hits to sessions
@@ -57,23 +89,21 @@ func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts S
 	if sender == "" {
 		return nil, nil
 	}
-	return s.search(ctx, sender, query, opts, "sqlite: search by sender")
+	return s.search(ctx, scope{sender: sender, on: true}, query, opts, "sqlite: search by sender")
 }
 
-func (s *Store) search(ctx context.Context, sender, query string, opts SearchOptions, op string) ([]SearchHit, error) {
+func (s *Store) search(ctx context.Context, sc scope, query string, opts SearchOptions, op string) ([]SearchHit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, errors.New("sqlite: empty search query")
 	}
-	if opts.Limit == 0 {
-		opts.Limit = 20
-	}
+	opts.Limit = ClampSearchLimit(opts.Limit)
 	if opts.SnippetChars == 0 {
 		opts.SnippetChars = 200
 	}
 	where, args := "", []any{query, query}
-	if sender != "" {
-		where, args = "AND s.sender = ?", append(args, sender)
+	if sc.on {
+		where, args = "AND s.sender = ?", append(args, sc.sender)
 	}
 	// One candidate per matching message or title; ROW_NUMBER keeps
 	// each session's best one.

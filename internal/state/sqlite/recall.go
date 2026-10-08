@@ -17,8 +17,8 @@ func NewRecallSearcher(s *Store) *RecallSearcher { return &RecallSearcher{Store:
 
 // Search satisfies model.RecallSearcher. Converts sqlite.SearchHit to
 // model.SearchHit so the agent package stays independent of storage.
-func (r *RecallSearcher) Search(ctx context.Context, query string, limit int) ([]model.SearchHit, error) {
-	hits, err := r.Store.Search(ctx, query, SearchOptions{Limit: limit})
+func (r *RecallSearcher) Search(ctx context.Context, sender, query string, limit int) ([]model.SearchHit, error) {
+	hits, err := r.Store.SearchScoped(ctx, sender, query, SearchOptions{Limit: limit})
 	if err != nil {
 		return nil, err
 	}

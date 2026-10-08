@@ -22,7 +22,7 @@ func TestSpawnTask_EvictsTerminalTasksAfterRetention(t *testing.T) {
 	}), nil)
 	s.TaskRetention = 30 * time.Millisecond
 
-	state := s.spawnTask(a2a.Task{TaskID: "t-evict", Prompt: "p"})
+	state := mustSpawn(t, s, a2a.Task{TaskID: "t-evict", Prompt: "p"})
 	waitFor(t, state.isTerminal)
 	assert.NotNil(t, s.lookup("t-evict"), "still queryable inside the retention window")
 
@@ -63,7 +63,7 @@ func TestServeListener_CancelsAndJoinsRunningTasks(t *testing.T) {
 		defer s.mu.Unlock()
 		return s.baseCtx != nil
 	}, time.Second, 5*time.Millisecond)
-	state := s.spawnTask(a2a.Task{TaskID: "t-join", Prompt: "p"})
+	state := mustSpawn(t, s, a2a.Task{TaskID: "t-join", Prompt: "p"})
 
 	cancel()
 	require.NoError(t, <-done)

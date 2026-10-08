@@ -10,12 +10,13 @@ type: application
 # The chart version tracks the same monotonic +0.0.1 policy as the
 # app itself (see CHANGELOG.md and repo convention). Bump this line
 # for chart-only changes; bump appVersion for daemon-code changes.
-version: 0.0.1
+version: 0.0.2
 
 # App version is the daemon image tag this chart is validated against.
-# When bumping, run `helm lint` + a `--dry-run` install against the
-# new image before publishing.
-appVersion: "v0.0.3"
+# It must equal the release tag: release.yml refuses to publish a tag
+# whose appVersion differs, so bump it in the release PR. When bumping,
+# run `helm lint` + a `--dry-run` install against the new image.
+appVersion: "v0.0.13"
 
 kubeVersion: ">=1.28.0-0"
 

@@ -60,14 +60,22 @@ The `rousseau-agent` process is a **local, container-native daemon**. Its load-b
 Verifying a downloaded release:
 
 ```bash
+VERSION=v0.0.13   # the tag you downloaded
 cosign verify-blob \
-  --certificate-identity-regexp 'sebastienrousseau/rousseau-agent' \
+  --certificate-identity "https://github.com/sebastienrousseau/rousseau-agent/.github/workflows/release.yml@refs/tags/${VERSION}" \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  --signature rousseau_<version>_checksums.txt.sig \
-  rousseau_<version>_checksums.txt
+  --certificate checksums.txt.pem \
+  --signature checksums.txt.sig \
+  checksums.txt
 
-sha256sum -c rousseau_<version>_checksums.txt
+sha256sum --check --ignore-missing checksums.txt
 ```
+
+Use the exact identity above, not `--certificate-identity-regexp`: a
+loose pattern also accepts signatures made by forks or by other
+workflows. Container images are signed by `container-release.yml`
+instead; verify them with
+`--certificate-identity "https://github.com/sebastienrousseau/rousseau-agent/.github/workflows/container-release.yml@refs/tags/${VERSION}"`.
 
 ## Cryptography inventory
 

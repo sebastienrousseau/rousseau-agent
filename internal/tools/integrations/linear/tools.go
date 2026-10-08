@@ -130,6 +130,9 @@ func NewCreateIssueTool(c *Client) *CreateIssueTool { return &CreateIssueTool{c:
 // Name implements tools.Tool.
 func (*CreateIssueTool) Name() string { return "linear_create_issue" }
 
+// Outbound implements tools.Outbound: it creates a Linear issue.
+func (*CreateIssueTool) Outbound() bool { return true }
+
 // Description implements tools.Tool.
 func (*CreateIssueTool) Description() string {
 	return "Create a Linear issue. Required: team_id, title. Optional: description, priority (0-4)."
@@ -193,6 +196,9 @@ func NewUpdateIssueTool(c *Client) *UpdateIssueTool { return &UpdateIssueTool{c:
 
 // Name implements tools.Tool.
 func (*UpdateIssueTool) Name() string { return "linear_update_issue" }
+
+// Outbound implements tools.Outbound: it changes a Linear issue.
+func (*UpdateIssueTool) Outbound() bool { return true }
 
 // Description implements tools.Tool.
 func (*UpdateIssueTool) Description() string {

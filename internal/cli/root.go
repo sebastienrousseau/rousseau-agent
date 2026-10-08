@@ -75,6 +75,7 @@ func NewRoot(opts *Options) *cobra.Command {
 	root.AddCommand(newWhatsAppCmd(opts))
 	root.AddCommand(newDoctorCmd(opts))
 	root.AddCommand(newEvidenceCmd(opts))
+	root.AddCommand(newAuditCmd())
 	root.AddCommand(newSessionCmd(opts))
 	root.AddCommand(newMigrateCmd(opts))
 	root.AddCommand(newCronCmd(opts))

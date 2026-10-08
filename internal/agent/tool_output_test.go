@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -68,4 +69,40 @@ func TestBoundOutput(t *testing.T) {
 	assert.True(t, strings.HasPrefix(got, "héll\n"), got)
 	assert.Contains(t, got, "[output truncated: 5 of 12 bytes shown]")
 	assert.True(t, strings.HasPrefix(a.boundOutput("abc€xyz"), "abc\n[output truncated: 3 of 9"), "cut lands before a multi-byte rune")
+}
+
+// failingTool returns a huge error, like an MCP server echoing a whole
+// response body into its error text.
+type failingTool struct{ msg string }
+
+func (failingTool) Name() string                { return "fail" }
+func (failingTool) Description() string         { return "fails loudly" }
+func (failingTool) InputSchema() map[string]any { return map[string]any{"type": "object"} }
+func (f failingTool) Execute(context.Context, json.RawMessage) (string, error) {
+	return "", errors.New(f.msg)
+}
+
+// Error text is bounded like output: the model sees the cap plus a
+// marker, not megabytes.
+func TestTurn_ToolErrorTextIsBounded(t *testing.T) {
+	prov := &stubProvider{responses: []Response{
+		{
+			Message: Message{Role: RoleAssistant, Content: []Content{
+				{Kind: ContentToolUse, ToolUse: &ToolUse{ID: "f1", Name: "fail", Input: json.RawMessage(`{}`)}},
+			}},
+			StopReason: StopToolUse,
+		},
+		{Message: Message{Role: RoleAssistant, Content: []Content{{Kind: ContentText, Text: "ok"}}}, StopReason: StopEndTurn},
+	}}
+	reg := tools.NewRegistry()
+	reg.MustRegister(failingTool{msg: strings.Repeat("e", 10_000)})
+	a := New(prov, reg, silentLogger(), Options{MaxToolOutputBytes: 100})
+	s := NewSession("x")
+	s.Append(NewUserText("go"))
+	_, err := a.Turn(context.Background(), s)
+	require.NoError(t, err)
+	res := s.Messages[2].Content[0].ToolResult
+	require.True(t, res.IsError)
+	assert.Contains(t, res.Output, "[output truncated:")
+	assert.Less(t, len(res.Output), 200)
 }

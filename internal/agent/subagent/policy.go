@@ -37,6 +37,15 @@ func (p Policy) perTaskTimeout() time.Duration {
 	return p.PerTaskTimeout
 }
 
+// EffectiveMaxConcurrent is the concurrency limit Spawn applies for
+// this policy, defaults resolved. Callers that let a model request a
+// lower limit compare against this, not the raw field.
+func (p Policy) EffectiveMaxConcurrent() int { return p.maxConcurrent() }
+
+// EffectivePerTaskTimeout is the per-task timeout Spawn applies for
+// this policy, defaults resolved.
+func (p Policy) EffectivePerTaskTimeout() time.Duration { return p.perTaskTimeout() }
+
 func (p Policy) aggregatorMax() int {
 	if p.AggregatorMaxBytes <= 0 {
 		return 32 * 1024

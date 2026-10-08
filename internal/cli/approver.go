@@ -51,7 +51,7 @@ func buildApprover(cfg config.ApproverConfig) (agent.Approver, error) {
 func toRules(in []config.PatternEntry) []agent.PatternRule {
 	out := make([]agent.PatternRule, 0, len(in))
 	for _, e := range in {
-		out = append(out, agent.PatternRule{ToolName: e.Tool, Match: e.Match})
+		out = append(out, agent.PatternRule{ToolName: e.Tool, Match: e.Match, Field: e.Field})
 	}
 	return out
 }
@@ -189,6 +189,7 @@ func wrapWithMultiParty(inner agent.Approver, cfg config.MultiPartyConfig, check
 			Tool:            r.Tool,
 			NeededApprovals: r.NeededApprovals,
 			Timeout:         r.Timeout,
+			ApproverGroups:  r.ApproverGroups,
 		}
 	}
 	pending := approval.NewPendingManager(emitter)
@@ -312,7 +313,7 @@ func wrapWithRisk(inner agent.Approver, cfg config.RiskConfig, provider agent.Pr
 	}
 	judge := provider
 	if _, ok := provider.(*claudecli.Provider); ok && cfg.Model != "" {
-		judge = claudecli.New(claudecli.Config{Binary: cliCfg.Binary, Model: cfg.Model})
+		judge = claudecli.New(claudecli.Config{Binary: cliCfg.Binary, Model: cfg.Model, EnvPassthrough: cliCfg.EnvPassthrough})
 	}
 	threshold := cfg.Threshold
 	if threshold <= 0 || threshold > 1 {

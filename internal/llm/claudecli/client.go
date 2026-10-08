@@ -39,6 +39,12 @@ type Config struct {
 	// ExtraArgs are prepended before -p on every invocation. Useful for
 	// --add-dir, --allowed-tools, --disallowed-tools, --plugin-dir …
 	ExtraArgs []string
+	// EnvPassthrough names extra daemon environment variables (or
+	// "NAME*" prefixes) the claude child may inherit, on top of its
+	// defaults (ANTHROPIC_*, CLAUDE_*, proxy and CA settings) and the
+	// envscrub baseline. Bedrock or Vertex through claude needs, for
+	// example, AWS_* or GOOGLE_* here.
+	EnvPassthrough []string
 	// Settings, when set, is passed as --settings (a JSON string).
 	// The daemon uses it to install the toolgate PreToolUse hook.
 	Settings string
@@ -208,7 +214,7 @@ func (p *Provider) invoke(ctx context.Context, sessionFlag string, req agent.Req
 	}
 	args = append(args, p.cfg.ExtraArgs...)
 
-	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
+	cmd := p.command(ctx, args)
 	cmd.Stdin = strings.NewReader(promptText(prompt, imagePaths))
 	setGracefulCancel(cmd)
 	out, err := p.run(cmd)

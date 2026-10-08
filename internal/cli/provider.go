@@ -93,6 +93,7 @@ func buildClaudeCLI(cfg *config.Config) (agent.Provider, error) {
 		Model:          cfg.ClaudeCLI.Model,
 		PermissionMode: cfg.ClaudeCLI.PermissionMode,
 		ExtraArgs:      extraArgs,
+		EnvPassthrough: cfg.ClaudeCLI.EnvPassthrough,
 	}), nil
 }
 

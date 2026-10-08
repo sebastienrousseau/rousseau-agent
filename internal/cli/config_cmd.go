@@ -88,7 +88,7 @@ func summarizeConfig(opts *Options) configSummary {
 		MCPClients:     len(cfg.MCP.Clients),
 		AuditEgress:    cfg.Observability.AuditEgress.Kind,
 		BashSandbox:    cfg.Tools.Bash.Sandbox.Kind,
-		WorkspaceRoot:  cfg.Tools.FS.Root,
+		WorkspaceRoot:  daemonFSRoot(cfg.Tools.FS),
 		UnknownKeysOff: os.Getenv("ROUSSEAU_CONFIG_ALLOW_UNKNOWN") != "1",
 		Transports:     configuredTransports(cfg),
 	}

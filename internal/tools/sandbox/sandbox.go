@@ -5,11 +5,12 @@
 //
 //   - [None] — direct exec, no isolation (matches pre-sandbox
 //     behaviour; the default so nothing breaks on upgrade).
-//   - `gvisor` — `runsc do` wrapped exec. Requires runsc on $PATH.
-//     This is SYSCALL isolation only: `runsc do` runs the command
-//     against the host filesystem (the --root flag names runsc's
-//     state directory, not a chroot), so the file tools' fsguard and
-//     the bash env scrub remain the filesystem and secret boundary.
+//   - `gvisor` — `runsc do` wrapped exec. Requires runsc
+//     >= release-20250611.0 on $PATH. `runsc do` would default to the
+//     host's "/" as root, so the backend passes `do -root=` a private
+//     per-invocation rootfs holding only the Readonly/Writable mounts
+//     (never $HOME — see [CheckFilesystemConfinement]) under a memory
+//     overlay, so writes never reach the host.
 //   - `firecracker` — pooled microVM per-invocation. Not scaffolded
 //     yet; documented in docs/security/sandbox.md as the top-tier
 //     option for hostile-code use cases.
@@ -54,7 +55,8 @@ import (
 //
 // Backends translate Policy fields into their own flag surface:
 //
-//   - gvisor  → --network=none, --rootless, --root=<per-invocation-tmpdir>
+//   - gvisor  → --network=none, --rootless, --root=<state dir>,
+//     do -force-overlay=true -root=<private rootfs> -volume=...
 //   - nsjail  → --mode o (once), --disable_clone_newuser=false,
 //     --time_limit, --rlimit_as, --rlimit_cpu,
 //     --bindmount / --bindmount_ro
@@ -95,6 +97,8 @@ type Policy struct {
 	// Writable is a list of host paths bind-mounted RW into the
 	// sandbox at the same path. The per-invocation tmpdir is always
 	// writable (added by the backend); Writable adds to that.
+	// gvisor mounts these under a memory overlay, so its writes are
+	// visible inside the sandbox but never reach the host.
 	Writable []string
 }
 

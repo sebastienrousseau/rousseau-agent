@@ -48,5 +48,9 @@ type SearchHit struct {
 // depends on. Stores implement it; the agent loop's FTSRecall consumes
 // it. Defined here so neither side imports the other.
 type RecallSearcher interface {
-	Search(ctx context.Context, query string, limit int) ([]SearchHit, error)
+	// Search returns hits only from sessions whose Sender equals
+	// sender exactly (the empty sender included). It must never
+	// return another sender's sessions: recall output goes into the
+	// system prompt of sender's own conversation.
+	Search(ctx context.Context, sender, query string, limit int) ([]SearchHit, error)
 }

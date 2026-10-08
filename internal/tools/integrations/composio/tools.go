@@ -23,6 +23,11 @@ type action struct {
 // after lower-casing.
 func (a *action) Name() string { return a.toolID }
 
+// Outbound implements tools.Outbound. A Composio action proxies an
+// arbitrary third-party operation (send mail, post, create) and its
+// name is not a trustworthy read/write signal, so every action counts.
+func (*action) Outbound() bool { return true }
+
 // Description implements tools.Tool.
 func (a *action) Description() string {
 	if a.spec.Description == "" {

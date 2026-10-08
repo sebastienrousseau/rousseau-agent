@@ -194,6 +194,12 @@ type ChainInfo struct {
 	// the MAC also holds against someone who can rewrite records
 	// but does not hold the key. See VerifyChainMAC.
 	MAC string
+	// Version selects the hash encoding: 0 or 1 is the original
+	// NUL-joined encoding, 2 the length-prefixed one (see
+	// [hashInputV2]). A [ChainedSink] stamps [ChainVersionV2]; the
+	// verifier accepts both so chains written before the upgrade
+	// still verify.
+	Version uint8
 }
 
 // Sink is the egress surface every enterprise-only backend

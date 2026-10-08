@@ -86,7 +86,7 @@ func TestDefaultFetcher_HTTP_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := &a2a.DefaultFetcher{}
+	f := &a2a.DefaultFetcher{Client: loopbackClient()}
 	data, ct, err := f.Fetch(context.Background(), a2a.Artifact{URI: srv.URL})
 	require.NoError(t, err)
 	assert.Equal(t, "# hi from http", string(data))
@@ -99,7 +99,7 @@ func TestDefaultFetcher_HTTP_NonSuccessStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := &a2a.DefaultFetcher{}
+	f := &a2a.DefaultFetcher{Client: loopbackClient()}
 	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: srv.URL})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 410")
@@ -114,7 +114,7 @@ func TestDefaultFetcher_HTTP_SizeCapEnforced(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := &a2a.DefaultFetcher{MaxBytes: 256}
+	f := &a2a.DefaultFetcher{Client: loopbackClient(), MaxBytes: 256}
 	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: srv.URL})
 	assert.ErrorIs(t, err, a2a.ErrArtifactTooLarge)
 }
@@ -132,7 +132,7 @@ func TestDefaultFetcher_HTTP_CrossOriginRedirectRefused(t *testing.T) {
 	}))
 	defer redirector.Close()
 
-	f := &a2a.DefaultFetcher{} // uses DefaultHTTPClient which refuses cross-origin
+	f := &a2a.DefaultFetcher{Client: loopbackClient()} // DefaultHTTPClient's redirect policy, unguarded dialer
 	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: redirector.URL})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cross-origin redirect refused")
@@ -152,7 +152,7 @@ func TestDefaultFetcher_HTTP_SameOriginRedirectAllowed(t *testing.T) {
 		http.Redirect(w, r, srv.URL+"/t", http.StatusFound)
 	})
 
-	f := &a2a.DefaultFetcher{}
+	f := &a2a.DefaultFetcher{Client: loopbackClient()}
 	data, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: srv.URL + "/r"})
 	require.NoError(t, err)
 	assert.Equal(t, "landed", string(data))
@@ -245,7 +245,7 @@ func TestDefaultFetcher_HTTP_ContextCancelledPropagates(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	f := &a2a.DefaultFetcher{}
+	f := &a2a.DefaultFetcher{Client: loopbackClient()}
 	_, _, err := f.Fetch(ctx, a2a.Artifact{URI: srv.URL})
 	require.Error(t, err)
 }
@@ -273,7 +273,7 @@ func TestDefaultFetcher_HTTP_TooManySameOriginRedirects(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	f := &a2a.DefaultFetcher{}
+	f := &a2a.DefaultFetcher{Client: loopbackClient()}
 	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: srv.URL + "/r"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "too many redirects")
@@ -287,4 +287,27 @@ func TestDefaultFetcher_CheckSize_NegativeMaxSkipsCheck(t *testing.T) {
 	data, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: "artifact://peer/x"})
 	require.NoError(t, err)
 	assert.Len(t, data, 64*1024)
+}
+
+// TestDefaultFetcher_HTTP_LoopbackRefused: with the default client, a
+// URI pointing at a loopback listener is refused at dial time.
+func TestDefaultFetcher_HTTP_LoopbackRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("internal")) //nolint:errcheck // test
+	}))
+	defer srv.Close()
+
+	f := &a2a.DefaultFetcher{}
+	_, _, err := f.Fetch(context.Background(), a2a.Artifact{URI: srv.URL})
+	assert.ErrorIs(t, err, a2a.ErrBlockedAddress)
+}
+
+// loopbackClient keeps DefaultHTTPClient's redirect policy and
+// timeout but dials without the address guard, so httptest servers
+// (always loopback) can exercise the HTTP paths.
+func loopbackClient() *http.Client {
+	return &http.Client{
+		Timeout:       a2a.DefaultHTTPClient.Timeout,
+		CheckRedirect: a2a.DefaultHTTPClient.CheckRedirect,
+	}
 }

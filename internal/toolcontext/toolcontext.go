@@ -1,5 +1,5 @@
 // Package toolcontext plumbs per-turn agent state (Session, Provider,
-// Logger) into the [tools.Tool] Execute call via context values.
+// system prompt, Logger) into the [tools.Tool] Execute call via context values.
 //
 // The [tools.Tool] interface intentionally takes only ctx + input so
 // that most tools stay stateless. Some tools — spawn_subagent is the
@@ -30,6 +30,7 @@ const (
 	sessionKey key = iota
 	providerKey
 	loggerKey
+	systemPromptKey
 )
 
 // WithSession returns a derived context carrying session. Tools invoked
@@ -69,6 +70,24 @@ func WithProvider(ctx context.Context, provider any) context.Context {
 func Provider(ctx context.Context) (any, bool) {
 	v := ctx.Value(providerKey)
 	return v, v != nil
+}
+
+// WithSystemPrompt returns a derived context carrying the parent
+// turn's system prompt, so a tool that spawns sub-agents
+// (spawn_subagent) can make them inherit it instead of running with
+// an empty or model-chosen one. An empty prompt leaves ctx unchanged.
+func WithSystemPrompt(ctx context.Context, prompt string) context.Context {
+	if prompt == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, systemPromptKey, prompt)
+}
+
+// SystemPrompt returns the value set by [WithSystemPrompt], or "" when
+// none is present.
+func SystemPrompt(ctx context.Context) string {
+	v, _ := ctx.Value(systemPromptKey).(string)
+	return v
 }
 
 // WithLogger returns a derived context that carries lg for use by

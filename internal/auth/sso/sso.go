@@ -110,6 +110,15 @@ type OIDCConfig struct {
 	// resolving transport-native IDs to the canonical SSO subject.
 	// See [TransportMapping].
 	TransportMappings []TransportMapping `mapstructure:"transport_mappings"`
+	// AllowAnyAudience accepts tokens without checking `aud`. Only for
+	// an issuer that serves this daemon alone: otherwise a token the
+	// IdP issued for any of its other clients signs a user in here.
+	AllowAnyAudience bool `mapstructure:"allow_any_audience"`
+	// JWKSAllowedHosts lists extra hosts the discovery document's
+	// jwks_uri may point at, for IdPs that serve keys from a host
+	// other than the issuer's. Empty admits the issuer's host only.
+	// jwks_uri must be https either way (http only on loopback).
+	JWKSAllowedHosts []string `mapstructure:"jwks_allowed_hosts"`
 }
 
 // TransportMapping tells the directory which token claim carries a
@@ -172,6 +181,10 @@ type Identity struct {
 	// ExpiresAt is the token's `exp` claim (populated only when
 	// this identity came from a token, not a directory lookup).
 	ExpiresAt time.Time
+	// TokenID identifies the token this identity came from, for
+	// single-use checks: "jti:<iss>:<jti>" when the token carries a
+	// jti, else "sha256:<hex>" of its signed input. Not persisted.
+	TokenID string `json:"-"`
 }
 
 // Directory is the runtime seam every SSO-dependent code path

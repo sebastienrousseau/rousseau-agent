@@ -51,6 +51,12 @@ type DecideFunc func(ctx context.Context, req Request) Response
 // of a large file can be big, but not unbounded).
 const maxRequestBytes = 8 << 20
 
+// requestReadTimeout bounds how long a connection may take to send its
+// request line. A client that connects and stalls would otherwise pin
+// a handler goroutine for good, and Close waits on every handler. A
+// var so tests can shorten it.
+var requestReadTimeout = 10 * time.Second
+
 // Server answers tool-call decisions on a unix socket.
 type Server struct {
 	ln      net.Listener
@@ -104,7 +110,8 @@ func (s *Server) Serve(ctx context.Context) {
 }
 
 func (s *Server) handle(ctx context.Context, conn net.Conn) {
-	defer conn.Close() //nolint:errcheck // one-shot connection
+	defer conn.Close()                                           //nolint:errcheck // one-shot connection
+	_ = conn.SetReadDeadline(time.Now().Add(requestReadTimeout)) //nolint:errcheck // a failed deadline surfaces as a read error
 	r := bufio.NewReaderSize(conn, 64*1024)
 	line, err := readLine(r, maxRequestBytes)
 	resp := Response{Allow: false, Reason: "toolgate: unreadable request"}

@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent/subagent"
@@ -13,9 +15,41 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/sandbox"
 )
 
+// daemonFSRoot is the workspace root the daemon's file tools use: the
+// configured tools.fs.root, or $XDG_DATA_HOME/rousseau/workspace when
+// unset, so a prompt-injected read or write cannot reach the rest of
+// $HOME by default. tools.fs.root: "/" is the explicit opt-out. The
+// directory is not created here; the write tool creates parents.
+func daemonFSRoot(cfg config.FSConfig) string {
+	if cfg.Root != "" {
+		return cfg.Root
+	}
+	dataHome := os.Getenv("XDG_DATA_HOME")
+	if dataHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	return filepath.Join(dataHome, "rousseau", "workspace")
+}
+
 // buildFSGuard turns tools.fs into the guard every file tool shares.
-func buildFSGuard(cfg config.FSConfig) (*fsguard.Guard, error) {
-	g, err := fsguard.New(cfg.Root, cfg.Deny)
+// A configured audit chain key file is denied as well: a tool that
+// could read it could forge a chain that verifies. (The generated
+// default key lives under the state dir, which the default deny list
+// covers.)
+func buildFSGuard(cfg config.FSConfig, ae config.AuditEgressConfig) (*fsguard.Guard, error) {
+	deny := cfg.Deny
+	if ae.ChainHMACKeyFile != "" {
+		p, err := filepath.Abs(ae.ChainHMACKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("cli: chain key path: %w", err)
+		}
+		deny = append(append([]string(nil), deny...), p)
+	}
+	g, err := fsguard.New(cfg.Root, deny)
 	if err != nil {
 		return nil, fmt.Errorf("cli: tools.fs: %w", err)
 	}
@@ -83,10 +117,13 @@ func buildBashTool(cfg config.BashConfig) (*builtin.BashTool, error) {
 func buildDaemonToolRegistry(opts *Options) (*tools.Registry, error) {
 	cfg := opts.Config
 	registry := tools.NewRegistry()
-	guard, err := buildFSGuard(cfg.Tools.FS)
+	fs := cfg.Tools.FS
+	fs.Root = daemonFSRoot(fs)
+	guard, err := buildFSGuard(fs, cfg.Observability.AuditEgress)
 	if err != nil {
 		return nil, err
 	}
+	opts.Logger.Info("tools.fs.root", "root", guard.Root())
 	registerFileTools(registry, guard)
 	if err := requireSandboxPolicy(cfg.Tools.Bash, "daemon"); err != nil {
 		return nil, err
@@ -117,8 +154,22 @@ func buildDaemonToolRegistry(opts *Options) (*tools.Registry, error) {
 // allowlisted chat message can drive bash; without a sandbox that is
 // a shell on the host with the daemon's privileges, which should be a
 // deliberate choice, not the silent default.
+//
+// gvisor counts as a sandbox only while it confines the filesystem:
+// a mount that is "/", $HOME or an ancestor of $HOME puts the secrets
+// bash must not read back inside the sandbox, so it is refused here
+// regardless of allow_unsandboxed (an opt-in for kind none, not for a
+// sandbox configured to expose the host).
 func requireSandboxPolicy(cfg config.BashConfig, transportName string) error {
 	kind := cfg.Sandbox.Kind
+	if kind == "gvisor" {
+		if err := sandbox.CheckFilesystemConfinement(resolveSandboxPolicy(cfg.Sandbox)); err != nil {
+			return fmt.Errorf("%s: tools.bash.sandbox.kind gvisor does not confine the filesystem: %w. "+
+				"Remove that path from tools.bash.sandbox.readonly/writable; mount only the workspace",
+				transportName, err)
+		}
+		return nil
+	}
 	if kind != "" && kind != "none" {
 		return nil
 	}

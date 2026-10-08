@@ -132,6 +132,9 @@ func NewCreateIssueTool(c *Client) *CreateIssueTool { return &CreateIssueTool{c:
 // Name implements tools.Tool.
 func (*CreateIssueTool) Name() string { return "github_create_issue" }
 
+// Outbound implements tools.Outbound: it creates an issue on GitHub.
+func (*CreateIssueTool) Outbound() bool { return true }
+
 // Description implements tools.Tool.
 func (*CreateIssueTool) Description() string {
 	return "Create a new GitHub issue. Requires owner, repo, title. Optional: body, labels (array of strings)."
@@ -187,6 +190,9 @@ func NewCommentIssueTool(c *Client) *CommentIssueTool { return &CommentIssueTool
 
 // Name implements tools.Tool.
 func (*CommentIssueTool) Name() string { return "github_comment_issue" }
+
+// Outbound implements tools.Outbound: it posts a comment on GitHub.
+func (*CommentIssueTool) Outbound() bool { return true }
 
 // Description implements tools.Tool.
 func (*CommentIssueTool) Description() string {

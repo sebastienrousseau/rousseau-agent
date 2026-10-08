@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,4 +180,85 @@ func TestRegister_AllTools(t *testing.T) {
 	} {
 		assert.Contains(t, strings.Join(names, ","), want)
 	}
+}
+
+// gmailCapture records requests to the Gmail send endpoint.
+type gmailCapture struct {
+	mu   sync.Mutex
+	hits int
+	raw  string
+}
+
+func (g *gmailCapture) snapshot() (int, string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.hits, g.raw
+}
+
+// gmailSendCapture serves the Gmail send endpoint, counting requests and
+// recording the decoded raw RFC 5322 message of the last one.
+func gmailSendCapture(t *testing.T) (*httptest.Server, *gmailCapture) {
+	t.Helper()
+	g := &gmailCapture{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body) //nolint:errcheck // test fixture
+		var payload struct {
+			Raw string `json:"raw"`
+		}
+		_ = json.Unmarshal(body, &payload)                     //nolint:errcheck // test fixture
+		dec, _ := base64.URLEncoding.DecodeString(payload.Raw) //nolint:errcheck // test fixture
+		g.mu.Lock()
+		g.hits++
+		g.raw = string(dec)
+		g.mu.Unlock()
+		_, _ = w.Write([]byte(`{"id":"sent"}`)) //nolint:errcheck // test fixture
+	}))
+	t.Cleanup(srv.Close)
+	return srv, g
+}
+
+func gmailSendRejected(t *testing.T, input map[string]string) {
+	t.Helper()
+	srv, g := gmailSendCapture(t)
+	in, err := json.Marshal(input)
+	require.NoError(t, err)
+	_, err = NewGmailSendTool(newTestClient(t, srv)).Execute(context.Background(), in)
+	hits, raw := g.snapshot()
+	require.Error(t, err, "send must be rejected; raw message was %q", raw)
+	assert.Equal(t, 0, hits, "no request may reach Gmail")
+}
+
+func TestGmail_SubjectInjectionRejected(t *testing.T) {
+	for _, subj := range []string{
+		"hi\r\nBcc: attacker@example.com",
+		"hi\nBcc: attacker@example.com",
+		"hi\rBcc: attacker@example.com",
+	} {
+		gmailSendRejected(t, map[string]string{"to": "alice@example.com", "subject": subj, "body": "b"})
+	}
+}
+
+func TestGmail_ToInjectionRejected(t *testing.T) {
+	gmailSendRejected(t, map[string]string{
+		"to": "alice@example.com\r\nBcc: attacker@example.com", "subject": "hi", "body": "b",
+	})
+	gmailSendRejected(t, map[string]string{
+		"to": "alice@example.com", "from": "me@example.com\nBcc: attacker@example.com", "subject": "hi", "body": "b",
+	})
+}
+
+func TestGmail_InvalidAddressRejected(t *testing.T) {
+	gmailSendRejected(t, map[string]string{"to": "not an address", "subject": "hi", "body": "b"})
+	gmailSendRejected(t, map[string]string{"to": "alice@example.com", "from": "nope", "subject": "hi", "body": "b"})
+}
+
+func TestGmail_UnicodeSubjectEncoded(t *testing.T) {
+	srv, g := gmailSendCapture(t)
+	in := json.RawMessage(`{"to":"Alice <alice@example.com>, bob@example.com","subject":"Résumé ✓","body":"b"}`)
+	_, err := NewGmailSendTool(newTestClient(t, srv)).Execute(context.Background(), in)
+	require.NoError(t, err)
+	hits, raw := g.snapshot()
+	require.Equal(t, 1, hits)
+	assert.Contains(t, raw, "Subject: =?utf-8?q?R=C3=A9sum=C3=A9_=E2=9C=93?=\r\n")
+	assert.Contains(t, raw, "To: \"Alice\" <alice@example.com>, bob@example.com\r\n")
 }

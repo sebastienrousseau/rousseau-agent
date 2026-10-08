@@ -268,6 +268,7 @@ func (c *Client) handleReceive(ctx context.Context, params receiveParams, handle
 		Attachments:  attachments,
 	}
 	group := params.Envelope.DataMessage.GroupInfo.GroupID
+	msg.IsDirect = group == ""
 	if group != "" {
 		msg.Conversation = group
 	}
@@ -402,8 +403,8 @@ func (c *Client) transcribeAudio(ctx context.Context, atts []receiveAttachment) 
 	if pick == nil {
 		return ""
 	}
-	if pick.ID == "" {
-		c.logger.Warn("signal.audio.missing_id",
+	if !validAttachmentID(pick.ID) {
+		c.logger.Warn("signal.audio.invalid_id",
 			slog.String("filename", pick.Filename))
 		return ""
 	}
@@ -443,8 +444,8 @@ func (c *Client) collectImageAttachments(atts []receiveAttachment) []transport.A
 		if !strings.HasPrefix(att.ContentType, "image/") {
 			continue
 		}
-		if att.ID == "" {
-			c.logger.Warn("signal.image.missing_id",
+		if !validAttachmentID(att.ID) {
+			c.logger.Warn("signal.image.invalid_id",
 				slog.String("filename", att.Filename))
 			continue
 		}

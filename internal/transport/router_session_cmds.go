@@ -30,20 +30,28 @@ func (r *Router) handleIdentityCommand(ctx context.Context, msg IncomingMessage)
 		return r.cmdWhoami(ctx, msg.From), true
 	case "/version":
 		return r.cmdVersion(), true
-	case "/link":
-		if len(parts) != 2 || !strings.Contains(parts[1], ":") {
-			return "usage: /link <transport>:<sender>", true
+	case "/link", "/unlink":
+		return r.handleHandleCommand(ctx, msg.From, parts), true
+	case "/confirm":
+		if len(parts) != 2 {
+			return "usage: /confirm <code>", true
 		}
-		tp, sender, _ := strings.Cut(parts[1], ":")
-		return r.cmdLink(ctx, msg.From, tp, sender), true
-	case "/unlink":
-		if len(parts) != 2 || !strings.Contains(parts[1], ":") {
-			return "usage: /unlink <transport>:<sender>", true
-		}
-		tp, sender, _ := strings.Cut(parts[1], ":")
-		return r.cmdUnlink(ctx, tp, sender), true
+		return r.cmdConfirm(ctx, msg.From, parts[1]), true
 	}
 	return "", false
+}
+
+// handleHandleCommand runs /link and /unlink <transport>:<sender>.
+func (r *Router) handleHandleCommand(ctx context.Context, from string, parts []string) string {
+	verb := parts[0]
+	if len(parts) != 2 || !strings.Contains(parts[1], ":") {
+		return "usage: " + verb + " <transport>:<sender>"
+	}
+	tp, sender, _ := strings.Cut(parts[1], ":")
+	if verb == "/link" {
+		return r.cmdLink(ctx, from, tp, sender)
+	}
+	return r.cmdUnlink(ctx, from, tp, sender)
 }
 
 // cmdVersion answers the /version chat command with the daemon's
@@ -533,11 +541,13 @@ func cmdHelp() string {
 • /whoami (/w) — show my identity + linked handles
 • /link <transport>:<sender> (/lk) — link a handle
 • /unlink <transport>:<sender> (/ul) — remove a handle
+• /confirm <code> — confirm a /link from the handle being linked
 • /login (/li) — begin an SSO handshake (when enabled)
 • /logout (/lo) — end the SSO session
 
 *approvals*
-• /approve <token> (/ap) — approve a pending multi-party request
+• /pending — list open multi-party requests with what each would run
+• /approve <token> <digest> (/ap) — approve a request; quote the digest /pending shows
 • /deny <token> (/ny) — deny a pending multi-party request
 
 *ops*

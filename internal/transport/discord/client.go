@@ -312,6 +312,7 @@ func (c *Client) handleMessage(ctx context.Context, m discordMessage, handler tr
 		At:           time.Now().UTC(),
 		Conversation: m.ChannelID,
 		MessageID:    m.ID,
+		IsDirect:     m.GuildID == "", // a DM channel has no guild
 		Attachments:  attachments,
 	}
 	c.logger.Info("discord.incoming",

@@ -100,11 +100,14 @@ func runChecks(ctx context.Context, cfg *config.Config, chk license.Checker) []d
 	out = append(out, checkLicense(chk)...)
 	out = append(out, checkSSO(ctx, cfg, chk)...)
 	out = append(out, checkGovernance(cfg, chk)...)
+	out = append(out, checkOutboundPosture(cfg)...)
+	out = append(out, checkApproverPatterns(cfg)...)
 	out = append(out, checkAuditEgress(cfg, chk)...)
 	out = append(out, checkA2A(cfg)...)
 	out = append(out, checkProvider(ctx, cfg)...)
 	out = append(out, checkState(cfg)...)
 	out = append(out, checkWhatsApp(cfg)...)
+	out = append(out, checkEmailAuth(cfg)...)
 	out = append(out, checkConfig(cfg)...)
 	return out
 }
@@ -271,6 +274,19 @@ func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 	return out
 }
 
+// a2aListenRow reports the bind address, and warns when the daemon
+// would refuse it (non-loopback without TLS or allow_plaintext).
+func a2aListenRow(cfg config.A2AServerConfig) diagResult {
+	listen := cfg.Listen
+	if listen == "" {
+		listen = defaultA2AListen
+	}
+	if err := checkListenTLS(listen, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.AllowPlaintext); err != nil {
+		return diagResult{Name: "identity.a2a.server.listen", Status: "warn", Detail: "A2A server will not start: " + err.Error()}
+	}
+	return diagResult{Name: "identity.a2a.server.listen", Status: "info", Detail: listen}
+}
+
 // checkA2A renders identity.a2a.* rows. Only emitted when the
 // operator has set a2a.server.enabled=true OR configured client peers.
 // Bare OSS installs produce zero rows — no noise for people who never
@@ -278,7 +294,7 @@ func checkGovernance(cfg *config.Config, chk license.Checker) []diagResult {
 //
 // Rows (server side):
 //
-//   - identity.a2a.server.listen             — bind address
+//   - identity.a2a.server.listen             — bind address (warn when it would be refused)
 //   - identity.a2a.server.auth_tokens_file   — configured / missing / empty
 //   - identity.a2a.server.signing_key_file   — configured / missing (info-only, signing is optional)
 //   - identity.a2a.server.exposed_skills     — count of allowed skill invocations
@@ -292,13 +308,7 @@ func checkA2A(cfg *config.Config) []diagResult {
 	var out []diagResult
 
 	if cfg.A2A.Server.Enabled {
-		listen := cfg.A2A.Server.Listen
-		if listen == "" {
-			listen = defaultA2AListen
-		}
-		out = append(out, diagResult{
-			Name: "identity.a2a.server.listen", Status: "info", Detail: listen,
-		})
+		out = append(out, a2aListenRow(cfg.A2A.Server))
 
 		if cfg.A2A.Server.AuthTokensFile == "" {
 			out = append(out, diagResult{
@@ -615,6 +625,29 @@ func humanDuration(d time.Duration) string {
 	}
 }
 
+// checkEmailAuth reports whether an email allowlist rests on
+// authenticated mail or on the forgeable From header.
+func checkEmailAuth(cfg *config.Config) []diagResult {
+	e := cfg.Email
+	if e.IMAPAddr == "" {
+		return nil
+	}
+	row := diagResult{Name: "email.sender_authentication"}
+	switch {
+	case e.RequireAuthenticationResults && e.TrustedAuthservID != "":
+		row.Status, row.Detail = "ok", "Authentication-Results from "+e.TrustedAuthservID
+	case e.RequireAuthenticationResults:
+		row.Status, row.Detail = "fail", "require_authentication_results set without trusted_authserv_id"
+	case e.InsecureTrustFrom:
+		row.Status, row.Detail = "warn", "insecure_trust_from: the From header is trusted as is"
+	case len(e.Allowlist) > 0:
+		row.Status, row.Detail = "fail", "allowlist keys on the forgeable From header"
+	default:
+		row.Status, row.Detail = "info", "no allowlist"
+	}
+	return []diagResult{row}
+}
+
 func checkBuild() []diagResult {
 	return []diagResult{
 		{
@@ -748,33 +781,6 @@ func checkState(cfg *config.Config) []diagResult {
 		})
 	}
 	return out
-}
-
-// redactDSN masks the password segment of a libpq URL so the DSN
-// can be surfaced in diagnostic output without leaking creds.
-// Keeps the scheme + user + host so operators can confirm the
-// right server is targeted.
-func redactDSN(dsn string) string {
-	// Cheap regexp-free redaction — pgx accepts both "url://" and
-	// "keyword=value" forms. Only the URL form has a colon-
-	// delimited password field to worry about; the keyword form
-	// splits password onto its own token we leave to the operator
-	// (documented in COMMERCIAL.md).
-	i := strings.Index(dsn, "://")
-	if i < 0 {
-		return dsn
-	}
-	rest := dsn[i+3:]
-	at := strings.LastIndex(rest, "@")
-	if at < 0 {
-		return dsn
-	}
-	userinfo := rest[:at]
-	colon := strings.Index(userinfo, ":")
-	if colon < 0 {
-		return dsn
-	}
-	return dsn[:i+3] + userinfo[:colon] + ":***" + rest[at:]
 }
 
 func checkWhatsApp(cfg *config.Config) []diagResult {

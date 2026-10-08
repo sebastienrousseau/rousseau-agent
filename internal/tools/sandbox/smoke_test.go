@@ -2,7 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -47,4 +49,27 @@ func TestSmoke_GVisorRunsShell(t *testing.T) {
 	})
 	require.NoError(t, err, res.CombinedOutput)
 	assert.Contains(t, res.CombinedOutput, "ok")
+}
+
+// M-11: a file under $HOME must not be readable inside the gVisor
+// sandbox, and a write must not reach the host.
+func TestSmoke_GVisorHidesHome(t *testing.T) {
+	if _, err := exec.LookPath("runsc"); err != nil {
+		t.Skip("runsc not on PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	secret := filepath.Join(home, "secret")
+	require.NoError(t, os.WriteFile(secret, []byte("s3cr3t-marker"), 0o600))
+	ws := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := (&GVisor{Policy: Policy{NoNetwork: true, Writable: []string{ws}}}).Run(ctx, Command{
+		Path: "/bin/sh",
+		Args: []string{"-c", "cat " + secret + "; echo x > " + ws + "/written"},
+		Env:  []string{"PATH=/usr/bin:/bin", "HOME=" + home},
+	})
+	require.NoError(t, err, res.CombinedOutput)
+	assert.NotContains(t, res.CombinedOutput, "s3cr3t-marker")
+	assert.NoFileExists(t, filepath.Join(ws, "written"), "the overlay keeps writes off the host")
 }

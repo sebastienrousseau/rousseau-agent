@@ -157,9 +157,9 @@ func TestSpawnSubagentTool_CallerOverridesPolicy(t *testing.T) {
 	provider := &stubProvider{name: "stub", reply: "ok"}
 	ctx := toolcontext.WithProvider(toolcontext.WithSession(context.Background(), session), provider)
 
-	// Two tasks + max_concurrent override of 2 should complete without
-	// serialising. We don't measure timing here (flaky under CI), just
-	// that the override is accepted.
+	// A max_concurrent above the operator's 1 is accepted but cannot
+	// raise it (see TestSpawnSubagent_CannotRaiseConcurrency); the
+	// call still completes.
 	out, err := tool.Execute(ctx, json.RawMessage(`{
         "tasks": [{"prompt": "a"}, {"prompt": "b"}],
         "max_concurrent": 2,

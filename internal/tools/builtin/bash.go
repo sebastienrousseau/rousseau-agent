@@ -1,7 +1,6 @@
 package builtin
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -114,14 +113,17 @@ func (t *BashTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 }
 
 // runDirect is the pre-sandbox code path: exec.CommandContext with
-// combined stdout+stderr. Preserved so a caller who did not opt into
-// sandboxing gets exactly today's behaviour, byte for byte.
+// combined stdout+stderr. Output is capped at
+// [sandbox.DefaultOutputCap] while the command runs, and on timeout
+// the whole process group is killed so a background child can neither
+// keep the call blocked nor outlive it.
 func (t *BashTool) runDirect(ctx context.Context, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	cmd.Env = t.env()
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	sandbox.PrepareCommand(cmd)
+	buf := sandbox.NewCappedBuffer(sandbox.DefaultOutputCap)
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 
 	err := cmd.Run()
 	out := buf.String()

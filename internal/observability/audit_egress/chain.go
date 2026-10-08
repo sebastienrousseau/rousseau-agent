@@ -27,14 +27,16 @@ import (
 //	ChainedSink.Emit(rec):
 //	    rec.Chain.Sequence = c.seq
 //	    rec.Chain.PrevHash = c.prev
-//	    rec.Chain.Hash     = SHA-256(canonicalBytes(rec))
+//	    rec.Chain.Version  = 2
+//	    rec.Chain.Hash     = SHA-256(hashInputV2(rec))
 //	    c.seq++
 //	    c.prev = rec.Chain.Hash
 //	    inner.Emit(rec)
 //
-// Where `canonicalBytes(rec)` is a deterministic byte
+// Where `hashInputV2(rec)` is a length-prefixed, versioned byte
 // representation of every user-populated field PLUS Sequence +
-// PrevHash. See [canonicalHash].
+// PrevHash. See [hashInputV2]; v1 records ([canonicalHash]) still
+// verify.
 //
 // # Guarantees
 //
@@ -182,10 +184,22 @@ func NewChainedSink(inner Sink, opts ...ChainOption) *ChainedSink {
 // batch), and a store save that succeeds guarantees the
 // on-disk state matches what the SIEM will see.
 func (c *ChainedSink) Emit(ctx context.Context, rec Record) error {
+	if rec.At.IsZero() {
+		// Stamp here, not in the wrapped sink: the hash must cover the
+		// time the SIEM receives.
+		rec.At = time.Now().UTC()
+	}
+	prepareV2(&rec)
 	c.mu.Lock()
+	rec.Chain.Version = ChainVersionV2
 	rec.Chain.Sequence = c.seq
 	rec.Chain.PrevHash = c.prev
-	rec.Chain.Hash = canonicalHash(rec)
+	hash, err := canonicalHashV2(rec)
+	if err != nil {
+		// prepareV2 made Detail renderable; reaching here is a bug.
+		c.logger.Error("audit_egress.chain.hash_failed", slog.String("err", err.Error()))
+	}
+	rec.Chain.Hash = hash
 	if len(c.macKey) > 0 {
 		rec.Chain.MAC = chainMAC(c.macKey, rec.Chain.Hash)
 	}
@@ -214,33 +228,80 @@ func (c *ChainedSink) Close(ctx context.Context) error {
 var _ Sink = (*ChainedSink)(nil)
 
 // VerifyChain walks records in order and returns nil when every
-// record's Sequence, PrevHash, and Hash line up. On any mismatch
-// returns a wrapped error with the offending index so a SIEM-side
-// verifier can point at the exact record that broke the chain.
+// record's Sequence, PrevHash, and Hash line up, starting from the
+// genesis record (Sequence 0, empty PrevHash). On any mismatch it
+// returns an error naming the offending index so a SIEM-side verifier
+// can point at the exact record that broke the chain.
+//
+// Each record is hashed under the encoding its Version names (v1 or
+// v2), so a chain that crossed the v1→v2 upgrade verifies end to end.
+// Once a v2 record is seen, a later record may not claim an older
+// version.
 //
 // Empty input is not an error — a zero-record chain is vacuously
 // valid. Callers that require at least one record to pass
 // verification should check `len(records) > 0` themselves.
 func VerifyChain(records []Record) error {
-	var (
-		wantSeq  uint64
-		wantPrev string
-	)
-	for i, rec := range records {
-		if rec.Chain.Sequence != wantSeq {
-			return fmt.Errorf("audit chain: sequence gap at index %d: got %d, want %d",
-				i, rec.Chain.Sequence, wantSeq)
-		}
-		if rec.Chain.PrevHash != wantPrev {
-			return fmt.Errorf("audit chain: prev-hash break at index %d: got %q, want %q",
-				i, rec.Chain.PrevHash, wantPrev)
-		}
-		if rec.Chain.Hash != canonicalHash(rec) {
-			return fmt.Errorf("audit chain: hash mismatch at index %d (record was mutated after emit)", i)
-		}
-		wantSeq = rec.Chain.Sequence + 1
-		wantPrev = rec.Chain.Hash
+	return Verify(records, VerifyOptions{})
+}
+
+// VerifyOptions tunes [Verify].
+type VerifyOptions struct {
+	// Key, when set, also checks every record's MAC (see
+	// [VerifyChainMAC]).
+	Key []byte
+	// Segment anchors the walk on the first record's Sequence and
+	// PrevHash instead of requiring genesis — for an export window
+	// that starts mid-chain. The window's first link is then
+	// unchecked.
+	Segment bool
+}
+
+// Verify is [VerifyChain] with options.
+func Verify(records []Record, opts VerifyOptions) error {
+	var w chainWalk
+	if opts.Segment && len(records) > 0 {
+		w.seq, w.prev = records[0].Chain.Sequence, records[0].Chain.PrevHash
 	}
+	for i, rec := range records {
+		if err := w.step(i, rec); err != nil {
+			return err
+		}
+	}
+	if len(opts.Key) == 0 {
+		return nil
+	}
+	return verifyMACs(records, opts.Key)
+}
+
+// chainWalk is the verifier's expectation for the next record.
+type chainWalk struct {
+	seq        uint64
+	prev       string
+	minVersion uint8
+}
+
+func (w *chainWalk) step(i int, rec Record) error {
+	if rec.Chain.Sequence != w.seq {
+		return fmt.Errorf("audit chain: sequence gap at index %d: got %d, want %d",
+			i, rec.Chain.Sequence, w.seq)
+	}
+	if rec.Chain.PrevHash != w.prev {
+		return fmt.Errorf("audit chain: prev-hash break at index %d: got %q, want %q",
+			i, rec.Chain.PrevHash, w.prev)
+	}
+	v := effectiveVersion(rec.Chain.Version)
+	if v < w.minVersion {
+		return fmt.Errorf("audit chain: version downgrade at index %d: v%d after v%d", i, v, w.minVersion)
+	}
+	want, err := recordHash(rec)
+	if err != nil {
+		return fmt.Errorf("audit chain: index %d: %w", i, err)
+	}
+	if rec.Chain.Hash != want {
+		return fmt.Errorf("audit chain: hash mismatch at index %d (record was mutated after emit)", i)
+	}
+	w.seq, w.prev, w.minVersion = rec.Chain.Sequence+1, rec.Chain.Hash, v
 	return nil
 }
 
@@ -248,10 +309,16 @@ func VerifyChain(records []Record) error {
 // the caller wants to check identity, not just presence.
 var ErrChainBroken = errors.New("audit chain broken")
 
-// canonicalHash produces a deterministic hex-encoded SHA-256 over
-// the record's user-supplied fields plus the chain's Sequence +
-// PrevHash. The field order MUST NEVER change once released —
-// downstream verifiers pin to this byte layout.
+// canonicalHash is the v1 ([ChainVersionV1]) encoding, kept only so
+// chains written before v2 still verify; new records use
+// [canonicalHashV2]. It produces a deterministic hex-encoded SHA-256
+// over the record's user-supplied fields plus the chain's Sequence +
+// PrevHash. The field order MUST NEVER change — downstream verifiers
+// pin to this byte layout.
+//
+// Known weakness (L-9): the NUL separators are not escaped, so a
+// field containing 0x00 can move a boundary and two different records
+// can hash alike. v2 length-prefixes every field instead.
 //
 // The layout:
 //
@@ -266,8 +333,7 @@ var ErrChainBroken = errors.New("audit chain broken")
 //	string  TraceID
 //	string  Detail (sorted-key JSON of the map)
 //
-// The 0x00 separators keep concatenations unambiguous — no
-// length-prefix needed. Detail is JSON-encoded with sorted keys
+// Detail is JSON-encoded with sorted keys
 // so map iteration order (Go's random iteration) doesn't affect
 // the hash.
 func canonicalHash(r Record) string {
@@ -353,9 +419,13 @@ func chainMAC(key []byte, hash string) string {
 // must carry a MAC of its Hash under key. It detects a chain that was
 // edited and fully re-hashed, which VerifyChain alone cannot.
 func VerifyChainMAC(records []Record, key []byte) error {
-	if err := VerifyChain(records); err != nil {
-		return err
+	if len(key) == 0 {
+		return errors.New("audit chain: empty MAC key")
 	}
+	return Verify(records, VerifyOptions{Key: key})
+}
+
+func verifyMACs(records []Record, key []byte) error {
 	for i, r := range records {
 		want := chainMAC(key, r.Chain.Hash)
 		if !hmac.Equal([]byte(want), []byte(r.Chain.MAC)) {

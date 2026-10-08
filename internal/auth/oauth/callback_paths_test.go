@@ -86,13 +86,17 @@ func okExchange(context.Context, string) (*Token, error) {
 	return &Token{AccessToken: "at", RefreshToken: "rt"}, nil
 }
 
-func TestServe_RejectsMismatchedState(t *testing.T) {
+// TestServe_MismatchedStateAloneTimesOut: a forged state is ignored,
+// so with no genuine redirect the flow ends on the timeout, not on
+// the forged request (see TestServe_ForgedStateIsRejectedButFlowKeepsWaiting).
+func TestServe_MismatchedStateAloneTimesOut(t *testing.T) {
 	b := brokerWithProvider(t, okExchange)
+	b.CallbackTimeout = 500 * time.Millisecond
 	_, err := serveWithRedirect(t, b, "google", func(string) url.Values {
 		return url.Values{"state": {"forged-state"}, "code": {"code-xyz"}}
 	})
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "state mismatch")
+	assert.ErrorContains(t, err, "callback timeout")
 }
 
 func TestServe_SurfacesProviderReportedError(t *testing.T) {

@@ -46,7 +46,7 @@ func signRawRS256(t *testing.T, priv *rsa.PrivateKey, kid, part1 string) string 
 
 func TestOIDC_SignatureBase64Invalid(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := s.signToken(t, map[string]any{
@@ -64,7 +64,7 @@ func TestOIDC_SignatureBase64Invalid(t *testing.T) {
 
 func TestOIDC_PayloadBase64Invalid(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	// Sign over a payload segment that is not valid base64. Signature
@@ -79,7 +79,7 @@ func TestOIDC_PayloadBase64Invalid(t *testing.T) {
 
 func TestOIDC_PayloadJSONInvalid(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	// Valid base64 whose decoded bytes are not valid JSON.
@@ -99,6 +99,7 @@ func TestIdentityFromClaims_RawUnmarshalFailsGracefully(t *testing.T) {
 	d, err := NewOIDCDirectory(OIDCConfig{
 		Issuer:            "https://issuer.example",
 		TransportMappings: []TransportMapping{{Transport: "slack", ClaimKey: "slack_id"}},
+		AllowAnyAudience:  true,
 	}, silentLogger())
 	require.NoError(t, err)
 
@@ -112,7 +113,7 @@ func TestIdentityFromClaims_RawUnmarshalFailsGracefully(t *testing.T) {
 func TestFetchDiscovery_RequestBuildError(t *testing.T) {
 	// A control character in the issuer makes http.NewRequestWithContext
 	// fail before any network call.
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: "http://exa\x00mple.com"}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: "http://exa\x00mple.com", AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
@@ -124,7 +125,7 @@ func TestFetchDiscovery_Non200(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
@@ -138,7 +139,7 @@ func TestFetchDiscovery_BadJSON(t *testing.T) {
 		require.NoError(t, werr)
 	}))
 	defer srv.Close()
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
@@ -159,7 +160,7 @@ func TestRefreshJWKS_MissingJWKSURI(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
@@ -190,16 +191,21 @@ func discoveryPointingAt(t *testing.T, jwksURI string) *httptest.Server {
 
 func TestFetchJWKS_RequestBuildError(t *testing.T) {
 	srv := discoveryPointingAt(t, "http://exa\x00mple.com/jwks")
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
+	// Discovery now refuses an unparseable jwks_uri before any fetch.
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jwks_uri unparseable")
+	// The request-build branch itself, reached directly.
+	_, err = d.fetchJWKS(context.Background(), "http://exa\x00mple.com/jwks")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "jwks request")
 }
 
 func TestFetchJWKS_FetchError(t *testing.T) {
 	srv := discoveryPointingAt(t, "http://127.0.0.1:1/jwks")
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
@@ -212,7 +218,7 @@ func TestFetchJWKS_Non200(t *testing.T) {
 	}))
 	defer jwks.Close()
 	srv := discoveryPointingAt(t, jwks.URL)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
@@ -227,7 +233,7 @@ func TestFetchJWKS_BadJSON(t *testing.T) {
 	}))
 	defer jwks.Close()
 	srv := discoveryPointingAt(t, jwks.URL)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.VerifyToken(context.Background(), makeGarbageToken(t, "k"))
 	require.Error(t, err)
@@ -271,7 +277,7 @@ func TestFetchJWKS_SkipsMalformedAndKidlessKeys(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := signRawRS256(t, priv, goodKid, b64(mustJSON(t, map[string]any{
@@ -325,7 +331,7 @@ func TestResolveKey_ConcurrentRefreshDoubleCheck(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, JWKSRefresh: time.Hour}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, JWKSRefresh: time.Hour, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := signRawRS256(t, priv, kid, b64(mustJSON(t, map[string]any{

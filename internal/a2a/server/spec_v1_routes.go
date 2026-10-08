@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -28,7 +30,7 @@ func (s *Server) handleGetTaskVerb(w http.ResponseWriter, r *http.Request) {
 	id, verb, hasVerb := strings.Cut(spec, ":")
 	if !hasVerb {
 		// Bare id — legacy GET /tasks/{id}
-		s.handleStatusFor(w, id)
+		s.handleStatusFor(w, r, id)
 		return
 	}
 	switch verb {
@@ -52,7 +54,7 @@ func (s *Server) handlePostTaskVerb(w http.ResponseWriter, r *http.Request) {
 	}
 	switch verb {
 	case "cancel":
-		s.handleSpecCancelFor(w, id)
+		s.handleSpecCancelFor(w, r, id)
 	default:
 		writeSpecErr(w, http.StatusNotFound, "unknown_verb", "unsupported task verb: "+verb)
 	}
@@ -60,8 +62,8 @@ func (s *Server) handlePostTaskVerb(w http.ResponseWriter, r *http.Request) {
 
 // handleStatusFor is the legacy status handler split so the verb
 // dispatcher can call it without a fake *http.Request.
-func (s *Server) handleStatusFor(w http.ResponseWriter, id string) {
-	state := s.lookup(id)
+func (s *Server) handleStatusFor(w http.ResponseWriter, r *http.Request, id string) {
+	state := s.lookupFor(r.Context(), id)
 	if state == nil {
 		writeErr(w, http.StatusNotFound, "unknown task_id")
 		return
@@ -70,8 +72,8 @@ func (s *Server) handleStatusFor(w http.ResponseWriter, id string) {
 }
 
 // handleSpecCancelFor is the id-parameterised body of handleSpecCancel.
-func (s *Server) handleSpecCancelFor(w http.ResponseWriter, id string) {
-	state := s.lookup(id)
+func (s *Server) handleSpecCancelFor(w http.ResponseWriter, r *http.Request, id string) {
+	state := s.lookupFor(r.Context(), id)
 	if state == nil {
 		writeSpecErr(w, http.StatusNotFound, "task_not_found", "unknown task id")
 		return
@@ -88,7 +90,7 @@ func (s *Server) handleSpecCancelFor(w http.ResponseWriter, id string) {
 
 // handleSpecSubscribeFor is the id-parameterised body of handleSpecSubscribe.
 func (s *Server) handleSpecSubscribeFor(w http.ResponseWriter, r *http.Request, id string) {
-	state := s.lookup(id)
+	state := s.lookupFor(r.Context(), id)
 	if state == nil {
 		writeSpecErr(w, http.StatusNotFound, "task_not_found", "unknown task id")
 		return
@@ -137,35 +139,74 @@ func (s *Server) handleSpecSubscribeFor(w http.ResponseWriter, r *http.Request, 
 // the two card types in sync at request time so operators only need to
 // configure one.
 //
-// When [Server.SigningKey] is set, the card is JWS-signed via
-// [a2a.SignAgentCard] before serialisation so peers can verify card
-// authenticity + integrity per the A2A v1.0.1 signatures[] surface.
-// Signing failure logs at ERROR and serves the unsigned card rather
-// than 500ing — a missing signature is a downgraded trust posture,
-// not an outage. This mirrors the fail-open discipline used
-// elsewhere in the codebase (audit-egress, redact).
+// The card is JWS-signed via [a2a.SignAgentCard] only when both
+// [Server.SigningKey] and [Server.PublicURL] are set; the signed card
+// then advertises PublicURL whatever the request says. Without a
+// public URL the card's URL is derived from the request (Host, or the
+// forwarded headers of a trusted proxy) and is served unsigned, with
+// one warning per process: signing a URL the caller chose would let
+// anyone mint a card that is validly signed by the operator's key and
+// points at their own host.
+//
+// Signing failure serves the unsigned card rather than 500ing — a
+// missing signature is a downgraded trust posture, not an outage.
 func (s *Server) handleSpecCard(w http.ResponseWriter, r *http.Request) {
 	card := a2a.UpgradeCard(s.Card)
-	if card.URL == "" {
-		card.URL = specBaseURL(r)
-	}
+	card.URL = s.cardBaseURL(r)
 	card.Interfaces = []a2a.AgentInterface{
 		{URL: card.URL, ProtocolBinding: "REST", ProtocolVersion: a2a.SpecVersion},
 		{URL: card.URL + "/jsonrpc", ProtocolBinding: "JSONRPC", ProtocolVersion: a2a.SpecVersion},
 	}
 	card.PreferredTransport = "REST"
+	writeSpecJSON(w, http.StatusOK, s.maybeSign(card))
+}
 
-	if len(s.SigningKey) != 0 {
-		signed, err := a2a.SignAgentCard(card, s.SigningKey)
-		if err == nil {
-			card = signed
-		}
-		// On sign failure fall through with the unsigned card. The
-		// alternative — returning 500 — would break every peer's
-		// discovery even though the card content is fine. Operators
-		// diagnose via the doctor.
+// cardBaseURL is the configured public URL, or the request-derived one.
+func (s *Server) cardBaseURL(r *http.Request) string {
+	if s.PublicURL != "" {
+		return strings.TrimRight(s.PublicURL, "/")
 	}
-	writeSpecJSON(w, http.StatusOK, card)
+	return specBaseURL(r, s.fromTrustedProxy(r))
+}
+
+// maybeSign signs card when a signing key and a public URL are both
+// configured; otherwise it returns card unchanged.
+func (s *Server) maybeSign(card a2a.AgentCard) a2a.AgentCard {
+	if len(s.SigningKey) == 0 {
+		return card
+	}
+	if s.PublicURL == "" {
+		s.unsignedOnce.Do(func() {
+			s.logger().Warn("a2a.card_unsigned",
+				slog.String("hint", "signing_key_file is set but public_url is not; the agent card is served unsigned because its URL comes from the request"),
+			)
+		})
+		return card
+	}
+	signed, err := a2a.SignAgentCard(card, s.SigningKey)
+	if err != nil {
+		return card
+	}
+	return signed
+}
+
+// fromTrustedProxy reports whether r arrived from one of
+// [Server.TrustedProxies], so its X-Forwarded-* headers may be used.
+func (s *Server) fromTrustedProxy(r *http.Request) bool {
+	if len(s.TrustedProxies) == 0 {
+		return false
+	}
+	ap, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	addr := ap.Addr().Unmap()
+	for _, p := range s.TrustedProxies {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleSpecMessageSend is the v1.0 `POST /message:send` handler. The
@@ -176,7 +217,7 @@ func (s *Server) handleSpecCard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSpecMessageSend(w http.ResponseWriter, r *http.Request) {
 	var msg a2a.Message
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&msg); err != nil {
-		writeSpecErr(w, http.StatusBadRequest, "invalid_message", "invalid message body: "+err.Error())
+		writeSpecErr(w, http.StatusBadRequest, "invalid_message", s.peerError("invalid message body", err))
 		return
 	}
 	prompt := a2a.PromptFromMessage(msg)
@@ -193,7 +234,11 @@ func (s *Server) handleSpecMessageSend(w http.ResponseWriter, r *http.Request) {
 		legacyTask.TaskID = newTaskID()
 	}
 
-	state := s.spawnTask(legacyTask)
+	state, err := s.spawnTask(r.Context(), legacyTask)
+	if err != nil {
+		writeSpecErr(w, spawnErrStatus(err), "task_rejected", s.spawnErrText(err))
+		return
+	}
 	resp := a2a.SpecTask{
 		ID:        state.id,
 		ContextID: msg.ContextID,
@@ -248,18 +293,22 @@ func writeSpecSSE(w io.Writer, taskID string, upd a2a.TaskUpdate) error {
 }
 
 // specBaseURL derives the base URL for the interface advertisement on
-// the AgentCard from the inbound request. Uses X-Forwarded-Proto /
-// X-Forwarded-Host when present so reverse-proxied deployments
-// advertise the externally-visible URL, not the loopback the process
-// is bound to.
-func specBaseURL(r *http.Request) string {
+// the AgentCard from the inbound request. When trustForwarded is true
+// (the request came from a configured trusted proxy) X-Forwarded-Proto
+// / X-Forwarded-Host are used so reverse-proxied deployments advertise
+// the externally-visible URL; otherwise they are ignored.
+func specBaseURL(r *http.Request, trustForwarded bool) string {
 	scheme := "http"
-	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
-		scheme = fwd
-	} else if r.TLS != nil {
+	if r.TLS != nil {
 		scheme = "https"
 	}
 	host := r.Host
+	if !trustForwarded {
+		return scheme + "://" + host
+	}
+	if fwd := r.Header.Get("X-Forwarded-Proto"); fwd != "" {
+		scheme = fwd
+	}
 	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
 		host = fwd
 	}

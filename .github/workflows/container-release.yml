@@ -17,7 +17,7 @@
 #
 # Verification:
 #   cosign verify \
-#     --certificate-identity-regexp 'https://github.com/sebastienrousseau/rousseau-agent/.*' \
+#     --certificate-identity 'https://github.com/sebastienrousseau/rousseau-agent/.github/workflows/container-release.yml@refs/tags/v0.0.1' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
 #     ghcr.io/sebastienrousseau/rousseau-agent:v0.0.1
 #
@@ -58,18 +58,11 @@ on:
     - cron: "0 5 * * 1"
   workflow_dispatch:
 
+# Least privilege (M-17): the workflow default is read-only, and each
+# job asks for exactly what it uses. pr-scan runs third-party scanners
+# on main pushes and same-repo PRs, so it gets no write scope at all.
 permissions:
-  # contents:write is needed by anchore/sbom-action@v0 on tag push
-  # — it uploads the generated SPDX SBOM as a release asset via the
-  # GitHub Releases API. With contents:read the upload fails
-  # "Resource not accessible by integration" (v0.0.4 → v0.0.6
-  # container releases all hit this).
-  contents: write
-  packages: write
-  # id-token for cosign keyless + SLSA attestations
-  id-token: write
-  # attestations for SLSA build provenance
-  attestations: write
+  contents: read
 
 env:
   REGISTRY: ghcr.io
@@ -84,6 +77,8 @@ jobs:
   # -------------------------------------------------------------------
   pr-scan:
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -150,6 +145,11 @@ jobs:
   # -------------------------------------------------------------------
   build:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    # Pushes per-arch images by digest. Signing and attestation happen
+    # in merge-and-sign, so no OIDC token here.
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -210,8 +210,11 @@ jobs:
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.date.outputs.date }}
             APK_REFRESH=${{ steps.date.outputs.day }}
-          cache-from: type=gha,scope=${{ matrix.flavour }}-${{ matrix.arch }}
-          cache-to: type=gha,scope=${{ matrix.flavour }}-${{ matrix.arch }},mode=max
+          # Release-only cache scope (L-30): pr-scan writes
+          # <flavour>-amd64 from main and PR runs, and the tag build
+          # must not restore layers those runs produced.
+          cache-from: type=gha,scope=release-${{ matrix.flavour }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=release-${{ matrix.flavour }}-${{ matrix.arch }},mode=max
 
       - name: Export digest
         run: |
@@ -237,6 +240,16 @@ jobs:
   merge-and-sign:
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     needs: build
+    permissions:
+      # anchore/sbom-action uploads the SPDX SBOM as a release asset on
+      # tag push (this job's "Generate SBOM" step); with contents:read
+      # the upload fails "Resource not accessible by integration"
+      # (v0.0.4 to v0.0.6 hit this). It is the only job that needs it.
+      contents: write
+      packages: write
+      # cosign keyless signing and the build-provenance attestation.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:

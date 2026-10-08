@@ -186,7 +186,7 @@ func (c *Client) reply(ctx context.Context, m *telegramMessage, reply string) {
 
 // route decides whether to invoke the handler for an update.
 func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.Handler) {
-	if u.Message == nil {
+	if !c.admit(u.Message) {
 		return
 	}
 
@@ -220,6 +220,7 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 		At:           time.Unix(u.Message.Date, 0),
 		Conversation: chatID,
 		MessageID:    strconv.FormatInt(u.Message.MessageID, 10),
+		IsDirect:     u.Message.Chat.Type == "private",
 		Attachments:  attachments,
 	}
 	if u.Message.IsTopicMessage {
@@ -235,6 +236,45 @@ func (c *Client) route(ctx context.Context, u telegramUpdate, handler transport.
 		return
 	}
 	c.reply(ctx, u.Message, reply)
+}
+
+// Pseudo-sender user IDs Telegram puts in From for every message of
+// their kind, across all of Telegram.
+const (
+	// groupAnonymousBotID is @GroupAnonymousBot, the From of every
+	// message an anonymous group admin sends.
+	groupAnonymousBotID = 1087968824
+	// channelBotID is @Channel_Bot, the From of every message posted
+	// "as a channel".
+	channelBotID = 136817688
+)
+
+// admit reports whether m is a message from an identifiable user. An
+// anonymous admin or a send-as-channel post shares one sender ID with
+// every other such message on Telegram, so an allow-list entry for it
+// would admit strangers; those are dropped.
+func (c *Client) admit(m *telegramMessage) bool {
+	if m == nil {
+		return false
+	}
+	if isPseudoSender(m) {
+		c.logger.Debug("telegram.pseudo_sender_dropped",
+			slog.Int64("chat", m.Chat.ID))
+		return false
+	}
+	return true
+}
+
+// isPseudoSender reports whether m was sent on behalf of a chat
+// (sender_chat set) or by one of Telegram's shared pseudo-users.
+func isPseudoSender(m *telegramMessage) bool {
+	if m.SenderChat != nil {
+		return true
+	}
+	if m.From == nil {
+		return false
+	}
+	return m.From.ID == groupAnonymousBotID || m.From.ID == channelBotID
 }
 
 // transcribeAudio downloads the message's voice or audio blob and
@@ -347,11 +387,11 @@ func (c *Client) downloadFile(ctx context.Context, fileID string) ([]byte, strin
 	fileURL := c.cfg.BaseURL + "/file/bot" + url.PathEscape(c.cfg.Token) + "/" + out.Result.FilePath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("build download request: %w", err)
+		return nil, "", fmt.Errorf("build download request: %w", transport.RedactURLError(err, c.cfg.Token))
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("download: %w", err)
+		return nil, "", fmt.Errorf("download: %w", transport.RedactURLError(err, c.cfg.Token))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
@@ -406,12 +446,12 @@ func (c *Client) call(ctx context.Context, method string, payload any, result an
 	endpoint := c.cfg.BaseURL + "/bot" + url.PathEscape(c.cfg.Token) + "/" + method
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("telegram: build request: %w", err)
+		return fmt.Errorf("telegram: build request: %w", transport.RedactURLError(err, c.cfg.Token))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram: %s: %w", method, err)
+		return fmt.Errorf("telegram: %s: %w", method, transport.RedactURLError(err, c.cfg.Token))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -453,6 +493,9 @@ type telegramMessage struct {
 	Voice           *telegramVoice      `json:"voice,omitempty"`
 	Audio           *telegramAudio      `json:"audio,omitempty"`
 	Photo           []telegramPhotoSize `json:"photo,omitempty"`
+	// SenderChat is set when the message was sent on behalf of a
+	// chat: an anonymous group admin or a post sent as a channel.
+	SenderChat *telegramChat `json:"sender_chat,omitempty"`
 }
 
 // telegramPhotoSize is one rendition of an inbound photo. The Bot

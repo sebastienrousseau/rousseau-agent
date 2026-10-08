@@ -117,11 +117,11 @@ sboms:
 #
 # Verify (consumer side):
 #   cosign verify-blob \
-#     --certificate  <artifact>.pem \
-#     --signature    <artifact>.sig \
-#     --certificate-identity-regexp='https://github.com/sebastienrousseau/rousseau-agent/.*' \
+#     --certificate  checksums.txt.pem \
+#     --signature    checksums.txt.sig \
+#     --certificate-identity='https://github.com/sebastienrousseau/rousseau-agent/.github/workflows/release.yml@refs/tags/<tag>' \
 #     --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
-#     <artifact>
+#     checksums.txt
 signs:
   - cmd: cosign
     args:

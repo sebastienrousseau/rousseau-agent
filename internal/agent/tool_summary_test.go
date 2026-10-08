@@ -81,3 +81,11 @@ func TestTrimSummary(t *testing.T) {
 	assert.Equal(t, 48, len([]rune(got)))
 	assert.True(t, strings.HasSuffix(got, "…"))
 }
+
+// A bash line can carry a credential; the bullet must not.
+func TestSummarizeToolInput_RedactsSecrets(t *testing.T) {
+	in := `{"command": "export X=sk-` + `ant-api03-FAKEFAKEFAKEFAKEFAKEFAKE"}`
+	got := summarizeToolInput("Bash", json.RawMessage(in))
+	assert.NotContains(t, got, "FAKEFAKE")
+	assert.Contains(t, got, "«redacted:anthropic»")
+}

@@ -2,6 +2,9 @@ package approval_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -427,3 +430,56 @@ func waitForRequest(t *testing.T, emitter *captureEmitter) string {
 // unused-import shim
 var _ = strings.HasPrefix
 var _ = errors.New
+
+// A policy deny from the inner chain (RBAC, OPA, risk, pattern) ends a
+// covered request before anyone is asked to vote.
+func TestApprove_InnerDenyShortCircuitsVote(t *testing.T) {
+	emitter := &captureEmitter{}
+	pm := approval.NewPendingManager(emitter)
+	inner := &agent.PatternApprover{
+		Deny:    []agent.PatternRule{{ToolName: "bash", Match: `rm -rf`}},
+		Default: agent.DecisionAllow,
+	}
+	app, err := approval.NewApprover([]approval.Rule{{Tool: "bash", NeededApprovals: 1, Timeout: time.Second}}, inner, pm)
+	require.NoError(t, err)
+	ctx := sso.WithIdentity(context.Background(), sso.Identity{Subject: "okta|alice"})
+
+	d, _ := app.Approve(ctx, agent.ApprovalRequest{ToolName: "bash", Input: json.RawMessage(`{"command":"rm -rf /srv"}`)})
+	assert.Equal(t, agent.DecisionDeny, d)
+	reqs, _, _ := emitter.snapshot()
+	assert.Empty(t, reqs, "a policy deny must not open a vote")
+}
+
+// An inner allow does not skip the vote for a covered tool.
+func TestApprove_InnerAllowStillRequiresQuorum(t *testing.T) {
+	emitter := &captureEmitter{}
+	pm := approval.NewPendingManager(emitter)
+	app, err := approval.NewApprover([]approval.Rule{{Tool: "bash", NeededApprovals: 1, Timeout: 200 * time.Millisecond}}, agent.AllowAllApprover{}, pm)
+	require.NoError(t, err)
+	ctx := sso.WithIdentity(context.Background(), sso.Identity{Subject: "okta|alice"})
+	d, _ := app.Approve(ctx, agent.ApprovalRequest{ToolName: "bash", Input: json.RawMessage(`{"command":"ls"}`)})
+	assert.Equal(t, agent.DecisionDeny, d, "no votes before the timeout means deny")
+	reqs, _, _ := emitter.snapshot()
+	assert.Len(t, reqs, 1)
+}
+
+// Voters see what they approve: the record carries a digest and a
+// summary of the exact input.
+func TestPendingRecord_CarriesInputDigestAndSummary(t *testing.T) {
+	pm := approval.NewPendingManager(nil)
+	input := json.RawMessage(`{"command":"terraform apply -auto-approve"}`)
+	rec := pm.Enqueue(context.Background(), approval.PendingInput{Tool: "bash", Input: input, Requester: "okta|alice", Needed: 1, Timeout: time.Minute})
+	sum := sha256.Sum256(input)
+	assert.Equal(t, hex.EncodeToString(sum[:]), rec.InputSHA256)
+	assert.Equal(t, "terraform apply -auto-approve", rec.InputSummary)
+
+	got, ok := pm.Lookup(rec.Token)
+	require.True(t, ok)
+	assert.True(t, got.DigestMatches(rec.InputSHA256[:approval.DigestPrefixLen]))
+	assert.True(t, got.DigestMatches(strings.ToUpper(rec.InputSHA256[:12])), "case-insensitive")
+	assert.False(t, got.DigestMatches(rec.InputSHA256[:approval.DigestPrefixLen-1]), "too short")
+	assert.False(t, got.DigestMatches("00000000"))
+	assert.Len(t, pm.List(), 1)
+	_, ok = pm.Lookup("missing")
+	assert.False(t, ok)
+}

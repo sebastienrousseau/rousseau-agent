@@ -322,10 +322,12 @@ func TestTurn_HookModifyRewritesToolInput(t *testing.T) {
 	tests := []struct {
 		name     string
 		modified string
-		want     string
+		want     []string
 	}{
-		{name: "valid JSON replaces input", modified: `{"path":"/safe"}`, want: `{"path":"/safe"}`},
-		{name: "invalid JSON is ignored", modified: `not-json`, want: `{"path":"/etc/shadow"}`},
+		{name: "valid JSON replaces input", modified: `{"path":"/safe"}`, want: []string{`{"path":"/safe"}`}},
+		// The hook did not accept the original and offered nothing
+		// runnable, so the call is denied (neither input runs).
+		{name: "invalid JSON is denied", modified: `not-json`, want: nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -342,7 +344,7 @@ func TestTurn_HookModifyRewritesToolInput(t *testing.T) {
 
 			_, err := a.Turn(context.Background(), sessionWith("read a file"))
 			require.NoError(t, err)
-			assert.Equal(t, []string{tc.want}, tool.got)
+			assert.Equal(t, tc.want, tool.got)
 		})
 	}
 }
@@ -361,11 +363,11 @@ func TestTurn_HookModifyWithEmptyPayloadLeavesInputAlone(t *testing.T) {
 	assert.Equal(t, []string{`{"path":"/a"}`}, tool.got)
 }
 
-func TestTurn_HookPayloadMarshalFailureFailsOpen(t *testing.T) {
+func TestTurn_MalformedInputIsRejectedBeforeHooksAndTool(t *testing.T) {
 	tool := &recordingTool{name: "echo", out: "pong"}
-	hk := &stubHooks{verdict: hooks.Verdict{Decision: hooks.DecisionDeny, Reason: "never reached"}}
-	// A ToolUse carrying malformed raw JSON cannot be marshalled into
-	// the hook payload; the loop logs and proceeds without the hook.
+	hk := &stubHooks{verdict: hooks.Verdict{Decision: hooks.DecisionAllow}}
+	// Malformed JSON never reaches the approver, the hooks or the
+	// tool: each could read it differently (M-3).
 	prov := &scriptedProvider{script: []Response{
 		toolUseResponse("c1", "echo", `this is not json`),
 		endTurnResponse("done"),
@@ -375,9 +377,22 @@ func TestTurn_HookPayloadMarshalFailureFailsOpen(t *testing.T) {
 	s := sessionWith("go")
 	_, err := a.Turn(context.Background(), s)
 	require.NoError(t, err)
+	assert.Empty(t, hk.seen, "hooks never see malformed input")
+	assert.Empty(t, tool.got, "the tool never runs on malformed input")
+	res := s.Messages[2].Content[0].ToolResult
+	assert.True(t, res.IsError)
+	assert.Contains(t, res.Output, "not valid JSON")
+}
+
+func TestPreToolHook_PayloadMarshalFailureFailsOpen(t *testing.T) {
+	// runOneTool canonicalises first, so this only guards the hook
+	// helper itself: a payload it cannot build is logged, not fatal.
+	hk := &stubHooks{verdict: hooks.Verdict{Decision: hooks.DecisionDeny, Reason: "never reached"}}
+	a := New(&scriptedProvider{}, tools.NewRegistry(), silentLogger(), Options{Hooks: hk})
+	use := &ToolUse{ID: "c1", Name: "echo", Input: json.RawMessage(`this is not json`)}
+	_, denied := a.preToolHook(context.Background(), use, "s1")
+	assert.False(t, denied)
 	assert.Empty(t, hk.seen, "payload never got built")
-	assert.Equal(t, []string{`this is not json`}, tool.got)
-	assert.False(t, s.Messages[2].Content[0].ToolResult.IsError)
 }
 
 // --- message -----------------------------------------------------------

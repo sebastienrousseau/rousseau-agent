@@ -48,7 +48,7 @@ SOC 2 covers five criteria; a typical enterprise buyer asks for
 | CC7.2 | System operations — anomaly detection | Reliability metrics; per-tool circuit breakers via resilience package | `internal/reliability/`, `internal/resilience/` |
 | CC7.3 | System operations — incident response | SECURITY.md SLAs; postmortem template; audit-egress forensic trail | [`../../SECURITY.md`](../../SECURITY.md), [`../incidents/TEMPLATE.md`](../incidents/TEMPLATE.md) |
 | CC7.4 | Change management — CI | Every merge runs vet + lint + govulncheck + race tests + fuzz + coverage-gate at 95% + reproducible-build check | `.github/workflows/ci.yml`, `scripts/coverage-gate.sh` |
-| CC7.5 | Change management — release | SLSA-3 provenance + cosign keyless signatures + CycloneDX SBOM per release | `.github/workflows/slsa.yml`, `.github/workflows/container-release.yml` |
+| CC7.5 | Change management — release | SLSA-3 provenance + cosign keyless signatures + CycloneDX SBOM per release | `.github/workflows/release.yml`, `.github/workflows/container-release.yml` |
 | CC8.1 | Vendor management | LLM providers, MCP servers, transport BSPs treated as sub-processors; documented per-provider in [`gdpr.md`](./gdpr.md) | [`gdpr.md`](./gdpr.md), [`dora.md`](./dora.md) |
 | CC9.1 | Backup / recovery | Operator-side (SQLite is a file, Postgres is standard) | — |
 | CC9.2 | Vendor + partner monitoring | `govulncheck` weekly against every direct + indirect dependency; version-pinned `go.mod` | `go.mod`, `.github/workflows/ci.yml` |

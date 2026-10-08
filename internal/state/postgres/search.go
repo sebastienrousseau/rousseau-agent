@@ -38,7 +38,20 @@ func (s *Store) EnsureSearch(ctx context.Context) error {
 // Search runs a websearch_to_tsquery over message text and session
 // titles and returns the best hit per session, highest rank first.
 func (s *Store) Search(ctx context.Context, query string, opts SearchOptions) ([]SearchHit, error) {
-	return s.search(ctx, "", query, opts, "postgres: search")
+	return s.search(ctx, scope{}, query, opts, "postgres: search")
+}
+
+// SearchScoped runs Search restricted to sessions whose sender equals
+// sender exactly, the empty sender included. Automatic recall uses it:
+// one sender's history must never reach another sender's prompt.
+func (s *Store) SearchScoped(ctx context.Context, sender, query string, opts SearchOptions) ([]SearchHit, error) {
+	return s.search(ctx, scope{sender: sender, on: true}, query, opts, "postgres: scoped search")
+}
+
+// scope restricts a search to one sender when on is set.
+type scope struct {
+	sender string
+	on     bool
 }
 
 // SearchBySender is Search restricted to sessions whose sender is the
@@ -48,17 +61,15 @@ func (s *Store) SearchBySender(ctx context.Context, sender, query string, opts S
 	if sender == "" {
 		return nil, nil
 	}
-	return s.search(ctx, sender, query, opts, "postgres: search by sender")
+	return s.search(ctx, scope{sender: sender, on: true}, query, opts, "postgres: search by sender")
 }
 
-func (s *Store) search(ctx context.Context, sender, query string, opts SearchOptions, op string) ([]SearchHit, error) {
+func (s *Store) search(ctx context.Context, sc scope, query string, opts SearchOptions, op string) ([]SearchHit, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return nil, errors.New("postgres: empty search query")
 	}
-	if opts.Limit == 0 {
-		opts.Limit = 20
-	}
+	opts.Limit = sqlitesearch.ClampSearchLimit(opts.Limit)
 	if opts.SnippetChars == 0 {
 		opts.SnippetChars = 200
 	}
@@ -88,11 +99,11 @@ SELECT b.session_id, s.title,
        ts_headline('english', b.text, websearch_to_tsquery('english', $1), $3) AS snippet,
        s.updated_at, b.rank
 FROM best b JOIN sessions s ON s.id = b.session_id
-WHERE $4 = '' OR s.sender = $4
+WHERE NOT $5 OR s.sender = $4
 ORDER BY b.rank DESC
 LIMIT $2
 `
-	rows, err := s.db.QueryContext(ctx, q, query, opts.Limit, headlineOpts, sender)
+	rows, err := s.db.QueryContext(ctx, q, query, opts.Limit, headlineOpts, sc.sender, sc.on)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}

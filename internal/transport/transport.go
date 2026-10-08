@@ -8,6 +8,7 @@ package transport
 
 import (
 	"context"
+	"log/slog"
 	"time"
 )
 
@@ -31,6 +32,12 @@ type IncomingMessage struct {
 	// …), for quoting, reacting or deduplicating. Empty when the
 	// platform has none.
 	MessageID string
+	// IsDirect is true when the message arrived in a one-to-one
+	// conversation with the bot (a DM, a private chat, an email), and
+	// false in a group, channel or room where other members read the
+	// reply. Each transport sets it; false is the safe default for a
+	// transport that cannot tell.
+	IsDirect bool
 	// Thread identifies the thread or topic the message belongs to
 	// (Slack thread_ts, Telegram forum topic, mail subject) so the
 	// transport can keep its reply in the same thread. Empty when the
@@ -82,4 +89,37 @@ type Transport interface {
 	Start(ctx context.Context, handler Handler) error
 	// Stop terminates the transport. Safe to call multiple times.
 	Stop() error
+}
+
+// IsGroup reports whether msg arrived in a conversation other members
+// read: the transport did not mark it direct and it names a
+// conversation other than the sender. A message with no Conversation,
+// or one equal to From, is one-to-one by construction.
+func IsGroup(msg IncomingMessage) bool {
+	return !msg.IsDirect && msg.Conversation != "" && msg.Conversation != msg.From
+}
+
+// ConversationKey is the key a sender's turn and session live under:
+// the sender in a direct conversation, and "<sender>#<conversation>"
+// in a group, so a sender's private history never reaches a group and
+// a group's history stays in that group.
+func ConversationKey(msg IncomingMessage) string {
+	if IsGroup(msg) {
+		return msg.From + "#" + msg.Conversation
+	}
+	return msg.From
+}
+
+// DropGroups ignores every group message (see [IsGroup]) before it
+// reaches next, so nothing downstream — control verbs, rate-limit
+// notices, the agent — answers in a group the operator did not
+// enable.
+func DropGroups(next Handler, logger *slog.Logger) Handler {
+	return HandlerFunc(func(ctx context.Context, msg IncomingMessage) (string, error) {
+		if IsGroup(msg) {
+			logger.Debug("transport.group_ignored", slog.String("from", msg.From))
+			return "", nil
+		}
+		return next.Handle(ctx, msg)
+	})
 }

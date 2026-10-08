@@ -107,11 +107,17 @@ resolve_version() {
 # fast — an install script that silently downloaded 0 bytes and
 # blessed it as the binary would be worse than a clear error.
 fetch() {
+    try_fetch "$1" "$2" || fatal "download failed: $2"
+}
+
+# try_fetch downloads $2 to $1 and returns non-zero on failure instead
+# of exiting, so the caller can say what a missing file means.
+try_fetch() {
     local dst="$1" url="$2"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --output "$dst" "$url" || fatal "download failed: $url"
+        curl -fsSL --output "$dst" "$url"
     else
-        wget -qO "$dst" "$url" || fatal "download failed: $url"
+        wget -qO "$dst" "$url"
     fi
 }
 
@@ -135,6 +141,11 @@ fi
 OS=$(detect_os)
 ARCH=$(detect_arch)
 VERSION=$(resolve_version)
+# The version becomes part of a URL and of the signer identity below,
+# so accept a release tag and nothing else.
+if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+    fatal "'$VERSION' is not a release tag (expected vMAJOR.MINOR.PATCH)"
+fi
 VERSION_NO_V="${VERSION#v}"
 
 say "detected: os=$OS arch=$ARCH version=$VERSION"
@@ -180,34 +191,39 @@ else
 fi
 ok 'SHA-256 checksum verified'
 
-# --------------------------- cosign (optional) ----------------------
+# --------------------------- cosign ---------------------------------
 
-if [ -z "$ROUSSEAU_SKIP_COSIGN" ] && command -v cosign >/dev/null 2>&1; then
-    # goreleaser publishes .sig files alongside the release
-    # tarball when a cosign key is configured (see .goreleaser.yaml
-    # signs: section). Fetch and verify keylessly against the
-    # transparency log — matches how the container images are
-    # signed.
-    if fetch "$TMPDIR/checksums.txt.sig" "${BASE_URL}/checksums.txt.sig" 2>/dev/null && \
-       fetch "$TMPDIR/checksums.txt.pem" "${BASE_URL}/checksums.txt.pem" 2>/dev/null; then
-        say 'verifying cosign signature (keyless, transparency log)'
-        if cosign verify-blob \
-              --certificate "$TMPDIR/checksums.txt.pem" \
-              --signature   "$TMPDIR/checksums.txt.sig" \
-              --certificate-identity-regexp 'https://github.com/.*rousseau-agent' \
-              --certificate-oidc-issuer     'https://token.actions.githubusercontent.com' \
-              "$TMPDIR/checksums.txt" >/dev/null 2>&1; then
-            ok 'cosign signature verified'
-        else
-            warn 'cosign verification failed — the download passed SHA-256 but the release signature is not attributable to the expected identity. Investigate before running the binary.'
-            fatal 'aborting install due to cosign failure — override with ROUSSEAU_SKIP_COSIGN=1 if you have out-of-band trust'
-        fi
-    fi
+# The one identity allowed to sign release checksums: the release
+# workflow of the upstream repository, running for this exact tag.
+# Deliberately not derived from ROUSSEAU_REPO: a mirror serves the
+# upstream's signed files, and a fork must not pass as upstream.
+SIGNER_IDENTITY="https://github.com/sebastienrousseau/rousseau-agent/.github/workflows/release.yml@refs/tags/${VERSION}"
+SIGNER_ISSUER='https://token.actions.githubusercontent.com'
+
+if [ -n "$ROUSSEAU_SKIP_COSIGN" ]; then
+    warn 'cosign verification skipped by request (ROUSSEAU_SKIP_COSIGN set)'
+elif ! command -v cosign >/dev/null 2>&1; then
+    warn "cosign not on \$PATH — SHA-256 verified but cosign signature not checked. Install cosign for supply-chain attestation: https://docs.sigstore.dev/system_config/installation/"
 else
-    if [ -n "${ROUSSEAU_SKIP_COSIGN}" ]; then
-        warn 'cosign verification skipped by request (ROUSSEAU_SKIP_COSIGN set)'
+    # goreleaser signs checksums.txt keylessly (see .goreleaser.yaml
+    # signs:) and publishes the signature and certificate next to it.
+    # cosign is installed, so a missing signature is a failure, not a
+    # reason to skip the check.
+    if ! try_fetch "$TMPDIR/checksums.txt.sig" "${BASE_URL}/checksums.txt.sig" 2>/dev/null \
+        || ! try_fetch "$TMPDIR/checksums.txt.pem" "${BASE_URL}/checksums.txt.pem" 2>/dev/null; then
+        fatal 'release signature missing — refusing to install (set ROUSSEAU_SKIP_COSIGN=1 to override)'
+    fi
+    say 'verifying cosign signature (keyless, transparency log)'
+    if cosign verify-blob \
+          --certificate "$TMPDIR/checksums.txt.pem" \
+          --signature   "$TMPDIR/checksums.txt.sig" \
+          --certificate-identity    "$SIGNER_IDENTITY" \
+          --certificate-oidc-issuer "$SIGNER_ISSUER" \
+          "$TMPDIR/checksums.txt" >/dev/null 2>&1; then
+        ok 'cosign signature verified'
     else
-        warn 'cosign not on $PATH — SHA-256 verified but cosign signature not checked. Install cosign for supply-chain attestation: https://docs.sigstore.dev/system_config/installation/'
+        warn "cosign verification failed — the download passed SHA-256 but the release signature is not from $SIGNER_IDENTITY. Investigate before running the binary."
+        fatal 'aborting install due to cosign failure — override with ROUSSEAU_SKIP_COSIGN=1 if you have out-of-band trust'
     fi
 fi
 
@@ -216,7 +232,7 @@ fi
 say "extracting to $TMPDIR"
 tar -xzf "$ASSET_NAME"
 if [ ! -f "$TMPDIR/rousseau" ]; then
-    fatal 'expected binary `rousseau` inside archive was not present — release may be malformed'
+    fatal "expected binary 'rousseau' inside archive was not present — release may be malformed"
 fi
 
 say "installing to $INSTALL_DIR"

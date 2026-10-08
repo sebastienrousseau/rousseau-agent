@@ -13,7 +13,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	mcpwire "github.com/sebastienrousseau/rousseau-agent/internal/mcp"
 	"github.com/sebastienrousseau/rousseau-agent/internal/mcp/client"
@@ -23,6 +26,22 @@ import (
 // namePrefix is the tool-name prefix applied to every MCP-forwarded
 // tool. Exported so approvers can pattern-match on it.
 const namePrefix = "mcp:"
+
+// Limits on what an MCP server may push into the registry and the
+// model's context. A server is a separate trust boundary: its tool
+// names reach logs, approver rules and progress output, and its
+// descriptions and schemas are sent to the model on every turn.
+const (
+	maxDescriptionBytes = 2 * 1024
+	maxSchemaBytes      = 64 * 1024
+	maxErrorBodyBytes   = 4 * 1024
+	truncationMarker    = "…"
+)
+
+// validToolName is the shape a server-side tool name must have. It
+// excludes ':' so "mcp:<server>:<tool>" stays unambiguous, and control
+// characters so a name cannot forge log lines or rule matches.
+var validToolName = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
 
 // RegisterClient discovers every tool exposed by cl and registers each
 // with registry under "mcp:<name>:<tool>". Returns the list of names
@@ -44,12 +63,9 @@ func RegisterClient(ctx context.Context, registry *tools.Registry, cl *client.Cl
 	registered := make([]string, 0, len(remoteTools))
 	var errs []error
 	for _, spec := range remoteTools {
-		adapter := &Adapter{
-			serverName: cl.Name(),
-			toolName:   spec.Name,
-			desc:       spec.Description,
-			schema:     spec.InputSchema,
-			client:     cl,
+		adapter, ok := newAdapter(cl, spec)
+		if !ok {
+			continue
 		}
 		if err := registry.Register(adapter); err != nil {
 			errs = append(errs, fmt.Errorf("register %s: %w", adapter.Name(), err))
@@ -62,6 +78,34 @@ func RegisterClient(ctx context.Context, registry *tools.Registry, cl *client.Cl
 		return registered, errors.Join(errs...)
 	}
 	return registered, nil
+}
+
+// newAdapter validates one advertised tool and wraps it. A tool with an
+// invalid name is skipped (ok=false); an over-long description is
+// truncated and an oversized schema is replaced by the permissive one.
+func newAdapter(cl *client.Client, spec mcpwire.Tool) (*Adapter, bool) {
+	logger := slog.Default().With(slog.String("mcp_server", cl.Name()))
+	if !validToolName.MatchString(spec.Name) {
+		logger.Warn("mcp.tool.invalid_name_skipped",
+			slog.String("name", fmt.Sprintf("%.80q", spec.Name)),
+			slog.Int("bytes", len(spec.Name)))
+		return nil, false
+	}
+	schema := spec.InputSchema
+	if len(schema) > maxSchemaBytes {
+		logger.Warn("mcp.tool.schema_too_large",
+			slog.String("tool", spec.Name),
+			slog.Int("bytes", len(schema)),
+			slog.Int("limit", maxSchemaBytes))
+		schema = nil // InputSchema falls back to the permissive shape
+	}
+	return &Adapter{
+		serverName: cl.Name(),
+		toolName:   spec.Name,
+		desc:       truncateUTF8(spec.Description, maxDescriptionBytes),
+		schema:     schema,
+		client:     cl,
+	}, true
 }
 
 // Adapter is a [tools.Tool] that forwards Execute calls to an MCP
@@ -124,7 +168,7 @@ func (a *Adapter) Execute(ctx context.Context, input json.RawMessage) (string, e
 		if body == "" {
 			body = "server reported error"
 		}
-		return body, fmt.Errorf("mcp %s: %s", a.Name(), body)
+		return body, fmt.Errorf("mcp %s: %s", a.Name(), truncateUTF8(body, maxErrorBodyBytes))
 	}
 	return body, nil
 }
@@ -136,6 +180,19 @@ func permissiveSchema() map[string]any {
 		"type":                 "object",
 		"additionalProperties": true,
 	}
+}
+
+// truncateUTF8 caps s at limit bytes, marker included, cutting on a
+// rune boundary and ending with truncationMarker when it cut anything.
+func truncateUTF8(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit - len(truncationMarker)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + truncationMarker
 }
 
 // renderContent joins every text block with a newline. Non-text

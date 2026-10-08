@@ -39,7 +39,10 @@ func fileDSN(path string) string {
 
 // Store is a state.Store backed by SQLite.
 type Store struct {
-	db *sql.DB
+	// path is the database file Open was given (":memory:" or a
+	// file: URI included); erasure reports backups next to it.
+	path string
+	db   *sql.DB
 }
 
 // Open opens (or creates) a SQLite database at path and applies the
@@ -86,7 +89,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
 	if err := s.ensureVersion(ctx); err != nil {
 		db.Close() //nolint:errcheck // constructor rollback; primary error is already being returned
 		return nil, err

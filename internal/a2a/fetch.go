@@ -72,8 +72,9 @@ var ErrArtifactTooLarge = errors.New("a2a: artifact exceeds MaxBytes")
 // and no artifact:// support.
 type DefaultFetcher struct {
 	// Client is the http.Client used for http(s) URIs. Nil uses
-	// [DefaultHTTPClient], which disables cross-origin redirects
-	// and sets a 30s timeout.
+	// [DefaultHTTPClient], which disables cross-origin redirects,
+	// sets a 30s timeout and refuses non-public addresses. A
+	// non-nil Client is used as-is, without the address guard.
 	Client *http.Client
 	// Resolver handles `artifact://` URIs. Nil means artifact://
 	// returns ErrUnsupportedScheme.
@@ -89,10 +90,16 @@ const DefaultMaxBytes int64 = 32 * 1024 * 1024
 // DefaultHTTPClient is the http.Client used when
 // DefaultFetcher.Client is nil. Disables cross-origin redirects
 // (a pre-signed URL that redirects to a different host is a
-// classic SSRF vector), sets a 30s total timeout, and reuses the
-// default transport.
+// classic SSRF vector), sets a 30s total timeout, and dials through
+// a guarded transport that refuses non-public addresses
+// ([ErrBlockedAddress]) and ignores proxy environment variables.
+//
+// A caller-supplied DefaultFetcher.Client bypasses the address guard;
+// supplying one is a deliberate decision to fetch from wherever that
+// client can reach.
 var DefaultHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
+	Timeout:   30 * time.Second,
+	Transport: newGuardedTransport(),
 	CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) == 0 {
 			return nil

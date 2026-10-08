@@ -220,6 +220,8 @@ type Server struct {
 	bearerToken string
 	logger      *slog.Logger
 	baseURL     string
+	tlsCert     string
+	tlsKey      string
 }
 
 // ServerConfig configures a [Server]. BearerToken is required
@@ -237,6 +239,10 @@ type ServerConfig struct {
 	BaseURL string
 	// Logger receives per-request logs. Nil uses slog.Default.
 	Logger *slog.Logger
+	// TLSCertFile and TLSKeyFile, when set, make ListenAndServe
+	// terminate TLS with this PEM certificate chain and key.
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // NewServer constructs a Server. Returns an error when Store
@@ -257,6 +263,8 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		bearerToken: cfg.BearerToken,
 		logger:      logger,
 		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
+		tlsCert:     cfg.TLSCertFile,
+		tlsKey:      cfg.TLSKeyFile,
 	}, nil
 }
 
@@ -269,6 +277,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/scim/v2/Groups", s.handleGroups)
 	mux.HandleFunc("/scim/v2/Groups/", s.handleGroup)
 	return s.authMiddleware(mux)
+}
+
+// serve runs srv with TLS when a certificate is configured.
+func (s *Server) serve(srv *http.Server) error {
+	if s.tlsCert != "" {
+		return srv.ListenAndServeTLS(s.tlsCert, s.tlsKey)
+	}
+	return srv.ListenAndServe()
 }
 
 // ListenAndServe binds addr and runs the SCIM HTTP server
@@ -285,9 +301,9 @@ func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	s.logger.Info("scim.starting", slog.String("addr", addr))
+	s.logger.Info("scim.starting", slog.String("addr", addr), slog.Bool("tls", s.tlsCert != ""))
 	done := make(chan error, 1)
-	go func() { done <- srv.ListenAndServe() }()
+	go func() { done <- s.serve(srv) }()
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

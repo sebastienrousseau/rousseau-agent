@@ -30,3 +30,21 @@ type Tool interface {
 	// Execute runs the tool. Implementations MUST honour ctx cancellation.
 	Execute(ctx context.Context, input json.RawMessage) (string, error)
 }
+
+// Outbound is an optional interface for tools that send data to a
+// third party or change third-party state (send an email, post a
+// message, create an issue). Read-only tools do not implement it.
+//
+// The daemon's default allow_all approver denies a tool reporting
+// Outbound() == true unless the operator opts in with
+// agent.approver.allow_outbound: true or chooses rule-based approval,
+// so a prompt-injected turn cannot read data and send it out unasked.
+type Outbound interface {
+	Outbound() bool
+}
+
+// IsOutbound reports whether t implements [Outbound] and returns true.
+func IsOutbound(t Tool) bool {
+	o, ok := t.(Outbound)
+	return ok && o.Outbound()
+}

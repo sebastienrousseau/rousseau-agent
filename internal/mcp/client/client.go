@@ -98,6 +98,10 @@ type Client struct {
 	closeMu sync.Mutex
 	closed  bool
 	done    chan struct{}
+	// brokenErr records why the read loop closed the client (an
+	// over-long line, a read error, or the server closing stdout), so
+	// pending and later requests report the cause. Guarded by closeMu.
+	brokenErr error
 	// stderrBuf captures the subprocess's stderr for the last N bytes
 	// so we can include it in error reports when the subprocess dies
 	// unexpectedly. Bounded to prevent unbounded memory growth.
@@ -250,10 +254,13 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	c.closeMu.Unlock()
+	// Release waiting requests now rather than after the process has
+	// exited, which can take the full grace period below.
+	close(c.done)
 
 	// Best-effort graceful shutdown, then kill.
 	_ = c.stdin.Close()
-	if c.cmd.Process != nil {
+	if c.cmd != nil && c.cmd.Process != nil {
 		// Give the process ~1s to exit on stdin EOF before killing.
 		exited := make(chan struct{})
 		go func() {
@@ -267,7 +274,6 @@ func (c *Client) Close() error {
 			<-exited
 		}
 	}
-	close(c.done)
 	return nil
 }
 
@@ -306,7 +312,7 @@ func (c *Client) initialize(ctx context.Context) error {
 // per-call timeout fires).
 func (c *Client) request(ctx context.Context, method string, params, result any) error {
 	if c.closedNow() {
-		return errors.New("mcp/client: closed")
+		return c.closedErr("mcp/client: closed")
 	}
 
 	id := c.nextID.Add(1)
@@ -348,7 +354,7 @@ func (c *Client) request(ctx context.Context, method string, params, result any)
 		c.cancelRequest(id, "timed out")
 		return fmt.Errorf("mcp/client %s: %s timed out after %s", c.name, method, timeout)
 	case <-c.done:
-		return errors.New("mcp/client: closed while awaiting response")
+		return c.closedErr("mcp/client: closed while awaiting response")
 	}
 }
 
@@ -399,22 +405,63 @@ func (c *Client) write(env mcp.Envelope) error {
 	return err
 }
 
+// maxLineBytes bounds one line of server output. bufio.Scanner's
+// default is 64 KiB — bumped for large tools/list responses (the
+// github MCP server has ~40 tools with big schemas).
+const maxLineBytes = 1024 * 1024
+
 // readLoop reads newline-delimited JSON envelopes from stdout and
 // routes responses to their pending channel or logs orphans. Runs
-// until stdout closes.
+// until stdout closes or a read fails, then closes the client: no
+// further response can arrive, so waiting requests must not sit out
+// their timeout.
 func (c *Client) readLoop(stdout io.Reader) {
-	// bufio.Scanner default is 64 KiB — bump for large tools/list
-	// responses (github MCP server has ~40 tools with big schemas).
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
 
 	for scanner.Scan() {
 		c.handleLine(scanner.Bytes())
 	}
-	if err := scanner.Err(); err != nil {
-		c.logger.Warn("mcp.client.stdout_scanner", slog.String("err", err.Error()))
+	c.markBroken(c.readLoopErr(scanner.Err()))
+}
+
+// readLoopErr describes why the read loop stopped.
+func (c *Client) readLoopErr(err error) error {
+	switch {
+	case errors.Is(err, bufio.ErrTooLong):
+		return fmt.Errorf("mcp/client %s: closed: server sent a line over the %d MiB limit", c.name, maxLineBytes>>20)
+	case err != nil:
+		return fmt.Errorf("mcp/client %s: closed: reading server output: %w", c.name, err)
+	default:
+		return fmt.Errorf("mcp/client %s: closed: server closed its output", c.name)
 	}
-	c.logger.Debug("mcp.client.stdout_closed")
+}
+
+// markBroken records cause and closes the client so pending and later
+// requests fail at once. A client already closed by Close keeps its
+// plain "closed" errors: the read loop ending is then expected.
+func (c *Client) markBroken(cause error) {
+	c.closeMu.Lock()
+	if c.closed {
+		c.closeMu.Unlock()
+		c.logger.Debug("mcp.client.stdout_closed")
+		return
+	}
+	c.brokenErr = cause
+	c.closeMu.Unlock()
+	c.logger.Warn("mcp.client.broken", slog.String("err", cause.Error()))
+	_ = c.Close() //nolint:errcheck // Close always returns nil
+}
+
+// closedErr returns the recorded cause when the read loop closed the
+// client, and an error with msg otherwise.
+func (c *Client) closedErr(msg string) error {
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.brokenErr != nil {
+		return c.brokenErr
+	}
+	return errors.New(msg)
 }
 
 // handleLine routes one envelope from the server: a response goes to

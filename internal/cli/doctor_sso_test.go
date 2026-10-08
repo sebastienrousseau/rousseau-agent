@@ -28,7 +28,7 @@ func TestCheckSSO_ConfiguredWithoutLicenceWarns(t *testing.T) {
 	got := checkSSO(context.Background(), &config.Config{
 		Auth: config.AuthConfig{SSO: config.SSOConfig{
 			Kind: "oidc",
-			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com"},
+			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com", AllowAnyAudience: true},
 		}},
 	}, license.Core())
 
@@ -69,7 +69,7 @@ func TestCheckSSO_LicensedRendersOK(t *testing.T) {
 	got := checkSSO(context.Background(), &config.Config{
 		Auth: config.AuthConfig{SSO: config.SSOConfig{
 			Kind: "oidc",
-			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com"},
+			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com", AllowAnyAudience: true},
 		}},
 	}, chk)
 	var licensedStatus string
@@ -102,7 +102,7 @@ func TestCheckSSO_BindingsCountRendersWhenSqlite(t *testing.T) {
 		State: config.StateConfig{Path: dbPath},
 		Auth: config.AuthConfig{SSO: config.SSOConfig{
 			Kind: "oidc",
-			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com"},
+			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com", AllowAnyAudience: true},
 		}},
 	}, license.Core())
 
@@ -123,7 +123,7 @@ func TestCheckSSO_PostgresDriverSkipsBindingsCount(t *testing.T) {
 		State: config.StateConfig{Driver: "postgres", DSN: "postgres://x"},
 		Auth: config.AuthConfig{SSO: config.SSOConfig{
 			Kind: "oidc",
-			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com"},
+			OIDC: config.SSOOIDCConfig{Issuer: "https://tenant.okta.com", AllowAnyAudience: true},
 		}},
 	}, license.Core())
 	for _, r := range got {

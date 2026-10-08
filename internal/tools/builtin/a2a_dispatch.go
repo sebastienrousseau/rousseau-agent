@@ -62,6 +62,11 @@ func NewA2ADispatchTool(peers map[string]*a2aclient.Client) *A2ADispatchTool {
 // Name returns the tool identifier the model sees.
 func (*A2ADispatchTool) Name() string { return "a2a_dispatch" }
 
+// Outbound satisfies [tools.Outbound]: the tool sends the model's
+// prompt to a third-party agent, so the daemon's default approver
+// gates it like any other send-shaped tool.
+func (*A2ADispatchTool) Outbound() bool { return true }
+
 // Description is what the model reads to decide whether to use the
 // tool. Kept concrete about the input shape + return semantics so
 // the model doesn't have to guess.

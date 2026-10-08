@@ -97,3 +97,16 @@ jobs:
             exit 1
           fi
           echo "Reproducible ✓"
+
+  # H-4: the release image must not apply dotfiles, and the dev image's
+  # dotfiles must come from one pinned commit whose content is the same
+  # on every fetch. This replaces comparing the layer digest of the
+  # former `chezmoi init --apply` step: that step is gone from the
+  # release image, and the builder layer also runs the dotfiles'
+  # scripts, so its digest is not a stable signal. The pinned input is.
+  image-inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Release image has no dotfiles; builder pin is reproducible
+        run: scripts/dotfiles-pin.sh check --fetch

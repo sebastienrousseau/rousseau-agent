@@ -44,8 +44,15 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability"
 )
+
+// nowFunc is the clock the checker compares the licence expiry with.
+// A var so tests can move time past exp.
+var nowFunc = time.Now
 
 // Tier identifies which product tier is active.
 type Tier string
@@ -224,18 +231,28 @@ func Load(source Source, logger *slog.Logger) Checker {
 		slog.String("tier", string(claims.Tier)),
 		slog.Time("expires_at", time.Unix(claims.ExpiresAt, 0).UTC()),
 	)
-	return newChecker(claims)
+	return newChecker(claims, logger)
 }
 
-// checker is the concrete Checker implementation. Immutable after
-// construction — safe for concurrent use without a mutex.
+// checker is the concrete Checker implementation. Its fields are
+// immutable after construction; the only runtime state is lapsed,
+// an atomic, so it is safe for concurrent use without a mutex.
+//
+// A licence is validated at Load, but the daemon runs for weeks: every
+// IsEnabled / Tier / Info call re-checks exp, so a licence that
+// expires while the daemon runs switches the enterprise features off
+// at that moment, not at the next restart.
 type checker struct {
 	tier     Tier
 	features map[Feature]struct{}
 	info     Info
+	logger   *slog.Logger
+	// lapsed latches once exp has passed at runtime, so the WARN and
+	// the gauge update happen exactly once.
+	lapsed atomic.Bool
 }
 
-func newChecker(c Claims) *checker {
+func newChecker(c Claims, logger *slog.Logger) *checker {
 	features := c.effectiveFeatures()
 	set := make(map[Feature]struct{}, len(features))
 	for _, f := range features {
@@ -245,6 +262,7 @@ func newChecker(c Claims) *checker {
 	return &checker{
 		tier:     c.Tier,
 		features: set,
+		logger:   logger,
 		info: Info{
 			Tier:      c.Tier,
 			Subject:   c.Subject,
@@ -258,18 +276,62 @@ func newChecker(c Claims) *checker {
 
 // IsEnabled satisfies [Checker].
 func (c *checker) IsEnabled(f Feature) bool {
-	if c.features == nil {
+	if !c.active() {
 		return false
 	}
 	_, ok := c.features[f]
 	return ok
 }
 
-// Tier satisfies [Checker].
-func (c *checker) Tier() Tier { return c.tier }
+// Tier satisfies [Checker]. A lapsed licence reports [TierCore].
+func (c *checker) Tier() Tier {
+	if c.info.Valid && !c.active() {
+		return TierCore
+	}
+	return c.tier
+}
 
-// Info satisfies [Checker].
-func (c *checker) Info() Info { return c.info }
+// Info satisfies [Checker]. A lapsed licence reports Valid false with
+// an "expired" Reason.
+func (c *checker) Info() Info {
+	if !c.info.Valid || c.active() {
+		return c.info
+	}
+	info := c.info
+	info.Valid = false
+	info.Expiring = false
+	info.Reason = "license: expired at " + info.ExpiresAt.Format(time.RFC3339)
+	return info
+}
+
+// active reports whether a verified licence is loaded and its exp has
+// not passed. The first call that finds it past exp lapses it.
+func (c *checker) active() bool {
+	if !c.info.Valid || c.lapsed.Load() {
+		return false
+	}
+	if nowFunc().Before(c.info.ExpiresAt) {
+		return true
+	}
+	c.lapse()
+	return false
+}
+
+// lapse records, once, that the licence expired while running: the
+// rousseau_license_valid gauge drops to 0 and one WARN names what
+// switched off.
+func (c *checker) lapse() {
+	if c.lapsed.Swap(true) {
+		return
+	}
+	observability.ObserveLicense(false, time.Time{})
+	c.logger.Warn("license.lapsed",
+		slog.String("subject", c.info.Subject),
+		slog.String("tier", string(c.tier)),
+		slog.Time("expires_at", c.info.ExpiresAt),
+		slog.String("effect", "enterprise features are now disabled; install a renewed licence and restart"),
+	)
+}
 
 // Claims is the license JWT payload rousseau signs and verifies.
 // Minimal by design — the fewer fields, the smaller the surface a

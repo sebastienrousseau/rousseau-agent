@@ -200,7 +200,7 @@ func TestCheckState_PostgresDriverSurfacesRedactedDSN(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "ok", dsnRow.Status)
-	assert.Contains(t, dsnRow.Detail, "alice:***@db.example", "password must be redacted")
+	assert.Equal(t, "alice@db.example:5432/rousseau", dsnRow.Detail, "rendered without the password")
 	assert.NotContains(t, dsnRow.Detail, "supersecret", "raw password MUST NOT appear")
 }
 
@@ -224,18 +224,6 @@ func TestCheckState_UnknownDriverIsFail(t *testing.T) {
 		}
 	}
 	assert.True(t, haveFail)
-}
-
-func TestRedactDSN_HandlesShapes(t *testing.T) {
-	// URL with password → redacted.
-	assert.Equal(t, "postgres://alice:***@host/db",
-		redactDSN("postgres://alice:hunter2@host/db"))
-	// URL without password → untouched.
-	assert.Equal(t, "postgres://alice@host/db",
-		redactDSN("postgres://alice@host/db"))
-	// Keyword form (not covered by the redactor — pass-through).
-	assert.Equal(t, "user=alice password=hunter2 host=db",
-		redactDSN("user=alice password=hunter2 host=db"))
 }
 
 func TestCheckState_StatErrorIsFail(t *testing.T) {

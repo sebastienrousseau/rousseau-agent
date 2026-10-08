@@ -156,10 +156,11 @@ func writeTerminalLine(b *strings.Builder, st State, elapsed time.Duration) {
 	case KindCancelled:
 		fmt.Fprintf(b, "%s stopped after %s%s", GlyphBullet, FormatDuration(elapsed), suffix(st))
 	case KindError:
+		// st.Err is deliberately not rendered: a provider error can
+		// embed a child process's output. The ref points to the log.
 		fmt.Fprintf(b, "%s failed after %s%s", GlyphFailed, FormatDuration(elapsed), suffix(st))
-		if st.Err != "" {
-			b.WriteString(" — ")
-			b.WriteString(oneLine(st.Err))
+		if st.Ref != "" {
+			fmt.Fprintf(b, " (ref %s)", oneLine(st.Ref))
 		}
 	default:
 		fmt.Fprintf(b, "%s done in %s%s", GlyphBullet, FormatDuration(elapsed), suffix(st))

@@ -79,6 +79,9 @@ type daemonWiring struct {
 	// rather than nine separate fields to make new options
 	// automatic in the per-transport routers too.
 	routerOpts transport.RouterOptions
+	// allowGroups holds the transports whose <transport>.allow_groups
+	// is set; routerFor applies it per transport.
+	allowGroups map[string]bool
 	// Licence is the loaded [license.Checker] the daemon consults
 	// at every gated code path. Never nil — falls back to
 	// [license.Core] when unlicensed.
@@ -480,6 +483,9 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		_ = sessions.Close() //nolint:errcheck // constructor rollback; primary error is being returned
 		return nil, err
 	}
+	// allow_all (the default) still denies outbound integration
+	// tools unless agent.approver.allow_outbound opts in (L-32).
+	approver = wrapWithOutboundGate(approver, cfg.Agent.Approver, registry)
 	// Layer RBAC on top when the operator configured rules AND
 	// the licence unlocks governance-advanced. See wrapWithRBAC
 	// for the fail-safe behaviour on partial configuration.
@@ -538,10 +544,10 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 	emitLicenseSnapshot(auditSink, checker)
 
 	// Layer multi-party approval as the OUTERMOST governance
-	// wrapper — a request must pass MultiParty → OPA → RBAC →
-	// inner. Composition intent: N-approvers is the highest-
-	// friction gate; do it first so a group / Rego / pattern
-	// deny short-circuits the ops-heavy step. Returns a nil
+	// wrapper. It runs the inner chain (OPA → RBAC → risk →
+	// pattern) first, so a group / Rego / pattern deny ends the
+	// request before anyone is asked to vote; a covered tool
+	// that passes the inner chain still needs its quorum. Returns a nil
 	// PendingManager when the wrap didn't take effect (no rules
 	// or unlicensed); router thread-safe on nil.
 	var pendingApprovals *approval.PendingManager
@@ -626,6 +632,9 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		BuildStamp:    fmt.Sprintf("%s (commit %s, built %s)", version, commit, buildDate),
 
 		SessionIdleTimeout: cfg.Agent.SessionIdleTimeout,
+		// One set of pending /link codes for every transport, so a
+		// code issued on one is confirmed from another.
+		LinkCodes: transport.NewLinkCodes(),
 	}
 	// Interrupted-turn journal: lets a restarted daemon tell senders
 	// whose turn it cut off.
@@ -692,6 +701,7 @@ func assembleDaemon(ctx context.Context, opts *Options, allowlist []string) (*da
 		CostStore:         costStore,
 		Identities:        identities,
 		routerOpts:        routerOpts,
+		allowGroups:       allowGroupsByTransport(cfg),
 		MCPClients:        mcpClients,
 		RateLimiters:      rateLimiters,
 		Logger:            opts.Logger,
@@ -745,6 +755,13 @@ func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Check
 		)
 		return nil, "", nil
 	}
+	if err := checkListenTLS(cfg.Addr, cfg.TLSCertFile, cfg.TLSKeyFile, cfg.AllowPlaintext); err != nil {
+		logger.Warn("scim.insecure_listen",
+			slog.String("addr", cfg.Addr),
+			slog.String("err", err.Error()),
+		)
+		return nil, "", nil
+	}
 	scimStore, err := openSCIMStore(ctx, store)
 	if err != nil {
 		return nil, "", fmt.Errorf("cli: scim store: %w", err)
@@ -754,6 +771,8 @@ func buildSCIM(ctx context.Context, cfg config.SCIMConfig, checker license.Check
 		BearerToken: cfg.BearerToken,
 		BaseURL:     cfg.BaseURL,
 		Logger:      logger,
+		TLSCertFile: cfg.TLSCertFile,
+		TLSKeyFile:  cfg.TLSKeyFile,
 	})
 	if err != nil {
 		return nil, "", fmt.Errorf("cli: scim server: %w", err)
@@ -911,6 +930,9 @@ func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker
 	if cfg.Kind == "" {
 		return nil, sso.NoBindings{}, nil
 	}
+	if err := checkSSOAudience(cfg); err != nil {
+		return nil, sso.NoBindings{}, err
+	}
 	// Real store: even when the Directory returns Nop (licence
 	// missing), the store may hold pre-existing bindings a
 	// previously-licensed run persisted. Keeping those readable
@@ -925,6 +947,8 @@ func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker
 		OIDC: sso.OIDCConfig{
 			Issuer:            cfg.OIDC.Issuer,
 			Audience:          cfg.OIDC.Audience,
+			AllowAnyAudience:  cfg.OIDC.AllowAnyAudience,
+			JWKSAllowedHosts:  cfg.OIDC.JWKSAllowedHosts,
 			JWKSRefresh:       cfg.OIDC.JWKSRefresh,
 			ClockSkew:         cfg.OIDC.ClockSkew,
 			TransportMappings: transportMappingsFromConfig(cfg.OIDC.TransportMappings),
@@ -946,6 +970,16 @@ func buildSSO(ctx context.Context, cfg config.SSOConfig, checker license.Checker
 		}
 	}
 	return dir, bindings, nil
+}
+
+// checkSSOAudience refuses an OIDC config without an audience: any
+// token the IdP issued for its other clients would sign users in.
+func checkSSOAudience(cfg config.SSOConfig) error {
+	if cfg.Kind != string(sso.KindOIDC) || cfg.OIDC.Audience != "" || cfg.OIDC.AllowAnyAudience {
+		return nil
+	}
+	return errors.New("cli: sso.oidc.audience is required: set it to this daemon's client id at the IdP, " +
+		"or sso.oidc.allow_any_audience: true for an issuer that serves this daemon alone")
 }
 
 func transportMappingsFromConfig(in []config.SSOTransportMapping) []sso.TransportMapping {
@@ -986,6 +1020,12 @@ func (w *daemonWiring) TransportHandler(name string, logger *slog.Logger) transp
 	if lim, ok := w.RateLimiters[name]; ok {
 		h = ratelimit.Wrap(h, lim, name, "")
 	}
+	// Strangers get no reply from anything above, /login aside.
+	r := w.routerFor(name)
+	h = transport.SilenceRejected(h, r.Allowed, r.SSOEnabled(), logger)
+	if !w.allowGroups[name] {
+		h = transport.DropGroups(h, logger)
+	}
 	return h
 }
 
@@ -1025,6 +1065,7 @@ func (w *daemonWiring) routerFor(name string) *transport.Router {
 	opts := w.routerOpts
 	opts.Identity = w.Identities
 	opts.Transport = name
+	opts.AllowGroups = w.allowGroups[name]
 	// Concrete (SearchableStore) rather than Sessions
 	// (state.Store) so the router can reach the wider
 	// SearchBySender + Search methods it needs for /find and
@@ -1032,6 +1073,19 @@ func (w *daemonWiring) routerFor(name string) *transport.Router {
 	r := transport.NewRouter(w.Agent, w.Concrete, w.JIDMap, w.Logger, opts)
 	w.routers[name] = r
 	return r
+}
+
+// allowGroupsByTransport maps each transport name to its allow_groups
+// setting.
+func allowGroupsByTransport(cfg *config.Config) map[string]bool {
+	return map[string]bool{
+		"telegram": cfg.Telegram.AllowGroups,
+		"slack":    cfg.Slack.AllowGroups,
+		"discord":  cfg.Discord.AllowGroups,
+		"signal":   cfg.Signal.AllowGroups,
+		"matrix":   cfg.Matrix.AllowGroups,
+		"imessage": cfg.IMessage.AllowGroups,
+	}
 }
 
 // supervisorFor returns the Supervisor for transport name, creating
@@ -1131,8 +1185,6 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// readChainKey loads the audit chain HMAC key. Surrounding whitespace
-// is trimmed (keys are often written with a trailing newline).
 // resolveChainKey returns the audit-chain HMAC key: the configured
 // file when set, otherwise $XDG_STATE_HOME/rousseau/audit-chain.key,
 // generated with 32 random bytes on first use.
@@ -1175,7 +1227,19 @@ func defaultChainKeyPath() (string, error) {
 	return filepath.Join(home, ".local", "state", "rousseau", "audit-chain.key"), nil
 }
 
+// readChainKey loads the audit chain HMAC key. The file must not be
+// readable or writable by group or others (0600 or 0400): anyone who
+// can read the key can forge a chain that verifies. Surrounding
+// whitespace is trimmed (keys are often written with a trailing
+// newline); the trimmed bytes are the key.
 func readChainKey(path string) ([]byte, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		return nil, fmt.Errorf("audit chain key %s: mode %#o is open to group or others; chmod 0600 it (podman: --secret ...,mode=0400)", path, perm)
+	}
 	raw, err := os.ReadFile(path) //nolint:gosec // operator-configured path
 	if err != nil {
 		return nil, fmt.Errorf("audit chain key: %w", err)

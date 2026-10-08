@@ -16,7 +16,30 @@ permissions:
   packages: write
 
 jobs:
+  # The Helm chart's appVersion picks the image tag a default install
+  # runs (L-31). Refuse to release when it does not name this tag, so
+  # the chart can never again default to a months-old image.
+  chart-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Chart appVersion matches the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          chart=deploy/helm/rousseau-agent/Chart.yaml
+          app=$(sed -n 's/^appVersion:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}[[:space:]]*$/\1/p' "$chart")
+          if [ "$app" != "$TAG" ]; then
+            echo "::error file=$chart::appVersion '$app' does not match tag '$TAG'; bump it before tagging"
+            exit 1
+          fi
+          echo "appVersion $app matches $TAG"
+
   goreleaser:
+    needs: [chart-version]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -25,7 +48,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.6'
-          cache: true
+          # No module/build cache on the release path (L-30): a cache
+          # written by a main or PR run must not feed a signed release.
+          cache: false
       # goreleaser's `sboms:` block invokes syft to produce a
       # CycloneDX SBOM per archive artifact. syft isn't preinstalled
       # on ubuntu-latest runners, so we pull it before invoking
@@ -46,3 +71,50 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # SLSA subjects are the archives GoReleaser just built and shipped
+      # (L-29). They used to be hashed from a separate rebuild in
+      # slsa.yml with different flags and names, so the provenance
+      # attested binaries that were never published. Each digest is
+      # cross-checked against GoReleaser's checksums.txt first.
+      - name: Hash release archives for provenance
+        id: hashes
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(rousseau-agent_*.tar.gz rousseau-agent_*.zip rousseau-agent-lite_*.tar.gz)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "::error::no release archives in dist/"
+            exit 1
+          fi
+          sha256sum "${archives[@]}" > provenance-subjects.txt
+          while read -r sum name; do
+            grep -qxF "$sum  $name" checksums.txt \
+              || { echo "::error::$name: digest not in checksums.txt"; exit 1; }
+          done < provenance-subjects.txt
+          cat provenance-subjects.txt
+          printf 'hashes=%s\n' "$(base64 -w0 < provenance-subjects.txt)" >> "$GITHUB_OUTPUT"
+    outputs:
+      hashes: ${{ steps.hashes.outputs.hashes }}
+
+  # SLSA Level 3 provenance over the shipped archives, uploaded to the
+  # same release (replaces slsa.yml). Verify a download with:
+  #   slsa-verifier verify-artifact \
+  #     --provenance-path multiple.intoto.jsonl \
+  #     --source-uri github.com/sebastienrousseau/rousseau-agent \
+  #     --source-tag <tag> \
+  #     rousseau-agent_<version>_<os>_<arch>.tar.gz
+  provenance:
+    needs: [goreleaser]
+    permissions:
+      # OIDC token for the provenance signature, run metadata, and the
+      # .intoto.jsonl upload to the release.
+      id-token: write
+      contents: write
+      actions: read
+    # Referenced by tag, not SHA, on purpose: the SLSA generator
+    # verifies its own ref and refuses to run when pinned by SHA.
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.goreleaser.outputs.hashes }}"
+      upload-assets: true

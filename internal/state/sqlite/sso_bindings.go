@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS sso_bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_sso_bindings_expires_at
     ON sso_bindings(expires_at);
+CREATE TABLE IF NOT EXISTS sso_spent_tokens (
+    token_key  TEXT PRIMARY KEY,
+    expires_at TEXT NOT NULL
+);
 `
 
 // SSOBindings is a SQLite-backed [sso.BindingStore].
@@ -116,5 +120,28 @@ func (b *SSOBindings) Count(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// Spend satisfies [sso.TokenSpender]: it records key until expiresAt
+// and reports whether it was unspent, dropping expired keys first.
+func (b *SSOBindings) Spend(ctx context.Context, key string, expiresAt time.Time) (bool, error) {
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	if _, err := b.db.ExecContext(ctx, `DELETE FROM sso_spent_tokens WHERE expires_at <= ?`, now); err != nil {
+		return false, fmt.Errorf("sqlite: purge spent sso tokens: %w", err)
+	}
+	exp := expiresAt.UTC().Format("2006-01-02T15:04:05.000Z")
+	res, err := b.db.ExecContext(ctx,
+		`INSERT INTO sso_spent_tokens (token_key, expires_at) VALUES (?, ?) ON CONFLICT(token_key) DO NOTHING`, key, exp)
+	if err != nil {
+		return false, fmt.Errorf("sqlite: spend sso token: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("sqlite: spend sso token: %w", err)
+	}
+	return n == 1, nil
+}
+
 // Compile-time interface satisfaction.
-var _ sso.BindingStore = (*SSOBindings)(nil)
+var (
+	_ sso.BindingStore = (*SSOBindings)(nil)
+	_ sso.TokenSpender = (*SSOBindings)(nil)
+)

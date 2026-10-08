@@ -97,6 +97,9 @@ const (
 	// JSONRPCErrContentTypeNotSupported is returned when the peer
 	// sends parts[] the agent can't consume.
 	JSONRPCErrContentTypeNotSupported = -32005
+	// JSONRPCErrRateLimited is returned when the server refuses a new
+	// task because the peer (or the server) is at its in-flight cap.
+	JSONRPCErrRateLimited = -32029
 )
 
 // NewErrorResponse builds a JSON-RPC error response. Copies the caller

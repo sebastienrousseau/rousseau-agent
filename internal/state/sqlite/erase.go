@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,6 +19,8 @@ type EraseReport struct {
 	SessionIDs []string
 	// Rows counts deleted rows per table.
 	Rows map[string]int64
+	// Backups are migration snapshots found next to the database.
+	Backups []string
 }
 
 // perSessionTables hold rows keyed by session_id.
@@ -24,10 +28,15 @@ var perSessionTables = []string{"session_messages", "session_costs", "claude_ses
 
 // EraseSender removes everything this store holds for sender (GDPR
 // Article 17): its sessions, their messages and FTS rows, its jid mapping and
-// identity handles, SSO bindings, cron jobs delivering to it, and the
+// identity handles, SSO bindings, cron jobs delivering to it, its
+// in-flight turn journal rows (they hold a message preview), and the
 // per-session rows in session_costs, claude_sessions, recall_vectors
 // and reliability_samples. Tables a deployment never created are
 // skipped. Idempotent.
+//
+// Migration backups next to the database are full copies and are not
+// edited; the report lists them in Backups so the operator can delete
+// them.
 //
 // Sessions saved before sender tracking (empty sender) cannot be
 // attributed and are not touched.
@@ -40,6 +49,9 @@ func (s *Store) EraseSender(ctx context.Context, sender string) (EraseReport, er
 		{"identity_handles", `DELETE FROM identity_handles WHERE sender = ?`, []any{sender}},
 		{"sso_bindings", `DELETE FROM sso_bindings WHERE external_id = ?`, []any{sender}},
 		{"cron_jobs", `DELETE FROM cron_jobs WHERE deliver_to = ?`, []any{sender}},
+		// The turn journal keeps a preview of the sender's message
+		// under the bare sender, so a bare key clears every transport.
+		{"turns_inflight", `DELETE FROM turns_inflight WHERE sender = ?`, []any{sender}},
 	}
 	// A namespaced key ("signal:+44...") scopes the transport-keyed
 	// tables to that transport; cron targets are bare addresses.
@@ -47,8 +59,38 @@ func (s *Store) EraseSender(ctx context.Context, sender string) (EraseReport, er
 		steps[1] = senderStep{"identity_handles", `DELETE FROM identity_handles WHERE transport = ? AND sender = ?`, []any{t, bare}}
 		steps[2] = senderStep{"sso_bindings", `DELETE FROM sso_bindings WHERE transport = ? AND external_id = ?`, []any{t, bare}}
 		steps[3] = senderStep{"cron_jobs", `DELETE FROM cron_jobs WHERE deliver_to = ?`, []any{bare}}
+		steps[4] = senderStep{"turns_inflight", `DELETE FROM turns_inflight WHERE transport = ? AND sender = ?`, []any{t, bare}}
 	}
-	return s.erase(ctx, `SELECT id FROM sessions WHERE sender = ?`, []any{sender}, steps)
+	rep, err := s.erase(ctx, `SELECT id FROM sessions WHERE sender = ?`, []any{sender}, steps)
+	if err != nil {
+		return rep, err
+	}
+	rep.Backups, err = backupsNextTo(s.path)
+	return rep, err
+}
+
+// backupsNextTo lists the migration snapshots ([backup]) beside the
+// database at path: "<path>.pre-<label>-<timestamp>". They are full
+// copies and still hold whatever an erasure just removed.
+func backupsNextTo(path string) ([]string, error) {
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
+		return nil, nil
+	}
+	dir, base := filepath.Split(path)
+	if dir == "" {
+		dir = "."
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: erase: list backups: %w", err)
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), base+".pre-") {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	return out, nil
 }
 
 // EraseIdleSessions removes sessions not updated since cutoff, with

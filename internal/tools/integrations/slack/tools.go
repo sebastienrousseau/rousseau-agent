@@ -20,6 +20,9 @@ func NewPostMessageTool(c *Client) *PostMessageTool { return &PostMessageTool{c:
 // Name implements tools.Tool.
 func (*PostMessageTool) Name() string { return "slack_post_message" }
 
+// Outbound implements tools.Outbound: it posts a message to Slack.
+func (*PostMessageTool) Outbound() bool { return true }
+
 // Description implements tools.Tool.
 func (*PostMessageTool) Description() string {
 	return "Post a message to a Slack channel. Required: channel (id or name), text. Optional: thread_ts to reply in a thread."
@@ -126,6 +129,9 @@ func NewAddReactionTool(c *Client) *AddReactionTool { return &AddReactionTool{c:
 
 // Name implements tools.Tool.
 func (*AddReactionTool) Name() string { return "slack_add_reaction" }
+
+// Outbound implements tools.Outbound: it adds a visible reaction in Slack.
+func (*AddReactionTool) Outbound() bool { return true }
 
 // Description implements tools.Tool.
 func (*AddReactionTool) Description() string {

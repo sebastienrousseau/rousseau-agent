@@ -20,10 +20,12 @@ var perSessionTables = []string{"session_messages", "session_costs", "claude_ses
 
 // EraseSender removes everything this store holds for sender (GDPR
 // Article 17): its sessions and their messages, its jid mapping and
-// identity handles, SSO bindings, cron jobs delivering to it, and the
+// identity handles, SSO bindings, cron jobs delivering to it, its
+// in-flight turn journal rows (they hold a message preview), and the
 // per-session rows in session_costs, claude_sessions and
 // reliability_samples. Tables a deployment never created are skipped.
-// Idempotent.
+// Idempotent. Backups is always empty: Postgres migration backups are
+// the operator's own pg_dumps, which rousseau cannot see.
 //
 // Postgres has no secure_delete: the deleted tuples are reclaimed by
 // autovacuum, and an operator who must guarantee the bytes are gone
@@ -42,6 +44,9 @@ func (s *Store) EraseSender(ctx context.Context, sender string) (EraseReport, er
 		{"identity_handles", `DELETE FROM identity_handles WHERE sender = $1`, []any{sender}},
 		{"sso_bindings", `DELETE FROM sso_bindings WHERE external_id = $1`, []any{sender}},
 		{"cron_jobs", `DELETE FROM cron_jobs WHERE deliver_to = $1`, []any{sender}},
+		// The turn journal keeps a preview of the sender's message
+		// under the bare sender, so a bare key clears every transport.
+		{"turns_inflight", `DELETE FROM turns_inflight WHERE sender = $1`, []any{sender}},
 	}
 	// A namespaced key ("signal:+44...") scopes the transport-keyed
 	// tables to that transport; cron targets are bare addresses.
@@ -49,6 +54,7 @@ func (s *Store) EraseSender(ctx context.Context, sender string) (EraseReport, er
 		steps[1] = senderStep{"identity_handles", `DELETE FROM identity_handles WHERE transport = $1 AND sender = $2`, []any{t, bare}}
 		steps[2] = senderStep{"sso_bindings", `DELETE FROM sso_bindings WHERE transport = $1 AND external_id = $2`, []any{t, bare}}
 		steps[3] = senderStep{"cron_jobs", `DELETE FROM cron_jobs WHERE deliver_to = $1`, []any{bare}}
+		steps[4] = senderStep{"turns_inflight", `DELETE FROM turns_inflight WHERE transport = $1 AND sender = $2`, []any{t, bare}}
 	}
 	return s.erase(ctx, `SELECT id FROM sessions WHERE sender = $1`, []any{sender}, steps)
 }

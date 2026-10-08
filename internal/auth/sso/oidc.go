@@ -9,13 +9,18 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
+	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,11 +69,27 @@ type OIDCDirectory struct {
 	// jwksForcedAt is when an unknown kid last forced a refresh;
 	// guarded by jwksFetching.
 	jwksForcedAt time.Time
+	// Refresh backoff, guarded by jwksFetching: consecutive failures,
+	// the earliest next attempt, and the last failure's error.
+	jwksFailures int
+	jwksRetryAt  time.Time
+	jwksLastErr  error
 }
 
-// jwksMinRefresh is the shortest interval between JWKS fetches
-// triggered by unknown key IDs.
-const jwksMinRefresh = time.Minute
+const (
+	// jwksMinRefresh is the shortest interval between JWKS fetches
+	// triggered by unknown key IDs.
+	jwksMinRefresh = time.Minute
+	// jwksStaleGrace is how long past their TTL the last good keys
+	// keep verifying while the IdP's JWKS endpoint is failing.
+	jwksStaleGrace = time.Hour
+	// jwksBackoffBase / jwksBackoffMax bound the exponential delay
+	// between JWKS refresh attempts after a failure.
+	jwksBackoffBase = time.Second
+	jwksBackoffMax  = 5 * time.Minute
+	// maxOIDCDocBytes caps the discovery and JWKS response bodies.
+	maxOIDCDocBytes = 1 << 20
+)
 
 // NewOIDCDirectory constructs a running verifier. Does NOT hit the
 // network — discovery + JWKS fetches happen lazily on first
@@ -84,10 +105,13 @@ func NewOIDCDirectory(cfg OIDCConfig, logger *slog.Logger) (*OIDCDirectory, erro
 	}
 	if cfg.Audience == "" {
 		// Without an audience any token the IdP issued for any of
-		// its clients is accepted here. Not fatal (some deployments
-		// run a single client) but worth a line in the startup log.
+		// its clients would sign a user in here.
+		if !cfg.AllowAnyAudience {
+			return nil, errors.New("sso/oidc: audience is required (set sso.oidc.audience to this daemon's client id, " +
+				"or sso.oidc.allow_any_audience: true for an issuer that serves this daemon alone)")
+		}
 		logger.Warn("sso.oidc.audience_unset",
-			slog.String("effect", "tokens issued for other clients of this issuer are accepted; set sso.oidc.audience"))
+			slog.String("effect", "tokens issued for other clients of this issuer are accepted"))
 	}
 	cfg = cfg.applyDefaults()
 	return &OIDCDirectory{
@@ -152,7 +176,22 @@ func (d *OIDCDirectory) VerifyToken(ctx context.Context, token string) (Identity
 	if err := d.checkClaims(claims, now); err != nil {
 		return Identity{}, err
 	}
-	return d.identityFromClaims(payload, claims), nil
+	id := d.identityFromClaims(payload, claims)
+	id.TokenID = tokenID(claims.Iss, claims.Jti, signed)
+	return id, nil
+}
+
+// tokenID is the single-use key for a verified token: its jti when it
+// has one, else a digest of the signed input. The signed input, not
+// the token text: a signature segment re-encoded with different
+// padding bits decodes to the same bytes and would dodge a digest of
+// the whole token.
+func tokenID(iss, jti string, signed []byte) string {
+	if jti != "" {
+		return "jti:" + iss + ":" + jti
+	}
+	sum := sha256.Sum256(signed)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // ResolveTransportID looks up externalID in the operator-
@@ -243,43 +282,89 @@ func (d *OIDCDirectory) identityFromClaims(payload []byte, c jwtClaims) Identity
 // concurrent refresh attempts so ten simultaneous unknown-kid tokens
 // don't stampede the IdP.
 func (d *OIDCDirectory) resolveKey(ctx context.Context, kid string) (jwkKey, error) {
-	d.jwksMu.RLock()
-	k, ok := d.jwks[kid]
-	fetched := d.jwksFetched
-	d.jwksMu.RUnlock()
-	if ok && time.Since(fetched) < d.cfg.JWKSRefresh {
+	if k, ok := d.freshKey(kid); ok {
 		return k, nil
 	}
-
 	d.jwksFetching.Lock()
 	defer d.jwksFetching.Unlock()
 	// Re-check under the fetching lock — another goroutine may have
 	// refreshed while we were queuing.
-	d.jwksMu.RLock()
-	k, ok = d.jwks[kid]
-	fetched = d.jwksFetched
-	d.jwksMu.RUnlock()
-	if ok && time.Since(fetched) < d.cfg.JWKSRefresh {
+	if k, ok := d.freshKey(kid); ok {
 		return k, nil
 	}
+	return d.refreshForKey(ctx, kid)
+}
+
+// cachedKey reads kid from the JWKS cache along with the cache's
+// fetch time.
+func (d *OIDCDirectory) cachedKey(kid string) (jwkKey, bool, time.Time) {
+	d.jwksMu.RLock()
+	defer d.jwksMu.RUnlock()
+	k, ok := d.jwks[kid]
+	return k, ok, d.jwksFetched
+}
+
+// freshKey returns kid when it is cached and within the TTL.
+func (d *OIDCDirectory) freshKey(kid string) (jwkKey, bool) {
+	k, ok, fetched := d.cachedKey(kid)
+	return k, ok && time.Since(fetched) < d.cfg.JWKSRefresh
+}
+
+// refreshForKey refreshes the JWKS for kid. When the refresh fails
+// (or is backing off) a key from the last good fetch keeps verifying
+// until jwksStaleGrace past its TTL, so a short IdP outage does not
+// lock every user out. Caller must hold jwksFetching.
+func (d *OIDCDirectory) refreshForKey(ctx context.Context, kid string) (jwkKey, error) {
+	k, known, fetched := d.cachedKey(kid)
 	// An unknown kid forces a refresh (IdPs rotate keys on their own
 	// schedule), but a second forced refresh within jwksMinRefresh is
 	// refused: otherwise `/login` spam with made-up kids turns every
 	// attempt into an IdP round-trip.
-	if !ok && !d.noteForcedRefresh(fetched) {
+	if !known && !d.noteForcedRefresh(fetched) {
 		return jwkKey{}, fmt.Errorf("%w: kid %q not in JWKS (refresh rate-limited)", ErrTokenInvalid, kid)
 	}
-
-	if err := d.refreshJWKS(ctx); err != nil {
+	if err := d.refreshWithBackoff(ctx); err != nil {
+		if known && time.Since(fetched) < d.cfg.JWKSRefresh+jwksStaleGrace {
+			d.logger.Debug("sso.jwks_serving_stale", slog.String("kid", kid))
+			return k, nil
+		}
 		return jwkKey{}, err
 	}
-	d.jwksMu.RLock()
-	k, ok = d.jwks[kid]
-	d.jwksMu.RUnlock()
-	if !ok {
-		return jwkKey{}, fmt.Errorf("%w: kid %q not in JWKS", ErrTokenInvalid, kid)
+	if k, ok, _ := d.cachedKey(kid); ok {
+		return k, nil
 	}
-	return k, nil
+	return jwkKey{}, fmt.Errorf("%w: kid %q not in JWKS", ErrTokenInvalid, kid)
+}
+
+// refreshWithBackoff runs refreshJWKS unless a previous failure's
+// backoff window is still open. Each consecutive failure doubles the
+// window (jwksBackoffBase up to jwksBackoffMax); a success resets it.
+// Caller must hold jwksFetching.
+func (d *OIDCDirectory) refreshWithBackoff(ctx context.Context) error {
+	now := time.Now()
+	if now.Before(d.jwksRetryAt) {
+		return fmt.Errorf("sso/oidc: jwks refresh backing off until %s after: %w",
+			d.jwksRetryAt.Format(time.RFC3339), d.jwksLastErr)
+	}
+	if err := d.refreshJWKS(ctx); err != nil {
+		d.jwksFailures++
+		wait := jwksBackoff(d.jwksFailures)
+		d.jwksRetryAt = now.Add(wait)
+		d.jwksLastErr = err
+		d.logger.Warn("sso.jwks_refresh_failed",
+			slog.String("err", err.Error()),
+			slog.Int("failures", d.jwksFailures),
+			slog.Duration("retry_in", wait))
+		return err
+	}
+	d.jwksFailures, d.jwksRetryAt, d.jwksLastErr = 0, time.Time{}, nil
+	return nil
+}
+
+// jwksBackoff is the delay after the n-th consecutive failure (n ≥ 1).
+func jwksBackoff(n int) time.Duration {
+	wait := jwksBackoffBase << min(n-1, 16)
+	return min(wait, jwksBackoffMax)
 }
 
 // noteForcedRefresh records a refresh forced by an unknown kid and
@@ -309,9 +394,6 @@ func (d *OIDCDirectory) refreshJWKS(ctx context.Context) error {
 		d.discovery.Store(fresh)
 		disc = fresh
 	}
-	if disc.JWKSURI == "" {
-		return fmt.Errorf("sso/oidc: discovery document missing jwks_uri")
-	}
 	fresh, err := d.fetchJWKS(ctx, disc.JWKSURI)
 	if err != nil {
 		return err
@@ -327,53 +409,118 @@ func (d *OIDCDirectory) refreshJWKS(ctx context.Context) error {
 	return nil
 }
 
-// fetchDiscovery pulls the standard OIDC discovery document.
+// fetchDiscovery pulls the standard OIDC discovery document. A
+// document is returned (and so cached) only once its issuer and
+// jwks_uri have passed their checks.
 func (d *OIDCDirectory) fetchDiscovery(ctx context.Context) (*discoveryDoc, error) {
-	url := strings.TrimRight(d.cfg.Issuer, "/") + "/.well-known/openid-configuration"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("sso/oidc: discovery request: %w", err)
-	}
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("sso/oidc: discovery fetch: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sso/oidc: discovery HTTP %d", resp.StatusCode)
-	}
+	target := strings.TrimRight(d.cfg.Issuer, "/") + "/.well-known/openid-configuration"
 	var doc discoveryDoc
-	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		return nil, fmt.Errorf("sso/oidc: discovery json: %w", err)
+	if err := d.getJSON(ctx, target, "discovery", &doc); err != nil {
+		return nil, err
 	}
 	// Cross-check that the returned issuer matches the configured
 	// one — belt-and-braces against a MITM'd discovery response.
 	if doc.Issuer != "" && doc.Issuer != d.cfg.Issuer {
 		return nil, fmt.Errorf("sso/oidc: discovery issuer mismatch: got %q want %q", doc.Issuer, d.cfg.Issuer)
 	}
+	if doc.JWKSURI == "" {
+		return nil, errors.New("sso/oidc: discovery document missing jwks_uri")
+	}
+	if err := checkJWKSURI(d.cfg.Issuer, doc.JWKSURI, d.cfg.JWKSAllowedHosts); err != nil {
+		return nil, err
+	}
 	return &doc, nil
+}
+
+// getJSON GETs target and decodes its body into v. The body is capped
+// at maxOIDCDocBytes: a hostile or broken endpoint cannot make the
+// verifier buffer an unbounded document. what names the document in
+// errors ("discovery", "jwks").
+func (d *OIDCDirectory) getJSON(ctx context.Context, target, what string, v any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("sso/oidc: %s request: %w", what, err)
+	}
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("sso/oidc: %s fetch: %w", what, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("sso/oidc: %s HTTP %d", what, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOIDCDocBytes+1))
+	if err != nil {
+		return fmt.Errorf("sso/oidc: %s read: %w", what, err)
+	}
+	if len(body) > maxOIDCDocBytes {
+		return fmt.Errorf("sso/oidc: %s document too large (over %d bytes)", what, maxOIDCDocBytes)
+	}
+	if err := json.Unmarshal(body, v); err != nil {
+		return fmt.Errorf("sso/oidc: %s json: %w", what, err)
+	}
+	return nil
+}
+
+// checkJWKSURI admits a discovery document's jwks_uri only on the
+// issuer's own host or a host in allowed (sso.oidc.jwks_allowed_hosts),
+// and only over https. Plain http is accepted for loopback hosts alone
+// (local test IdPs); anywhere else an on-path attacker could swap the
+// keys. Host comparison ignores case and port.
+func checkJWKSURI(issuer, jwksURI string, allowed []string) error {
+	u, err := url.Parse(jwksURI)
+	if err != nil {
+		return fmt.Errorf("sso/oidc: jwks_uri unparseable: %w", err)
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return fmt.Errorf("sso/oidc: jwks_uri %q has no host", jwksURI)
+	}
+	if !jwksSchemeOK(u.Scheme, host) {
+		return fmt.Errorf("sso/oidc: jwks_uri %q must use https", jwksURI)
+	}
+	if host == hostOf(issuer) || slices.ContainsFunc(allowed, func(h string) bool { return strings.EqualFold(h, host) }) {
+		return nil
+	}
+	return fmt.Errorf("sso/oidc: jwks_uri host %q is neither the issuer's host nor in sso.oidc.jwks_allowed_hosts", host)
+}
+
+func jwksSchemeOK(scheme, host string) bool {
+	switch scheme {
+	case "https":
+		return true
+	case "http":
+		return isLoopbackHost(host)
+	default:
+		return false
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// hostOf is the lower-cased hostname of rawURL, or "" if unparseable.
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
 }
 
 // fetchJWKS pulls the JWKS document from url and parses every key
 // this package supports. Unsupported keys are skipped with a Debug
 // log rather than failing the whole refresh (IdPs sometimes serve
 // keys with unusual algorithms).
-func (d *OIDCDirectory) fetchJWKS(ctx context.Context, url string) (map[string]jwkKey, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("sso/oidc: jwks request: %w", err)
-	}
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("sso/oidc: jwks fetch: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sso/oidc: jwks HTTP %d", resp.StatusCode)
-	}
+func (d *OIDCDirectory) fetchJWKS(ctx context.Context, jwksURI string) (map[string]jwkKey, error) {
 	var jwks jwksDocument
-	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
-		return nil, fmt.Errorf("sso/oidc: jwks json: %w", err)
+	if err := d.getJSON(ctx, jwksURI, "jwks", &jwks); err != nil {
+		return nil, err
 	}
 	out := make(map[string]jwkKey, len(jwks.Keys))
 	for _, raw := range jwks.Keys {
@@ -388,6 +535,7 @@ func (d *OIDCDirectory) fetchJWKS(ctx context.Context, url string) (map[string]j
 			)
 			continue
 		}
+		key.use = raw.Use
 		out[raw.Kid] = key
 	}
 	return out, nil
@@ -423,6 +571,7 @@ type jwtClaims struct {
 	EmailVerified bool     `json:"email_verified"`
 	Name          string   `json:"name"`
 	Groups        []string `json:"groups"`
+	Jti           string   `json:"jti"`
 }
 
 // audience handles the JWT audience claim's dual shape: a bare
@@ -487,10 +636,25 @@ type rawJWK struct {
 }
 
 // jwkKey wraps whatever crypto.PublicKey the raw JWK parsed to,
-// plus the algorithm hint so verifySignature picks the right hash.
+// plus the JWK's alg and use, which bind what the key may verify.
 type jwkKey struct {
 	pub crypto.PublicKey
 	alg string
+	use string
+}
+
+// permits reports whether the key may verify a token signed with alg:
+// never an encryption key (use=enc), and only the JWK's own alg when
+// it declares one, so a key published for one algorithm cannot be
+// used under another.
+func (k jwkKey) permits(alg string) error {
+	if k.use == "enc" {
+		return errors.New("key is an encryption key (use=enc)")
+	}
+	if k.alg != "" && k.alg != alg {
+		return fmt.Errorf("key alg %q does not match token alg %q", k.alg, alg)
+	}
+	return nil
 }
 
 // parseJWK turns a raw JWK into a jwkKey — either *rsa.PublicKey
@@ -567,6 +731,9 @@ func ecdsaCurveForName(name string) (elliptic.Curve, error) {
 // verifySignature dispatches on alg. Returns nil on valid
 // signature, an error otherwise (never panics on wrong-key-type).
 func verifySignature(alg string, key jwkKey, signed, sig []byte) error {
+	if err := key.permits(alg); err != nil {
+		return err
+	}
 	switch alg {
 	case "RS256":
 		return verifyRSA(key, crypto.SHA256, signed, sig)

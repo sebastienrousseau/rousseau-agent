@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -35,14 +36,20 @@ var ErrRelative = errors.New("fsguard: path must be absolute")
 // ErrDenied is returned for a path under a denied location.
 var ErrDenied = errors.New("fsguard: path is on the deny list")
 
+// ErrWriteDenied is returned for a write to a path that is readable
+// but would let a write run code outside any sandbox (shell start-up
+// files, autostart entries, git hooks).
+var ErrWriteDenied = errors.New("fsguard: path may not be written")
+
 // ErrOutsideRoot is returned for a path outside the workspace root.
 var ErrOutsideRoot = errors.New("fsguard: path is outside the workspace root")
 
 // Guard is an immutable path policy. The zero value denies nothing
 // and has no root; use [Default] or [New].
 type Guard struct {
-	root string
-	deny []string
+	root      string
+	deny      []string
+	writeDeny []string
 }
 
 // New builds a guard with an optional workspace root and the default
@@ -62,6 +69,11 @@ func New(root string, extraDeny []string) (*Guard, error) {
 	return newGuard(root, append(DefaultDeny(), extraDeny...)), nil
 }
 
+// caseInsensitiveFS is true where the default file systems compare
+// names case-insensitively (APFS, NTFS), so "~/.SSH" must match the
+// "~/.ssh" deny entry.
+var caseInsensitiveFS = runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+
 // newGuard resolves already-validated absolute entries.
 func newGuard(root string, deny []string) *Guard {
 	g := &Guard{}
@@ -72,6 +84,9 @@ func newGuard(root string, deny []string) *Guard {
 		if d != "" {
 			g.deny = append(g.deny, resolveExisting(filepath.Clean(d)))
 		}
+	}
+	for _, d := range DefaultWriteDeny() {
+		g.writeDeny = append(g.writeDeny, resolveExisting(filepath.Clean(d)))
 	}
 	return g
 }
@@ -112,16 +127,68 @@ func DefaultDeny() []string {
 		filepath.Join(dataHome, "rousseau"),
 		filepath.Join(home, ".config", "rousseau"),
 		filepath.Join(home, ".local", "share", "rousseau"),
+		filepath.Join(home, ".local", "state", "rousseau"), // audit chain key
+		filepath.Join(stateHome(home), "rousseau"),         // audit chain key under $XDG_STATE_HOME
 		filepath.Join(home, ".ssh"),
 		filepath.Join(home, ".gnupg"),
 		filepath.Join(home, ".aws"),
+		filepath.Join(home, ".azure"),
 		filepath.Join(home, ".kube"),
 		filepath.Join(home, ".docker"),
 		filepath.Join(home, ".claude"),
 		filepath.Join(home, ".netrc"),
 		filepath.Join(home, ".git-credentials"),
+		filepath.Join(cfgHome, "gh"),
+		filepath.Join(cfgHome, "gcloud"),
+		filepath.Join(home, ".npmrc"),
+		filepath.Join(home, ".pypirc"),
+		filepath.Join(home, ".cargo", "credentials"),
+		filepath.Join(home, ".cargo", "credentials.toml"),
+		filepath.Join(home, ".password-store"),
+		filepath.Join(home, ".bash_history"),
+		filepath.Join(home, ".zsh_history"),
+		filepath.Join(dataHome, "fish", "fish_history"),
 	)
 	return out
+}
+
+// stateHome is $XDG_STATE_HOME, or ~/.local/state when unset.
+func stateHome(home string) string {
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return d
+	}
+	return filepath.Join(home, ".local", "state")
+}
+
+// DefaultWriteDeny lists paths the file tools may read but never
+// write: a write there runs code outside any sandbox at the next
+// login, shell start or git operation. Any path with a ".git/hooks"
+// segment is refused as well (see [Guard.ResolveForWrite]).
+func DefaultWriteDeny() []string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	cfgHome := os.Getenv("XDG_CONFIG_HOME")
+	if cfgHome == "" {
+		cfgHome = filepath.Join(home, ".config")
+	}
+	return []string{
+		filepath.Join(home, ".bashrc"),
+		filepath.Join(home, ".bash_profile"),
+		filepath.Join(home, ".bash_login"),
+		filepath.Join(home, ".profile"),
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".zprofile"),
+		filepath.Join(home, ".zshenv"),
+		filepath.Join(home, ".zlogin"),
+		filepath.Join(cfgHome, "fish"),
+		filepath.Join(cfgHome, "systemd", "user"),
+		filepath.Join(cfgHome, "autostart"),
+		filepath.Join(cfgHome, "environment.d"),
+		filepath.Join(home, ".local", "bin"),
+		filepath.Join(home, "Library", "LaunchAgents"),
+	}
 }
 
 // Root returns the workspace root, or "" when unrestricted.
@@ -145,8 +212,39 @@ func (g *Guard) Resolve(path string) (string, error) {
 	return real, nil
 }
 
+// ResolveForWrite is Resolve plus the write-only deny list and the
+// ".git/hooks" rule. write and edit use it; read and grep do not.
+func (g *Guard) ResolveForWrite(path string) (string, error) {
+	real, err := g.Resolve(path)
+	if err != nil {
+		return "", err
+	}
+	for _, d := range g.writeDeny {
+		if within(real, d) {
+			return "", fmt.Errorf("%w: %s", ErrWriteDenied, path)
+		}
+	}
+	if hasGitHooksSegment(real) {
+		return "", fmt.Errorf("%w: %s (git hooks run on the next git operation)", ErrWriteDenied, path)
+	}
+	return real, nil
+}
+
+// hasGitHooksSegment reports whether p contains ".git/hooks".
+func hasGitHooksSegment(p string) bool {
+	sep := string(filepath.Separator)
+	needle := sep + ".git" + sep + "hooks"
+	if caseInsensitiveFS {
+		p, needle = strings.ToLower(p), strings.ToLower(needle)
+	}
+	return strings.Contains(p+sep, needle+sep)
+}
+
 // within reports whether p equals base or sits below it.
 func within(p, base string) bool {
+	if caseInsensitiveFS {
+		p, base = strings.ToLower(p), strings.ToLower(base)
+	}
 	if p == base {
 		return true
 	}

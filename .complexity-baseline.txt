@@ -11,8 +11,6 @@ cognit	20	agent	(*LLMCompressor).summarise	internal/agent/compressor.go
 cognit	21	audio	(*WhisperCPP).Transcribe	internal/media/audio/whisper_cpp.go
 cognit	19	bedrock	toBedrockContent	internal/llm/bedrock/client.go
 cognit	23	builtin	(*A2ADispatchTool).Execute	internal/tools/builtin/a2a_dispatch.go
-cognit	32	builtin	(*GrepTool).Execute	internal/tools/builtin/grep.go
-cognit	17	builtin	(*SpawnSubagentTool).Execute	internal/tools/builtin/spawn_subagent.go
 cognit	17	bundle	(*Bundle).Verify	internal/skills/bundle/bundle.go
 cognit	18	claudecli	EraseTranscripts	internal/llm/claudecli/session_recover.go
 cognit	24	claudecli	lastUserContent	internal/llm/claudecli/client.go
@@ -63,7 +61,7 @@ cognit	32	sqlite	(*Store).erase	internal/state/sqlite/erase.go
 cognit	21	sqlite	(*Store).Save	internal/state/sqlite/messages.go
 cognit	19	sso	parseJWK	internal/auth/sso/oidc.go
 cognit	18	subagent	Spawn	internal/agent/subagent/spawn.go
-cognit	54	transport	(*Router).Handle	internal/transport/router.go
+cognit	27	transport	(*Router).Handle	internal/transport/router.go
 cognit	16	transport	(*Supervisor).Wrap	internal/transport/control.go
 cognit	26	tui	(Model).Update	internal/tui/model.go
 cognit	21	tui	renderHistory	internal/tui/model.go
@@ -78,13 +76,10 @@ cyclo	15	agent	Decide	internal/agent/decide.go
 cyclo	12	agent	(*FTSRecall).SystemAppendix	internal/agent/recall.go
 cyclo	13	agent	(*LLMCompressor).summarise	internal/agent/compressor.go
 cyclo	11	agent	Structured	internal/agent/structured.go
-cyclo	16	agent	summarizeToolInput	internal/agent/tool_summary.go
 cyclo	16	audio	(*OpenAIAPI).Transcribe	internal/media/audio/openai_api.go
 cyclo	19	audio	(*WhisperCPP).Transcribe	internal/media/audio/whisper_cpp.go
 cyclo	11	bedrock	toBedrockContent	internal/llm/bedrock/client.go
 cyclo	20	builtin	(*A2ADispatchTool).Execute	internal/tools/builtin/a2a_dispatch.go
-cyclo	20	builtin	(*GrepTool).Execute	internal/tools/builtin/grep.go
-cyclo	15	builtin	(*SpawnSubagentTool).Execute	internal/tools/builtin/spawn_subagent.go
 cyclo	15	bundle	(*Bundle).Verify	internal/skills/bundle/bundle.go
 cyclo	12	claudecli	classifyLine	internal/llm/claudecli/stream.go
 cyclo	11	claudecli	EraseTranscripts	internal/llm/claudecli/session_recover.go
@@ -107,14 +102,12 @@ cyclo	15	cli	newWhatsAppCmd	internal/cli/whatsapp.go
 cyclo	13	cli	openStore	internal/cli/chat.go
 cyclo	11	cli	printReport	internal/cli/migrate.go
 cyclo	11	cli	(*setupWizard).askAll	internal/cli/setup.go
-cyclo	11	cli	(*vectorRecall).SystemAppendix	internal/cli/vector_recall.go
 cyclo	11	cli	wrapWithRisk	internal/cli/approver.go
 cyclo	12	client	(*Client).request	internal/mcp/client/client.go
 cyclo	18	client	(*Client).SubmitTask	internal/a2a/client/client.go
 cyclo	13	client	(*Client).SubscribeToTask	internal/a2a/client/spec_v1.go
 cyclo	11	client	mergeEnv	internal/mcp/client/client.go
 cyclo	13	email	(*Client).pollOnce	internal/transport/email/client.go
-cyclo	13	email	New	internal/transport/email/client.go
 cyclo	11	google	(*Client).do	internal/tools/integrations/google/client.go
 cyclo	20	integrations	RegisterAll	internal/tools/integrations/register.go
 cyclo	12	linear	(*Client).query	internal/tools/integrations/linear/client.go
@@ -151,8 +144,7 @@ cyclo	13	sso	parseJWK	internal/auth/sso/oidc.go
 cyclo	11	subagent	Spawn	internal/agent/subagent/spawn.go
 cyclo	13	telegram	(*Client).route	internal/transport/telegram/client.go
 cyclo	11	toolgate	RunHook	internal/toolgate/toolgate.go
-cyclo	38	transport	(*Router).Handle	internal/transport/router.go
-cyclo	11	transport	(*Router).handleIdentityCommand	internal/transport/router_session_cmds.go
+cyclo	23	transport	(*Router).Handle	internal/transport/router.go
 cyclo	24	tui	(Model).Update	internal/tui/model.go
 cyclo	11	tui	renderHistory	internal/tui/model.go
 cyclo	11	vertex	toVertexContent	internal/llm/vertex/client.go

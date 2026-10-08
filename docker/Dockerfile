@@ -14,9 +14,15 @@
 ########################  BUILDER  ########################
 # Base images are pinned by digest: a re-pushed tag cannot change what
 # we build on. To update, pull the new tag and bump the digest
-# (podman image inspect --format '{{index .RepoDigests 0}}' <image>).
-# golang:1.26-alpine as of 2026-10-01
-FROM golang:1.26-alpine@sha256:66f9a494af2b76ecb3eab75ff47166df61caec6d200c59d556b77327493d83a8 AS builder
+# Pin the multi-arch INDEX digest, not a per-platform manifest: the
+# arm64 release build runs natively on an arm64 runner, and an amd64
+# manifest digest there resolves to an image it cannot execute. Get it
+# from the registry's Docker-Content-Digest header for the tag, or
+# `podman manifest inspect <image>@<digest>` must list several
+# platforms. The same digest is pinned in Dockerfile.distroless and
+# Dockerfile.lite; keep the three in step.
+# golang:1.26.8-alpine3.24 (index) as of 2026-10-08
+FROM golang:1.26.8-alpine3.24@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 
 WORKDIR /src
 
@@ -122,46 +128,41 @@ RUN echo "apk refresh: ${APK_REFRESH}" \
 # sigstore, ip-address, picomatch) that fail the image's CVE gate.
 ARG NPM_VERSION=12.2.0
 RUN npm install -g npm@${NPM_VERSION} && npm --version
-RUN npm install -g pnpm
+ARG PNPM_VERSION=12.10.1
+RUN npm install -g pnpm@${PNPM_VERSION} && pnpm --version
 
-# chezmoi (dotfiles manager) and gh (GitHub CLI) are pinned release
-# archives checked against SHA-256 sums recorded here. Alpine's
-# packages lag upstream and were built with Go modules (x/crypto,
-# x/net, grpc, go-git) that have published high-severity fixes. Bump a
-# version together with both of its sums (from the release's
-# checksums file, cross-checked against the downloaded archive).
-ARG CHEZMOI_VERSION=2.73.0
-# amd64 uses the musl archive (the plain amd64 build is glibc-linked
-# and cannot run on Alpine); the arm64 archive is statically linked.
-ARG CHEZMOI_SHA256_AMD64=09559524c5c724df9d452f1e78cfeca063d68c18a38b3bebb8bf48e9b13249b7
-ARG CHEZMOI_SHA256_ARM64=abcb840401d3c1f2356e0f53f5d52aa10d10f572654d9626db9ad0ca4dc03355
+# gh (GitHub CLI) is a pinned release archive checked against SHA-256
+# sums recorded here. Alpine's package lags upstream and was built with
+# Go modules (x/crypto, x/net, grpc, go-git) that have published
+# high-severity fixes. Bump GH_VERSION together with both of its sums
+# (from the release's checksums file, cross-checked against the
+# downloaded archive).
+#
+# chezmoi is deliberately absent: this image carries no dotfiles (see
+# "Shell and git defaults" below). The pinned dotfiles live only in the
+# agent-builder dev image (docker/Dockerfile.builder).
 ARG GH_VERSION=2.102.0
 ARG GH_SHA256_AMD64=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 ARG GH_SHA256_ARM64=7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484
 RUN set -eu; \
     case "$(uname -m)" in \
-      x86_64)  arch=amd64; czarch=linux-musl_amd64; cz="$CHEZMOI_SHA256_AMD64"; ghs="$GH_SHA256_AMD64" ;; \
-      aarch64) arch=arm64; czarch=linux_arm64;      cz="$CHEZMOI_SHA256_ARM64"; ghs="$GH_SHA256_ARM64" ;; \
+      x86_64)  arch=amd64; ghs="$GH_SHA256_AMD64" ;; \
+      aarch64) arch=arm64; ghs="$GH_SHA256_ARM64" ;; \
       *) echo "unsupported arch $(uname -m)" >&2; exit 1 ;; \
     esac; \
     tmp=$(mktemp -d); \
-    curl -fsSL -o "$tmp/chezmoi.tgz" \
-      "https://github.com/twpayne/chezmoi/releases/download/v${CHEZMOI_VERSION}/chezmoi_${CHEZMOI_VERSION}_${czarch}.tar.gz"; \
-    echo "${cz}  $tmp/chezmoi.tgz" | sha256sum -c -; \
-    tar -xzf "$tmp/chezmoi.tgz" -C "$tmp" chezmoi; \
-    install -m 0755 "$tmp/chezmoi" /usr/local/bin/chezmoi; \
     curl -fsSL -o "$tmp/gh.tgz" \
       "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz"; \
     echo "${ghs}  $tmp/gh.tgz" | sha256sum -c -; \
     tar -xzf "$tmp/gh.tgz" -C "$tmp" "gh_${GH_VERSION}_linux_${arch}/bin/gh"; \
     install -m 0755 "$tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
     rm -rf "$tmp"; \
-    chezmoi --version; gh --version
+    gh --version
 
 # mise (version manager) is a pinned release binary checked against a
 # SHA-256 recorded here, not `curl https://mise.run | sh`. Alpine's
-# package is too old: it resolves the global python@3.12 below to the
-# dotfiles' version instead. Bump MISE_VERSION with both sums (from the
+# package is too old to resolve the global python@3.12 below
+# correctly. Bump MISE_VERSION with both sums (from the
 # release's SHASUMS256.txt, cross-checked against the downloaded file).
 # Runtimes installed via `mise install <lang>@<ver>` end up under
 # /home/rousseau/.local/share/mise/, which is a bind-mounted volume
@@ -219,10 +220,20 @@ RUN mkdir -p /home/rousseau/.local/share/rousseau \
  && ln -sfn /home/rousseau/.config /home/seb/.config \
  && ln -sfn /home/rousseau/.ssh    /home/seb/.ssh \
  && chown -R rousseau:rousseau /home/rousseau /workspace /home/seb
-# ~/.ssh / ~/.gnupg symlinks are created LATER (after chezmoi init)
-# — see the final RUN step. chezmoi's dotfiles include an
-# ~/.ssh/config, so chezmoi mkdir'd ~/.ssh as a real directory and
-# overwrote any symlink we tried to put there earlier.
+# ~/.ssh / ~/.gnupg symlinks are created in the final RUN step, after
+# every layer that writes under $HOME.
+
+# Shell and git defaults. These replace what the maintainer's dotfiles
+# used to provide here (H-4): the image no longer runs `chezmoi init
+# --apply` against a mutable branch of a second repository, so nothing
+# outside this repo's review and signing can change what lands in a
+# release image. bash is the login shell (adduser -s above); the git
+# defaults are a plain, reviewed file:
+#   gpg.format=ssh, user.signingkey=~/.ssh/id_ed25519,
+#   commit.gpgsign=true, tag.gpgSign=true, merge.verifySignatures=true,
+#   fetch/transfer/receive.fsckObjects=true, init.defaultBranch=main.
+# No identity is set (see "Git identity" in docker/README.md).
+COPY --chown=rousseau:rousseau --chmod=0644 docker/rootfs/home/rousseau/.gitconfig /home/rousseau/.gitconfig
 
 # Ship the curated skills bundle at /etc/rousseau/skills/ — the
 # skills loader treats this as a system-wide fallback when the user
@@ -253,35 +264,33 @@ ENV PATH=/home/rousseau/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 # invoke a full V8 C++ compile that takes 30+ minutes). Per-repo
 # `.mise.toml` can still ask mise for a different node if needed;
 # it'll fetch on first use in the container's writable layer.
-RUN MISE_YES=1 mise use -g python@3.12 go@1.26 rust@latest || true \
+#
+# Exact versions, and no `|| true` on the install (L-28): the old
+# `mise use … || true && … || true` chain could never fail, so a broken
+# toolchain install still produced a "successful" image, and
+# `rust@latest` changed under every rebuild. Only the /tmp cleanup
+# tolerates failure (an unmatched glob).
+ARG MISE_PYTHON=3.12.15
+ARG MISE_GO=1.26.8
+ARG MISE_RUST=1.99.0
+RUN MISE_YES=1 mise use -g python@${MISE_PYTHON} go@${MISE_GO} rust@${MISE_RUST} \
  && mise ls \
- && rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true
+ && { rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true; }
 # Clean /tmp so the runtime Tmpfs size=64m overlay doesn't fail with
 # ENOSPC on container create. mise/python dumped build logs and
 # compile caches here (~500 MB).
 
-# Bootstrap chezmoi-managed dotfiles from the public GitHub source.
-# --apply materialises them under $HOME; --no-tty forbids stdin prompts.
-# Without a TTY the dotfiles' config template takes its values from
-# CHEZMOI_<KEY> env vars (prompt flags are not consulted). Letting
-# chezmoi generate its own config file (rather than pre-seeding one)
-# keeps the [age] / [merge] sections in sync with the template's shape.
+# No dotfiles are applied to this image (H-4). It used to run
+# `chezmoi init --apply --branch main sebastienrousseau`: whatever was
+# on that branch at build time ran inside every signed release image,
+# and a failure was swallowed. The defaults it provided now come from
+# docker/rootfs (COPY above).
 #
 # No git identity is baked in: this image is published, and a baked-in
 # name/email would make every deployment commit as the maintainer.
 # Operators set theirs at runtime (git's GIT_CONFIG_COUNT/KEY/VALUE env
 # vars; see docker/README.md "Git identity"). Until then git refuses to
 # commit rather than committing as a placeholder.
-RUN CHEZMOI_PROFILE=container \
-    CHEZMOI_THEME=tokyonight-night \
-    CHEZMOI_GIT_SIGNINGKEY='~/.ssh/id_ed25519' \
-    CHEZMOI_GIT_SIGNINGFORMAT=ssh \
-    chezmoi init --apply --no-tty --branch main \
-      --promptString age_identity= \
-      --promptString age_recipient= \
-      sebastienrousseau \
-      2>&1 | tail -30 \
- || echo "chezmoi bootstrap emitted warnings; container still usable"
 
 # Final cleanup — same reason as the earlier /tmp wipe: keep the image
 # lean and avoid tripping the runtime tmpfs size limit at container
@@ -289,13 +298,11 @@ RUN CHEZMOI_PROFILE=container \
 RUN rm -rf /tmp/* /tmp/.[!.]* 2>/dev/null || true
 
 # Point ~/.ssh and ~/.gnupg at the state-volume subtree the copy
-# script populates on the host. Must run AFTER chezmoi init — chezmoi
-# creates ~/.ssh as a real directory (for its ssh config templates)
-# and would otherwise clobber the symlink.
+# script populates on the host. Runs last so no earlier layer can
+# replace the symlink with a real directory.
 #
-# Anything chezmoi dropped inside ~/.ssh is discarded: the state
-# volume is bind-mounted at container start, so whatever is baked
-# into the image at ~/.local/share/rousseau/keys/ssh/ gets hidden
+# The state volume is bind-mounted at container start, so whatever is
+# baked into the image at ~/.local/share/rousseau/keys/ssh/ gets hidden
 # by the host's copy anyway. The operator's real ssh config comes
 # from the host via the copy script (see host-keys.list.example).
 RUN rm -rf /home/rousseau/.ssh /home/rousseau/.gnupg \

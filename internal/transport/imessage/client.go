@@ -166,12 +166,12 @@ func (c *Client) Deliver(ctx context.Context, chatGUID, body string) error {
 	endpoint := c.cfg.BaseURL + "/api/v1/message/text?password=" + url.QueryEscape(c.cfg.Password)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(b))
 	if err != nil {
-		return fmt.Errorf("imessage: build: %w", err)
+		return fmt.Errorf("imessage: build: %w", transport.RedactURLError(err, c.cfg.Password))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("imessage: post: %w", err)
+		return fmt.Errorf("imessage: post: %w", transport.RedactURLError(err, c.cfg.Password))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
@@ -270,6 +270,7 @@ func (c *Client) handleMessage(ctx context.Context, m messageRecord, handler tra
 		At:           time.UnixMilli(m.DateCreated).UTC(),
 		Conversation: m.Chats[0].GUID,
 		MessageID:    m.GUID,
+		IsDirect:     isDirectChat(m.Chats[0].GUID),
 		Attachments:  attachments,
 	}
 	c.logger.Info("imessage.incoming",
@@ -288,6 +289,13 @@ func (c *Client) handleMessage(ctx context.Context, m messageRecord, handler tra
 	}
 }
 
+// isDirectChat reports whether a BlueBubbles chat GUID names a
+// one-to-one chat ("iMessage;-;+1555…") rather than a group
+// ("iMessage;+;chat…").
+func isDirectChat(guid string) bool {
+	return strings.Contains(guid, ";-;")
+}
+
 // fetchMessages calls BlueBubbles's message endpoint. limit caps the
 // paginated newest-first list.
 func (c *Client) fetchMessages(ctx context.Context, limit int) ([]messageRecord, error) {
@@ -300,11 +308,11 @@ func (c *Client) fetchMessages(ctx context.Context, limit int) ([]messageRecord,
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, fmt.Errorf("imessage: build: %w", err)
+		return nil, fmt.Errorf("imessage: build: %w", transport.RedactURLError(err, c.cfg.Password))
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("imessage: get: %w", err)
+		return nil, fmt.Errorf("imessage: get: %w", transport.RedactURLError(err, c.cfg.Password))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	rb, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
@@ -460,11 +468,11 @@ func (c *Client) downloadAttachment(ctx context.Context, guid string) ([]byte, e
 	u := strings.TrimRight(c.cfg.BaseURL, "/") + "/api/v1/attachment/" + url.PathEscape(guid) + "/download?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, transport.RedactURLError(err, c.cfg.Password)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, transport.RedactURLError(err, c.cfg.Password)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

@@ -87,6 +87,9 @@ func NewCalendarCreateEventTool(c *Client) *CalendarCreateEventTool {
 // Name implements tools.Tool.
 func (*CalendarCreateEventTool) Name() string { return "calendar_create_event" }
 
+// Outbound implements tools.Outbound: it creates a calendar event and can invite attendees.
+func (*CalendarCreateEventTool) Outbound() bool { return true }
+
 // Description implements tools.Tool.
 func (*CalendarCreateEventTool) Description() string {
 	return "Create a Google Calendar event. Required: summary, start, end (RFC3339). Optional: calendar_id, description, attendees (array of emails)."

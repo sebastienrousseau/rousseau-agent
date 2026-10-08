@@ -80,7 +80,8 @@ Every knob has a comment in [`values.yaml`](values.yaml). Highlights:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `image.repository` / `image.tag` | `ghcr.io/…/rousseau-agent` / chart's `appVersion` | Which daemon image to run |
+| `image.flavour` | `distroless` | `distroless` (UID 65532, daemon only) or `full` (UID 1000, claude CLI; set `podSecurityContext` UIDs to 1000) |
+| `image.repository` / `image.tag` | `ghcr.io/…/rousseau-agent` / `distroless-<appVersion>` or `<appVersion>` | Which daemon image to run |
 | `replicaCount` | `1` | Multi-replica requires `driver=postgres` |
 | `command` | `whatsapp` | The `rousseau <subcommand>` to run |
 | `config` | `{}` | Full `config.yaml` inlined into a ConfigMap |
@@ -89,6 +90,7 @@ Every knob has a comment in [`values.yaml`](values.yaml). Highlights:
 | `envFromSecret` | `""` | Reference a pre-created Secret for env vars |
 | `persistence.enabled` | `true` | Create a PVC for `/var/lib/rousseau` |
 | `serviceMonitor.enabled` | `false` | Emit a Prometheus Operator ServiceMonitor |
+| `networkPolicy.enabled` | `false` | Emit a NetworkPolicy: metrics ingress from `metricsFrom` only; egress DNS + `egressPorts` + `extraEgress` |
 | `podSecurityContext` / `securityContext` | non-root, seccomp RuntimeDefault | Mirrors the Quadlet-hardening baseline |
 | `strategy` | `Recreate` | Default — safer for long-lived transport sockets |
 
@@ -106,4 +108,3 @@ helm template test deploy/helm/rousseau-agent --set licence.value=x | kubeval  #
 - **Postgres subchart** — bring your own DSN. Managed Postgres is a per-cluster choice.
 - **Ingress** — the daemon speaks outbound to LLM providers + transports; nothing to expose. Prometheus scrapes come in via the Service.
 - **HPA** — the workload is bounded by transport rate, not CPU. Vertical scaling is what the resources block is for.
-- **NetworkPolicy** — cluster-specific; drop via `extraManifests`.

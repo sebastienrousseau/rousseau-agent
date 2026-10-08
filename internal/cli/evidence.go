@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"runtime"
@@ -88,6 +90,9 @@ type evidenceControls struct {
 	FSDenyExtra        int    `json:"tools_fs_deny_extra"`
 	ToolTimeout        string `json:"tool_timeout"`
 	MaxToolOutputBytes int    `json:"max_tool_output_bytes"`
+	// OutboundRequiresApproval is false only when allow_all runs
+	// outbound integration tools unasked (agent.approver.allow_outbound).
+	OutboundRequiresApproval bool `json:"outbound_requires_approval"`
 }
 
 type evidenceRetention struct {
@@ -263,9 +268,14 @@ func chainKeyEvidence(file string) (source, fingerprint string) {
 		}
 		source = p
 	}
-	key, err := os.ReadFile(source) //nolint:gosec // operator-configured key path
-	if err != nil {
+	// Fingerprint the key exactly as the daemon uses it (trimmed, mode
+	// checked), so a trailing newline does not change the fingerprint.
+	key, err := readChainKey(source)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
 		return source + " (not readable)", ""
+	}
+	if err != nil {
+		return source + " (not usable: " + err.Error() + ")", ""
 	}
 	sum := sha256.Sum256(key)
 	return source, hex.EncodeToString(sum[:8])
@@ -308,10 +318,12 @@ func evidenceControlsOf(cfg *config.Config) evidenceControls {
 		BashSandbox:        sandbox,
 		AllowUnsandboxed:   cfg.Tools.Bash.Sandbox.AllowUnsandboxed,
 		BashEnvPassthrough: len(cfg.Tools.Bash.EnvPassthrough),
-		FSRoot:             cfg.Tools.FS.Root,
+		FSRoot:             daemonFSRoot(cfg.Tools.FS),
 		FSDenyExtra:        len(cfg.Tools.FS.Deny),
 		ToolTimeout:        toolTimeout.String(),
 		MaxToolOutputBytes: maxOut,
+
+		OutboundRequiresApproval: !outboundUngated(ap),
 	}
 }
 

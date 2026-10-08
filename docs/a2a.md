@@ -107,18 +107,69 @@ GET  /tasks/{id}/events                  → SSE stream of TaskUpdate
 POST /tasks/{id}/cancel                  → cancel
 ```
 
+**Task ownership.** Every route that creates a task records the
+authenticated peer (`tok:<sha256 prefix>` of its bearer token) on the
+task; the request body's `from_agent` / `contextId` is only a label
+and never becomes the session sender. A task is visible only to the
+peer that created it: status, events, subscribe and cancel (REST and
+JSON-RPC) answer 404 / `-32001` to any other peer. A client-chosen
+task id that already exists is refused with 409 (JSON-RPC `-32602`)
+instead of replacing the running task.
+
 Bearer-token auth required in production. Configured via:
 
 ```yaml
 a2a:
   server:
     enabled: true
-    listen: :7443
+    listen: 0.0.0.0:8443          # default 127.0.0.1:8443 (loopback only)
+    tls_cert_file: /etc/rousseau/a2a.crt   # required for a non-loopback listen…
+    tls_key_file: /etc/rousseau/a2a.key
+    # allow_plaintext: true       # …unless a proxy on a private network terminates TLS
+    max_inflight_per_peer: 4      # running tasks per authenticated peer (default 4)
+    max_inflight: 32              # running tasks server-wide (default 32)
     auth_tokens_file: /etc/rousseau/a2a-tokens
+    signing_key_file: /etc/rousseau/a2a-signing.key
+    public_url: https://agent.example.com   # the only URL the card is signed for
+    trusted_proxies: [10.0.0.0/8]           # honour X-Forwarded-* only from these
     exposed_skills:                # explicit allow-list — no default exposure
       - review-diff
       - podman-quadlet
 ```
+
+**Bind and TLS.** The server listens on `127.0.0.1:8443` by default.
+A non-loopback `listen` (including `:8443` and `0.0.0.0`) without
+`tls_cert_file` + `tls_key_file` is refused at boot
+(`a2a.insecure_listen`, and a `warn` row in `rousseau doctor`)
+unless `allow_plaintext: true` is set. The HTTP server bounds header
+(10s), body (30s) and idle (120s) time; there is no write deadline
+because SSE streams last as long as the task. The SCIM endpoint
+(`auth.sso.scim`) applies the same rule with its own
+`tls_cert_file` / `tls_key_file` / `allow_plaintext` keys.
+
+**In-flight limits.** Each authenticated peer may run
+`max_inflight_per_peer` tasks at once (default 4) and the server
+`max_inflight` (default 32). Over either cap a new task is refused
+with HTTP 429 (JSON-RPC `-32029`); a finished task frees its slot.
+
+**Agent card trust.** The well-known AgentCard is JWS-signed only
+when both `signing_key_file` and `public_url` are set, and the signed
+card always advertises `public_url`. Without `public_url` the card's
+URL is derived from the request and served unsigned (the daemon logs
+`a2a.signing_without_public_url`): a URL taken from `Host` or
+`X-Forwarded-Host` is chosen by the caller and must never carry the
+operator's signature. `X-Forwarded-Proto` / `X-Forwarded-Host` are
+honoured only when the request comes from an address in
+`trusted_proxies`.
+
+**Error detail.** Peers receive generic error messages with a
+reference, for example `task failed (ref 0a1b2c3d4e5f)` with
+`FailureCode` `handler_error` / `turn_error`, or
+`invalid task body (ref …)` for a body that does not decode. The
+underlying error (provider responses, addresses, paths, decoder
+output) is logged with the same `ref` (`a2a.peer_error`,
+`a2a.turn_failed`) so operators can correlate. Bearer tokens are
+held as SHA-256 digests and compared in constant time.
 
 ### Client (rousseau dispatches to peers)
 

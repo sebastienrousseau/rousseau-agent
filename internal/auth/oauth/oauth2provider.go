@@ -25,15 +25,17 @@ func NewOAuth2Provider(name string, cfg *oauth2.Config) Provider {
 
 func (p *oauth2Provider) Name() string { return p.name }
 
-func (p *oauth2Provider) AuthCodeURL(state string) string {
+func (p *oauth2Provider) AuthCodeURL(state, verifier string) string {
 	// AccessTypeOffline requests a refresh token where the provider
 	// supports the notion (Google requires it; GitHub ignores it and
 	// always issues refresh tokens on token exchange when eligible).
-	return p.cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+	// The S256 PKCE challenge binds the code to this process: an
+	// intercepted code is useless without the verifier.
+	return p.cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.S256ChallengeOption(verifier))
 }
 
-func (p *oauth2Provider) Exchange(ctx context.Context, code string) (*Token, error) {
-	tok, err := p.cfg.Exchange(ctx, code)
+func (p *oauth2Provider) Exchange(ctx context.Context, code, verifier string) (*Token, error) {
+	tok, err := p.cfg.Exchange(ctx, code, oauth2.VerifierOption(verifier))
 	if err != nil {
 		return nil, fmt.Errorf("oauth: exchange (%s): %w", p.name, err)
 	}

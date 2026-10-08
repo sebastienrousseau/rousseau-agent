@@ -101,15 +101,19 @@ func TestRouter_LinkAdditionalHandle(t *testing.T) {
 	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/whoami"})
 	require.NoError(t, err)
 
-	// Now link a slack handle to the same identity.
-	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/link slack:U01234"})
+	// Ask to link a second handle; it confirms with the code.
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/link whatsapp:+456"})
 	require.NoError(t, err)
-	assert.Contains(t, got, "linked slack:U01234 to identity")
+	m := confirmCode.FindStringSubmatch(got)
+	require.Len(t, m, 2)
+	got, err = r.Handle(ctx, transport.IncomingMessage{From: "+456", Body: "/confirm " + m[1]})
+	require.NoError(t, err)
+	assert.Contains(t, got, "linked whatsapp:+456 to identity")
 
 	// The resolver now knows about both handles.
 	id, err := ids.Resolve(ctx, "whatsapp", "+123")
 	require.NoError(t, err)
-	id2, err := ids.Resolve(ctx, "slack", "U01234")
+	id2, err := ids.Resolve(ctx, "whatsapp", "+456")
 	require.NoError(t, err)
 	assert.Equal(t, id, id2)
 }
@@ -123,19 +127,21 @@ func TestRouter_LinkUsageMessageOnBadInput(t *testing.T) {
 
 func TestRouter_UnlinkRemovesHandle(t *testing.T) {
 	r, ids, ctx := setup(t)
-	// Provision + link.
-	_, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/whoami"})
+	// Provision + link a second handle.
+	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/link whatsapp:+456"})
 	require.NoError(t, err)
-	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/link slack:U01234"})
+	m := confirmCode.FindStringSubmatch(got)
+	require.Len(t, m, 2)
+	_, err = r.Handle(ctx, transport.IncomingMessage{From: "+456", Body: "/confirm " + m[1]})
 	require.NoError(t, err)
 
-	// Unlink the slack handle.
-	got, err := r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/unlink slack:U01234"})
+	// Unlink the second handle.
+	got, err = r.Handle(ctx, transport.IncomingMessage{From: "+123", Body: "/unlink whatsapp:+456"})
 	require.NoError(t, err)
-	assert.Contains(t, got, "unlinked slack:U01234")
+	assert.Contains(t, got, "unlinked whatsapp:+456")
 
-	// Resolver no longer knows about slack:U01234.
-	_, err = ids.Resolve(ctx, "slack", "U01234")
+	// Resolver no longer knows about it.
+	_, err = ids.Resolve(ctx, "whatsapp", "+456")
 	assert.Error(t, err)
 }
 
@@ -658,6 +664,7 @@ func TestRouter_HelpEnumeratesAllVerbs(t *testing.T) {
 		"/whoami", "/w",
 		"/link", "/lk",
 		"/unlink", "/ul",
+		"/confirm",
 		"/login", "/li",
 		"/logout", "/lo",
 		"/approve", "/ap",

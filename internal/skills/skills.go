@@ -55,6 +55,30 @@ type frontMatter struct {
 // Load reads every *.md file under dir (non-recursive) and returns the
 // parsed skills. A missing dir is not an error — Load returns nil.
 func Load(dir string) ([]Skill, error) {
+	all, err := loadAll(dir)
+	if err != nil {
+		return nil, err
+	}
+	return skillsOf(all), nil
+}
+
+// skillsOf drops the raw bytes; nil in, nil out.
+func skillsOf(all []loadedSkill) []Skill {
+	var out []Skill
+	for _, l := range all {
+		out = append(out, l.Skill)
+	}
+	return out
+}
+
+// loadedSkill keeps the exact bytes a skill was parsed from, so a
+// signature is checked over what was loaded rather than a re-read.
+type loadedSkill struct {
+	Skill
+	raw []byte
+}
+
+func loadAll(dir string) ([]loadedSkill, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -65,24 +89,24 @@ func Load(dir string) ([]Skill, error) {
 		}
 		return nil, fmt.Errorf("skills: read dir: %w", err)
 	}
-	var out []Skill
+	var out []loadedSkill
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		s, err := loadFile(filepath.Join(dir, e.Name()))
+		l, err := loadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return nil, fmt.Errorf("skills: load %s: %w", e.Name(), err)
 		}
-		out = append(out, s)
+		out = append(out, l)
 	}
 	return out, nil
 }
 
-func loadFile(path string) (Skill, error) {
-	raw, err := os.ReadFile(path)
+func loadFile(path string) (loadedSkill, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // path is a *.md entry of the operator's skills dir
 	if err != nil {
-		return Skill{}, err
+		return loadedSkill{}, err
 	}
 	fm, body := splitFrontMatter(raw)
 	s := Skill{
@@ -93,7 +117,7 @@ func loadFile(path string) (Skill, error) {
 	if fm != "" {
 		var meta frontMatter
 		if err := yaml.Unmarshal([]byte(fm), &meta); err != nil {
-			return Skill{}, fmt.Errorf("parse front matter: %w", err)
+			return loadedSkill{}, fmt.Errorf("parse front matter: %w", err)
 		}
 		if meta.Name != "" {
 			s.Name = meta.Name
@@ -101,7 +125,7 @@ func loadFile(path string) (Skill, error) {
 		s.Description = meta.Description
 		s.Triggers = meta.Triggers
 	}
-	return s, nil
+	return loadedSkill{Skill: s, raw: raw}, nil
 }
 
 // splitFrontMatter separates a leading `---\n…---\n` block from the

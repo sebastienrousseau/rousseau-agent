@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
@@ -66,7 +65,7 @@ func (t *EditTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return "", fmt.Errorf("edit: parse input: %w", err)
 	}
-	path, err := resolvePath(t.Guard, "edit", in.Path)
+	path, err := resolveWritePath(t.Guard, "edit", in.Path)
 	if err != nil {
 		return "", err
 	}
@@ -77,7 +76,7 @@ func (t *EditTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 		return "", fmt.Errorf("edit: old_string and new_string are identical")
 	}
 
-	b, err := os.ReadFile(path) //nolint:gosec // path vetted by fsguard
+	b, err := readRegular(t.Guard, path, defaultReadMaxBytes)
 	if err != nil {
 		return "", fmt.Errorf("edit: read: %w", err)
 	}
@@ -94,7 +93,7 @@ func (t *EditTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 	}
 
 	updated := strings.Replace(original, in.OldString, in.NewString, 1)
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil { //nolint:gosec // path vetted by fsguard; preserves the tool's documented mode
+	if err := guardOrDefault(t.Guard).WriteFile(path, []byte(updated), 0o644); err != nil {
 		return "", fmt.Errorf("edit: write: %w", err)
 	}
 	return fmt.Sprintf("edited %s (1 replacement)", in.Path), nil

@@ -125,6 +125,20 @@ RUN set -eu \
  && install -m 0755 /tmp/act /usr/local/bin/act \
  && rm -f /tmp/act /tmp/act.tar.gz
 
+# chezmoi — applies the pinned dotfiles further down. The musl archive
+# is statically linked, so it runs on this glibc base. Bump the version
+# together with its sum from the release's checksums file.
+ARG CHEZMOI_VERSION=2.73.0
+ARG CHEZMOI_SHA256=09559524c5c724df9d452f1e78cfeca063d68c18a38b3bebb8bf48e9b13249b7
+RUN set -eu \
+ && url="https://github.com/twpayne/chezmoi/releases/download/v${CHEZMOI_VERSION}/chezmoi_${CHEZMOI_VERSION}_linux-musl_amd64.tar.gz" \
+ && curl -fsSL "$url" -o /tmp/chezmoi.tar.gz \
+ && echo "${CHEZMOI_SHA256}  /tmp/chezmoi.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/chezmoi.tar.gz -C /tmp chezmoi \
+ && install -m 0755 /tmp/chezmoi /usr/local/bin/chezmoi \
+ && rm -f /tmp/chezmoi /tmp/chezmoi.tar.gz \
+ && chezmoi --version
+
 # ---------------------------------------------------------------------
 # Swift — opt-in.
 #
@@ -176,10 +190,12 @@ RUN set -eu; \
 # ---------------------------------------------------------------------
 USER rousseau
 
+# go and rust are exact versions, not `latest` (L-28): a rebuild must
+# not silently pick up a new toolchain. Bump deliberately.
 ARG MISE_NODE=24
-ARG MISE_PYTHON=3.12
-ARG MISE_GO=latest
-ARG MISE_RUST=latest
+ARG MISE_PYTHON=3.12.15
+ARG MISE_GO=1.27.1
+ARG MISE_RUST=1.99.0
 ARG MISE_RUBY=3.3
 ARG MISE_JAVA=21
 
@@ -235,13 +251,51 @@ RUN set -eu \
  && mise reshim \
  && mise ls --installed
 
-# Python tooling that the fleet's 45 Python repos expect. Installed with
-# --user into the (now writable) home rather than system-wide.
+# Python tooling that the fleet's 45 Python repos expect (pre-commit,
+# semgrep). Installed with --user into the (now writable) home rather
+# than system-wide, from a fully hashed lock (L-28): every package,
+# transitive ones included, must match a recorded SHA-256.
+COPY --chown=rousseau:rousseau docker/requirements-builder.txt /tmp/requirements-builder.txt
 RUN set -eu \
- && python3 -m pip install --no-cache-dir --user \
-      pre-commit \
-      semgrep \
+ && python3 -m pip install --no-cache-dir --user --require-hashes \
+      -r /tmp/requirements-builder.txt \
+ && rm -f /tmp/requirements-builder.txt \
  && echo "pip --user install OK"
+
+# ---------------------------------------------------------------------
+# Maintainer dotfiles, pinned (H-4 / decision D9).
+#
+# Dotfiles are a dev-image convenience only: the release daemon image
+# (docker/Dockerfile) carries none. Here they are fetched at one
+# reviewed commit, never a branch, so a push to the dotfiles repository
+# cannot change what this image runs. The pin is checked twice: the
+# ref must be a full 40-hex commit id, and the checked-out HEAD must
+# equal it. A commit id is a hash over the whole tree, and
+# transfer.fsckObjects makes git verify every object it receives
+# against its id. Any failure fails the build; nothing is swallowed.
+#
+# DOTFILES_REF is bumped by .github/workflows/dotfiles-pin.yml (monthly
+# PR; Dependabot cannot update a SHA held in an ARG). To bump by hand:
+#   git ls-remote https://github.com/sebastienrousseau/dotfiles refs/heads/main
+# then review the diff between the old and new commit before merging.
+# ---------------------------------------------------------------------
+ARG DOTFILES_REPO=https://github.com/sebastienrousseau/dotfiles
+ARG DOTFILES_REF=b2f15f93b636bb768ea9b39cee09199e50839ba2
+RUN set -eu; \
+    case "$DOTFILES_REF" in *[!0-9a-f]*|'') echo "DOTFILES_REF must be a commit id, got '$DOTFILES_REF'" >&2; exit 1 ;; esac; \
+    [ "${#DOTFILES_REF}" -eq 40 ] || { echo "DOTFILES_REF must be 40 hex chars" >&2; exit 1; }; \
+    df="$(mktemp -d)"; \
+    git -C "$df" init -q; \
+    git -C "$df" -c transfer.fsckObjects=true fetch -q --depth=1 "$DOTFILES_REPO" "$DOTFILES_REF"; \
+    git -C "$df" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD; \
+    got="$(git -C "$df" rev-parse HEAD)"; \
+    [ "$got" = "$DOTFILES_REF" ] || { echo "dotfiles: fetched $got, pinned $DOTFILES_REF" >&2; exit 1; }; \
+    CHEZMOI_PROFILE=container \
+    CHEZMOI_THEME=tokyonight-night \
+    chezmoi init --apply --no-tty --source "$df" \
+      --promptString age_identity= \
+      --promptString age_recipient=; \
+    rm -rf "$df"
 
 # ---------------------------------------------------------------------
 # Build-time self-test. The image fails to build if any headline

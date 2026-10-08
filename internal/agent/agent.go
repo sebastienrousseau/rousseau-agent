@@ -131,6 +131,9 @@ type Agent struct {
 	registry *tools.Registry
 	logger   *slog.Logger
 	opts     Options
+	// turnIDs lends each running turn's identity to external tool
+	// calls on its session (see DecideExternal).
+	turnIDs turnIdentities
 }
 
 // New constructs an Agent from its collaborators.
@@ -187,6 +190,7 @@ func (a *Agent) run(ctx context.Context, s *Session, c completer) (Message, erro
 		attribute.String("provider", a.provider.Name()),
 		attribute.String("agent.op", c.op))
 	defer span.End()
+	defer a.lendTurnIdentity(ctx, s.ID)()
 	start := time.Now()
 	a.emit(ctx, s, progress.Event{Kind: progress.KindTurnStarted})
 	stats := &turnStats{}
@@ -520,9 +524,11 @@ func (a *Agent) turnWithStats(ctx context.Context, s *Session, stats *turnStats,
 		// Inject per-turn state that stateful tools (e.g. spawn_subagent)
 		// may need. Stateless tools ignore these values.
 		toolCtx := toolcontext.WithLogger(
-			toolcontext.WithProvider(
-				toolcontext.WithSession(ctx, s),
-				a.provider),
+			toolcontext.WithSystemPrompt(
+				toolcontext.WithProvider(
+					toolcontext.WithSession(ctx, s),
+					a.provider),
+				req.System),
 			a.logger)
 
 		results, err := a.runTools(toolCtx, resp.Message, s.ID)

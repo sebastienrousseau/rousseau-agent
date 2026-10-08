@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -597,6 +598,8 @@ func TestSpec_AgentCardSignedWhenKeyConfigured(t *testing.T) {
 	}, echoHandler{}, nil)
 	require.NoError(t, err)
 	s.SigningKey = priv
+	// Signing applies only to a configured public URL (M-5).
+	s.PublicURL = "https://signed-peer.example"
 	ts := httptest.NewServer(s.Router())
 	t.Cleanup(ts.Close)
 
@@ -664,12 +667,15 @@ func TestSpec_BaseURL_HonoursForwardedHeaders(t *testing.T) {
 	req.Host = "internal.example"
 	req.Header.Set("X-Forwarded-Proto", "https")
 	req.Header.Set("X-Forwarded-Host", "peer.public.example")
+	// Forwarded headers count only from a configured trusted proxy.
+	req.RemoteAddr = "192.0.2.10:40000"
 
 	rr := httptest.NewRecorder()
 	s, err := New(a2a.CapabilityCard{Name: "n", Version: "v"}, echoHandler{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.TrustedProxies = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
 	s.Router().ServeHTTP(rr, req)
 
 	var card a2a.AgentCard

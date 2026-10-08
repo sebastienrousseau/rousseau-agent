@@ -26,12 +26,14 @@ var ErrBadSignature = errors.New("skills: signature verification failed")
 // matches the way git verifies SSH-signed commits/tags when
 // gpg.format=ssh.
 type Verifier interface {
-	// Verify checks that path is signed by an allowed signer. The
-	// companion signature file is expected at path + ".sig".
-	// Returns nil when the signature is valid; ErrUnsigned when the
-	// .sig file is absent; ErrBadSignature (wrapping the underlying
-	// verifier error) when the signature is present but invalid.
-	Verify(ctx context.Context, path string) error
+	// Verify checks that body, the bytes loaded from path, is signed
+	// by an allowed signer. The companion signature file is expected
+	// at path + ".sig"; path is not re-read, so what is verified is
+	// exactly what was loaded. Returns nil when the signature is
+	// valid; ErrUnsigned when the .sig file is absent; ErrBadSignature
+	// (wrapping the underlying verifier error) when the signature is
+	// present but invalid.
+	Verify(ctx context.Context, path string, body []byte) error
 }
 
 // VerifyOptions configures [LoadVerified].
@@ -55,12 +57,12 @@ type VerifyOptions struct {
 // is false, verification failures are logged at WARN but the skill is
 // kept. When true, failing skills are omitted from the return.
 func LoadVerified(ctx context.Context, dir string, opts VerifyOptions) ([]Skill, error) {
-	all, err := Load(dir)
+	all, err := loadAll(dir)
 	if err != nil {
 		return nil, err
 	}
 	if opts.Verifier == nil || len(all) == 0 {
-		return all, nil
+		return skillsOf(all), nil
 	}
 	logger := opts.Logger
 	if logger == nil {
@@ -68,7 +70,7 @@ func LoadVerified(ctx context.Context, dir string, opts VerifyOptions) ([]Skill,
 	}
 	out := make([]Skill, 0, len(all))
 	for _, s := range all {
-		if err := opts.Verifier.Verify(ctx, s.Path); err != nil {
+		if err := opts.Verifier.Verify(ctx, s.Path, s.raw); err != nil {
 			logger.Warn("skills.verify_failed",
 				slog.String("skill", s.Name),
 				slog.String("path", s.Path),
@@ -78,7 +80,7 @@ func LoadVerified(ctx context.Context, dir string, opts VerifyOptions) ([]Skill,
 				continue
 			}
 		}
-		out = append(out, s)
+		out = append(out, s.Skill)
 	}
 	return out, nil
 }
@@ -110,7 +112,7 @@ type SSHKeygenVerifier struct {
 }
 
 // Verify satisfies [Verifier].
-func (v *SSHKeygenVerifier) Verify(ctx context.Context, path string) error {
+func (v *SSHKeygenVerifier) Verify(ctx context.Context, path string, body []byte) error {
 	// Config precedence: bad Verifier config surfaces before data
 	// issues (missing signature) so operators see the fixable problem
 	// first rather than a symptom-level "no .sig" error.
@@ -158,11 +160,8 @@ func (v *SSHKeygenVerifier) Verify(ctx context.Context, path string) error {
 		"-n", ns,
 		"-s", sigPath,
 	}
-	body, err := os.ReadFile(path) //nolint:gosec // operator-supplied path within the skills dir
-	if err != nil {
-		return fmt.Errorf("skills: read %s: %w", path, err)
-	}
-
+	// The signed message is the loaded bytes, fed on stdin; the skill
+	// file is not re-read.
 	// #nosec G204 -- fixed argv; skill/signer paths are operator config.
 	cmd := exec.CommandContext(callCtx, "ssh-keygen", args...)
 	cmd.Stdin = bytes.NewReader(body)

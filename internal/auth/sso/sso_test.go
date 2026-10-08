@@ -57,7 +57,7 @@ func TestNew_LicenseGateBlocksAndLogsOnce(t *testing.T) {
 	var logs int64
 	logger := slog.New(&countingHandler{count: &logs})
 	dir := New(
-		Config{Kind: KindOIDC, OIDC: OIDCConfig{Issuer: "https://tenant.okta.com"}},
+		Config{Kind: KindOIDC, OIDC: OIDCConfig{Issuer: "https://tenant.okta.com", AllowAnyAudience: true}},
 		stubChecker{enabled: false},
 		logger,
 	)
@@ -70,7 +70,7 @@ func TestNew_NilCheckerTreatedAsCore(t *testing.T) {
 	// Defensive: a nil checker (upstream wiring bug) MUST NOT
 	// silently unlock. Same failure mode as "licence missing".
 	dir := New(
-		Config{Kind: KindOIDC, OIDC: OIDCConfig{Issuer: "https://x"}},
+		Config{Kind: KindOIDC, OIDC: OIDCConfig{Issuer: "https://x", AllowAnyAudience: true}},
 		nil,
 		silentLogger(),
 	)
@@ -80,7 +80,7 @@ func TestNew_NilCheckerTreatedAsCore(t *testing.T) {
 
 func TestNew_LicensedHappyPathReturnsRealDirectory(t *testing.T) {
 	dir := New(
-		Config{Kind: KindOIDC, OIDC: OIDCConfig{Issuer: "https://tenant.okta.com"}},
+		Config{Kind: KindOIDC, OIDC: OIDCConfig{Issuer: "https://tenant.okta.com", AllowAnyAudience: true}},
 		stubChecker{enabled: true},
 		silentLogger(),
 	)
@@ -145,7 +145,15 @@ type oidcTestServer struct {
 	// counters for cache-behaviour assertions
 	discoveryHits atomic.Int64
 	jwksHits      atomic.Int64
+	// jwksFail makes the JWKS endpoint answer 500 while set.
+	jwksFail atomic.Bool
+	// keyMeta is the [alg, use] pair the JWKS advertises for the
+	// key; defaults to RS256 / sig. See setKeyMeta.
+	keyMeta atomic.Pointer[[2]string]
 }
+
+// setKeyMeta changes the alg / use the JWKS advertises for the key.
+func (s *oidcTestServer) setKeyMeta(alg, use string) { s.keyMeta.Store(&[2]string{alg, use}) }
 
 func newOIDCTestServer(t *testing.T) *oidcTestServer {
 	t.Helper()
@@ -156,6 +164,7 @@ func newOIDCTestServer(t *testing.T) *oidcTestServer {
 		pub:  &priv.PublicKey,
 		kid:  "test-key-1",
 	}
+	s.setKeyMeta("RS256", "sig")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		s.discoveryHits.Add(1)
@@ -168,13 +177,18 @@ func newOIDCTestServer(t *testing.T) *oidcTestServer {
 	})
 	mux.HandleFunc("/.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
 		s.jwksHits.Add(1)
+		if s.jwksFail.Load() {
+			http.Error(w, "unavailable", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		nB64 := base64.RawURLEncoding.EncodeToString(priv.N.Bytes())
 		eB64 := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.E)).Bytes())
+		meta := s.keyMeta.Load()
 		doc := map[string]any{
 			"keys": []any{
 				map[string]any{
-					"kty": "RSA", "kid": s.kid, "alg": "RS256", "use": "sig",
+					"kty": "RSA", "kid": s.kid, "alg": meta[0], "use": meta[1],
 					"n": nB64, "e": eB64,
 				},
 			},
@@ -216,7 +230,7 @@ func TestOIDC_ConstructorRejectsEmptyIssuer(t *testing.T) {
 }
 
 func TestOIDC_NilLoggerDefaults(t *testing.T) {
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: "https://x"}, nil)
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: "https://x", AllowAnyAudience: true}, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, d)
 }
@@ -261,6 +275,7 @@ func TestOIDC_TransportMappingsResolveCustomClaims(t *testing.T) {
 			{Transport: "slack", ClaimKey: "slack_user_id"},
 			{Transport: "matrix", ClaimKey: "matrix_mxid"},
 		},
+		AllowAnyAudience: true,
 	}, silentLogger())
 	require.NoError(t, err)
 
@@ -282,7 +297,7 @@ func TestOIDC_TransportMappingsResolveCustomClaims(t *testing.T) {
 
 func TestOIDC_ExpiredTokenRejected(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := s.signToken(t, map[string]any{
@@ -296,7 +311,7 @@ func TestOIDC_ExpiredTokenRejected(t *testing.T) {
 
 func TestOIDC_NotYetValidRejected(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := s.signToken(t, map[string]any{
@@ -314,7 +329,7 @@ func TestOIDC_ClockSkewToleratesRecentExpiry(t *testing.T) {
 	// the default 2-minute skew — matches typical NTP drift on
 	// corporate networks.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	tok := s.signToken(t, map[string]any{
 		"iss": s.url,
@@ -368,7 +383,7 @@ func TestOIDC_IssuerMismatchRejected(t *testing.T) {
 	// even if the signature is technically valid. Prevents cross-
 	// tenant token replay.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := s.signToken(t, map[string]any{
@@ -385,7 +400,7 @@ func TestOIDC_TamperedSignatureRejected(t *testing.T) {
 	// This is the load-bearing test for "no HS none / algorithm
 	// confusion" attacks.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := s.signToken(t, map[string]any{
@@ -412,7 +427,7 @@ func TestOIDC_UnsupportedAlgRejected(t *testing.T) {
 	// key. This is THE historical JWT footgun; the test locks
 	// against it.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	// Hand-craft a "none"-alg token.
@@ -432,7 +447,7 @@ func TestOIDC_UnsupportedAlgRejected(t *testing.T) {
 
 func TestOIDC_MalformedTokens(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	cases := []struct {
@@ -456,7 +471,7 @@ func TestOIDC_MissingKidRejected(t *testing.T) {
 	// multi-key JWKS. Reject with a legible error rather than
 	// guessing.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	hdr, err := json.Marshal(map[string]any{"alg": "RS256", "typ": "JWT"}) // no kid
@@ -484,8 +499,9 @@ func TestOIDC_UnknownKidTriggersJWKSRefresh(t *testing.T) {
 	// After the refresh, if the kid still isn't there, reject.
 	s := newOIDCTestServer(t)
 	d, err := NewOIDCDirectory(OIDCConfig{
-		Issuer:      s.url,
-		JWKSRefresh: 1 * time.Hour, // long TTL so we can observe the forced refresh
+		Issuer:           s.url,
+		JWKSRefresh:      1 * time.Hour, // long TTL so we can observe the forced refresh
+		AllowAnyAudience: true,
 	}, silentLogger())
 	require.NoError(t, err)
 
@@ -515,8 +531,9 @@ func TestOIDC_JWKSCachedAcrossCalls(t *testing.T) {
 	// Prevents thundering herd against the IdP.
 	s := newOIDCTestServer(t)
 	d, err := NewOIDCDirectory(OIDCConfig{
-		Issuer:      s.url,
-		JWKSRefresh: 1 * time.Hour,
+		Issuer:           s.url,
+		JWKSRefresh:      1 * time.Hour,
+		AllowAnyAudience: true,
 	}, silentLogger())
 	require.NoError(t, err)
 
@@ -541,7 +558,8 @@ func TestOIDC_DiscoveryErrorFailsClosed(t *testing.T) {
 	// anything. Verification must fail (never fall back to
 	// "unverified but accepted") — SSO fails CLOSED.
 	d, err := NewOIDCDirectory(OIDCConfig{
-		Issuer: "http://127.0.0.1:1", // guaranteed no listener
+		Issuer:           "http://127.0.0.1:1", // guaranteed no listener
+		AllowAnyAudience: true,
 	}, silentLogger())
 	require.NoError(t, err)
 
@@ -571,7 +589,7 @@ func TestOIDC_DiscoveryIssuerMismatchRejected(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := makeGarbageToken(t, "kid-1")
@@ -582,9 +600,11 @@ func TestOIDC_DiscoveryIssuerMismatchRejected(t *testing.T) {
 
 func TestOIDC_RS512TokenVerifies(t *testing.T) {
 	// Some IdPs (e.g. tenant policies on Okta) mint RS512. Cover
-	// the SHA-512 branch of verifySignature.
+	// the SHA-512 branch of verifySignature. The JWKS must advertise
+	// RS512 for the key: a key's alg is bound to the token header.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	s.setKeyMeta("RS512", "sig")
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	header, err := json.Marshal(map[string]any{"alg": "RS512", "kid": s.kid, "typ": "JWT"})
@@ -613,7 +633,7 @@ func TestOIDC_ES384TokenVerifies(t *testing.T) {
 	srv := ecdsaTestServer(t, priv, "ec-384", "P-384", "ES384")
 	defer srv.Close()
 
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	header, err := json.Marshal(map[string]any{"alg": "ES384", "kid": "ec-384", "typ": "JWT"})
@@ -655,7 +675,7 @@ func TestOIDC_ES256TokenVerifies(t *testing.T) {
 	srv := ecdsaTestServer(t, priv, "ec-kid-1", "P-256", "ES256")
 	defer srv.Close()
 
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: srv.URL, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	tok := signES256Token(t, priv, "ec-kid-1", map[string]any{
@@ -673,7 +693,7 @@ func TestOIDC_ResolveTransportIDWithoutStoreReturnsNotFound(t *testing.T) {
 	// operators who run OIDC-only get a legible ErrNotFound
 	// rather than a nil-dereference panic.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	_, err = d.ResolveTransportID(context.Background(), "slack", "U012")
 	assert.ErrorIs(t, err, ErrNotFound)
@@ -699,7 +719,7 @@ func (s *stubDirectoryStore) ResolveExternalID(_ context.Context, externalID str
 
 func TestOIDC_ResolveTransportIDWithStoreReturnsIdentity(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	d.WithStore(&stubDirectoryStore{
@@ -723,7 +743,7 @@ func TestOIDC_ResolveTransportIDStoreErrorPropagates(t *testing.T) {
 	// Store-side errors surface as-is so callers can
 	// distinguish "user not found" from "backend broken".
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	d.WithStore(&stubDirectoryStore{err: errors.New("directory offline")})
@@ -737,7 +757,7 @@ func TestOIDC_WithStoreNilIsSafe(t *testing.T) {
 	// unchanged. Matches wrap-with-Option pattern used across
 	// the wrappers.
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 	require.NotPanics(t, func() {
 		d.WithStore(nil)

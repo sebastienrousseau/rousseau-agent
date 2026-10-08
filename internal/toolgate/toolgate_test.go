@@ -185,3 +185,40 @@ func TestRunHook_MalformedDecisionBlocks(t *testing.T) {
 	assert.Equal(t, ExitBlock, RunHook(strings.NewReader(bashEvent), &stderr, path, time.Second))
 	assert.Contains(t, stderr.String(), "malformed decision")
 }
+
+// TestServer_SilentClientIsCutOff (L-23): a client that connects and
+// never sends a line must not pin a handler goroutine, which would
+// also wedge Close (it waits for in-flight handlers).
+func TestServer_SilentClientIsCutOff(t *testing.T) {
+	prev := requestReadTimeout
+	requestReadTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { requestReadTimeout = prev })
+
+	s, err := Listen(func(context.Context, Request) Response { return Response{Allow: true} }, time.Second, quiet())
+	require.NoError(t, err)
+	go s.Serve(context.Background())
+
+	conn, err := net.Dial("unix", s.Path())
+	require.NoError(t, err)
+	defer conn.Close() //nolint:errcheck // test cleanup
+
+	reply := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(conn).ReadString('\n') //nolint:errcheck // EOF also ends the wait
+		reply <- line
+	}()
+	select {
+	case line := <-reply:
+		assert.Contains(t, line, `"allow":false`, "a request never sent is denied")
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never cut off a silent client")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case <-closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close wedged behind a silent client")
+	}
+}

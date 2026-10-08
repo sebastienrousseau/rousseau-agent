@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -106,10 +105,41 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 		return "", fmt.Errorf("grep: compile pattern: %w", err)
 	}
 
-	var out strings.Builder
-	matches := 0
+	if in.Include != "" {
+		if _, err := filepath.Match(in.Include, ""); err != nil {
+			return "", fmt.Errorf("grep: bad include glob %q: %w", in.Include, err)
+		}
+	}
+	run := &grepRun{t: t, guard: guardOrDefault(t.Guard), re: re, include: in.Include, root: root}
+	walkErr := filepath.WalkDir(root, run.visit(ctx))
+	if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
+		return run.out.String(), walkErr
+	}
+	return run.result(), nil
+}
 
-	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+// grepMaxOutputBytes caps the total text grep returns; grepMaxLineBytes
+// caps one reported line.
+const (
+	grepMaxOutputBytes = 64 << 10
+	grepMaxLineBytes   = 512
+)
+
+// grepRun is one search. Every walked entry is checked against the
+// guard, so a search rooted at an allowed directory never descends
+// into a denied one (~/.ssh under $HOME) or out of the workspace.
+type grepRun struct {
+	t       *GrepTool
+	guard   *fsguard.Guard
+	re      *regexp.Regexp
+	include string
+	root    string
+	out     strings.Builder
+	matches int
+}
+
+func (r *grepRun) visit(ctx context.Context) fs.WalkDirFunc {
+	return func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil //nolint:nilerr // skip inaccessible entries; grep should degrade gracefully
 		}
@@ -117,69 +147,90 @@ func (t *GrepTool) Execute(ctx context.Context, raw json.RawMessage) (string, er
 			return ctx.Err()
 		}
 		if d.IsDir() {
-			if shouldSkipDir(d.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
+			return r.enterDir(p, d)
 		}
-		if in.Include != "" {
-			ok, mErr := filepath.Match(in.Include, d.Name())
-			if mErr != nil {
-				return fmt.Errorf("grep: bad include glob %q: %w", in.Include, mErr)
-			}
-			if !ok {
-				return nil
-			}
-		}
-		info, statErr := d.Info()
-		if statErr != nil {
-			return nil //nolint:nilerr // skip entries whose stat fails mid-walk
-		}
-		if info.Size() > t.MaxFileBytes {
-			return nil
-		}
-		if matches >= t.MaxMatches {
+		if r.full() {
 			return fs.SkipAll
 		}
-		return searchFile(p, re, &out, &matches, t.MaxMatches)
-	})
-	if walkErr != nil && !errors.Is(walkErr, fs.SkipAll) {
-		return out.String(), walkErr
+		if r.wanted(p, d) {
+			r.searchFile(p)
+		}
+		return nil
 	}
-	if matches == 0 {
-		return "no matches", nil
-	}
-	if matches >= t.MaxMatches {
-		fmt.Fprintf(&out, "(truncated at %d matches)\n", t.MaxMatches)
-	}
-	return out.String(), nil
 }
 
-func searchFile(path string, re *regexp.Regexp, out *strings.Builder, matches *int, cap int) error {
-	f, err := os.Open(path)
-	if err != nil {
+// enterDir skips vendored and VCS directories and anything the guard
+// refuses.
+func (r *grepRun) enterDir(p string, d fs.DirEntry) error {
+	if p == r.root {
 		return nil
+	}
+	if shouldSkipDir(d.Name()) {
+		return filepath.SkipDir
+	}
+	if _, err := r.guard.Resolve(p); err != nil {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+// wanted reports whether a non-directory entry should be searched:
+// a regular file (never a symlink, FIFO, socket or device) that the
+// guard allows, matches include, and is within the size cap.
+func (r *grepRun) wanted(p string, d fs.DirEntry) bool {
+	if !d.Type().IsRegular() {
+		return false
+	}
+	if _, err := r.guard.Resolve(p); err != nil {
+		return false
+	}
+	if r.include != "" {
+		if ok, _ := filepath.Match(r.include, d.Name()); !ok { //nolint:errcheck // a bad glob matches nothing
+			return false
+		}
+	}
+	info, err := d.Info()
+	return err == nil && info.Size() <= r.t.MaxFileBytes
+}
+
+func (r *grepRun) full() bool {
+	return r.matches >= r.t.MaxMatches || r.out.Len() >= grepMaxOutputBytes
+}
+
+func (r *grepRun) result() string {
+	switch {
+	case r.matches == 0:
+		return "no matches"
+	case r.matches >= r.t.MaxMatches:
+		fmt.Fprintf(&r.out, "(truncated at %d matches)\n", r.t.MaxMatches)
+	case r.out.Len() >= grepMaxOutputBytes:
+		fmt.Fprintf(&r.out, "(truncated at %d bytes)\n", grepMaxOutputBytes)
+	}
+	return r.out.String()
+}
+
+func (r *grepRun) searchFile(path string) {
+	f, _, err := openRegular(r.guard, path)
+	if err != nil {
+		return
 	}
 	defer func() { _ = f.Close() }() //nolint:errcheck // best-effort cleanup
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
+	for lineNo := 1; scanner.Scan() && !r.full(); lineNo++ {
 		line := scanner.Text()
 		if strings.ContainsRune(line, '\x00') {
-			return nil
+			return
 		}
-		if re.MatchString(line) {
-			fmt.Fprintf(out, "%s:%d: %s\n", path, lineNo, line)
-			*matches++
-			if *matches >= cap {
-				return nil
+		if r.re.MatchString(line) {
+			if len(line) > grepMaxLineBytes {
+				line = line[:grepMaxLineBytes] + "…"
 			}
+			fmt.Fprintf(&r.out, "%s:%d: %s\n", path, lineNo, line)
+			r.matches++
 		}
 	}
-	return nil
 }
 
 func shouldSkipDir(name string) bool {

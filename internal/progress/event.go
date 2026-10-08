@@ -100,7 +100,12 @@ type Event struct {
 	// measure something (a finished tool, a finished turn).
 	Elapsed time.Duration
 	// Err is a non-empty error string when the event reports failure.
+	// It can reach chat (the explain trail), so publishers set the
+	// generic [FailureText] and log the full error under Ref.
 	Err string
+	// Ref ties a failure shown in chat to the log line that carries
+	// the full error (log field "ref"). See [NewRef].
+	Ref string
 	// At is the observation time. Publishers may leave it zero; Bus
 	// stamps it on publish.
 	At time.Time

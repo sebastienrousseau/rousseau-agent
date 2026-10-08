@@ -195,3 +195,32 @@ func TestIntegration_RecentSessionsNewestFirst(t *testing.T) {
 	assert.Equal(t, second.ID, recent[0].ID)
 	assert.Equal(t, first.ID, recent[1].ID)
 }
+
+// Scoped search never returns another sender's session; the empty
+// sender (local chat) is a scope of its own.
+func TestSearchScoped_NeverCrossesSenders(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, isolatedDSN(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() }) //nolint:errcheck // test cleanup
+	save := func(sender, text string) string {
+		sess := model.NewSession("chat")
+		sess.Sender = sender
+		sess.Append(model.NewUserText(text))
+		require.NoError(t, s.Save(ctx, sess))
+		return sess.ID
+	}
+	alice := save("telegram:alice", "invoice salary details for alice")
+	bob := save("telegram:bob", "invoice question from bob")
+	local := save("", "invoice notes from the local operator")
+
+	for sender, want := range map[string]string{"telegram:bob": bob, "telegram:alice": alice, "": local} {
+		hits, err := s.SearchScoped(ctx, sender, "invoice", SearchOptions{Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, hits, 1, "sender %q", sender)
+		assert.Equal(t, want, hits[0].SessionID)
+	}
+	all, err := s.Search(ctx, "invoice", SearchOptions{Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, all, 3, "the unscoped search is unchanged")
+}

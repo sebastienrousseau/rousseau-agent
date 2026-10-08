@@ -63,11 +63,51 @@ derived-from-release default.
 {{- end -}}
 
 {{/*
-Effective image reference. The values file allows an empty tag so
-the chart's appVersion is the safe default — matches "install this
-chart, get a validated image" semantics.
+Effective image reference. An empty tag derives from the flavour and
+the chart's appVersion (`distroless-vX.Y.Z` or `vX.Y.Z`) — "install
+this chart, get a validated image" semantics.
 */}}
 {{- define "rousseau-agent.image" -}}
-{{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- $flavour := default "distroless" .Values.image.flavour -}}
+{{- if not (has $flavour (list "distroless" "full")) -}}
+{{- fail (printf "image.flavour must be \"distroless\" or \"full\", got %q" $flavour) -}}
+{{- end -}}
+{{- $prefix := ternary "distroless-" "" (eq $flavour "distroless") -}}
+{{- $tag := default (printf "%s%s" $prefix .Chart.AppVersion) .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
+
+{{/*
+True ("true") when something needs the metrics listener: a probe or
+the ServiceMonitor.
+*/}}
+{{- define "rousseau-agent.metricsEnabled" -}}
+{{- if or .Values.probes.liveness.enabled .Values.probes.readiness.enabled .Values.serviceMonitor.enabled -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+Rendered config.yaml: the user's config plus, when the metrics
+listener is needed, observability.metrics_addr on service.metricsPort.
+A user-set metrics_addr on another port is an error, so probes and
+the ServiceMonitor always target the port the daemon serves.
+*/}}
+{{- define "rousseau-agent.config" -}}
+{{- $cfg := deepCopy (default (dict) .Values.config) -}}
+{{- if include "rousseau-agent.metricsEnabled" . -}}
+{{- $want := printf ":%v" .Values.service.metricsPort -}}
+{{- $obs := default (dict) (get $cfg "observability") -}}
+{{- $have := default "" (get $obs "metrics_addr") -}}
+{{- if and $have (not (hasSuffix $want $have)) -}}
+{{- fail (printf "config.observability.metrics_addr %q does not end in %q (service.metricsPort); probes and the ServiceMonitor would target a port the daemon does not serve" $have $want) -}}
+{{- end -}}
+{{- if not $have -}}
+{{- $_ := set $obs "metrics_addr" $want -}}
+{{- end -}}
+{{- $_ := set $cfg "observability" $obs -}}
+{{- end -}}
+{{- if $cfg -}}
+{{- toYaml $cfg -}}
+{{- end -}}
 {{- end -}}

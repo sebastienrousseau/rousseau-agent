@@ -275,6 +275,16 @@ func TestBuildHooks_TranslatesEveryEvent(t *testing.T) {
 	}
 }
 
+func TestBuildHooks_PassesFailClosed(t *testing.T) {
+	got := buildHooks(config.HooksConfig{
+		PreToolUse: []config.HookConfig{{Name: "guard", Command: "/bin/false", FailClosed: true}},
+	}, silentLogger())
+	require.NotNil(t, got)
+	verdict, err := got.Run(context.Background(), hooks.EventPreToolUse, []byte(`{}`))
+	require.NoError(t, err)
+	assert.Equal(t, hooks.DecisionDeny, verdict.Decision, "a failing fail_closed hook denies")
+}
+
 func TestBuildHooks_SingleEventStillBuildsRunner(t *testing.T) {
 	got := buildHooks(config.HooksConfig{
 		PreTurn: []config.HookConfig{{Name: "n", Command: "/bin/true"}},

@@ -104,6 +104,15 @@ func TestAdapter_ExecuteWithNilClientPanics(t *testing.T) {
 	_, _ = a.Execute(context.Background(), json.RawMessage(`{}`)) //nolint:errcheck // expects panic before return
 }
 
+func TestTruncateUTF8(t *testing.T) {
+	assert.Equal(t, "short", truncateUTF8("short", 16), "under the limit is untouched")
+	assert.Equal(t, "abc…", truncateUTF8("abcdefgh", 6), "the marker counts toward the limit")
+	// "é" is two bytes; a cut landing inside it backs off to the rune start.
+	got := truncateUTF8("aéééé", 7)
+	assert.Equal(t, "aé…", got)
+	assert.LessOrEqual(t, len(got), 7)
+}
+
 // Guard against accidental import loops — this test only uses types
 // from mcpwire, verifying the package compiles standalone.
 var _ = errors.New

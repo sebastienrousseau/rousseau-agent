@@ -73,3 +73,28 @@ func TestSessionDeleteBySender(t *testing.T) {
 	_, err = st.Load(ctx, bob)
 	assert.NoError(t, err)
 }
+
+// L-8: the erasure output names migration backups that still hold the
+// erased data.
+func TestSessionDeleteBySender_ListsBackups(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sessions.db")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("state:\n  path: "+dbPath+"\n"), 0o600))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(dir, "claude"))
+	st, err := sqlitestore.Open(ctx, dbPath)
+	require.NoError(t, err)
+	require.NoError(t, st.Close())
+	backup := dbPath + ".pre-v2-20260101T000000Z"
+	require.NoError(t, os.WriteFile(backup, []byte("x"), 0o600))
+
+	var out bytes.Buffer
+	root := NewRoot(&Options{})
+	root.SetArgs([]string{"--config", cfgPath, "session", "delete-by-sender", "alice", "--yes"})
+	root.SetOut(&out)
+	root.SetErr(&bytes.Buffer{})
+	require.NoError(t, root.ExecuteContext(ctx))
+	assert.Contains(t, out.String(), backup)
+	assert.Contains(t, out.String(), "delete")
+}

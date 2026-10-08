@@ -43,7 +43,8 @@ type Config struct {
 	// TrustedPublisherKeys is the operator's allow-list of Ed25519
 	// public keys authorised to sign this peer's [a2a.AgentCard].
 	// When non-empty, [Client.GetAgentCard] verifies the card's
-	// signatures[] and returns an error if none verify. When empty,
+	// signatures[] and returns an error if none verify, and refuses
+	// the unsignable legacy-card fallback. When empty,
 	// the client does not enforce signature verification (backward
 	// compatible with peers that don't sign yet).
 	TrustedPublisherKeys []ed25519.PublicKey

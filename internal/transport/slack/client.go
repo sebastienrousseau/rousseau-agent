@@ -90,6 +90,9 @@ type Client struct {
 	// inflight runs each event off the read loop (see
 	// transport.Inflight); nil (inline) outside Start.
 	inflight *transport.Inflight
+
+	// files carries the bot token to file downloads; see files.go.
+	files fileFetcher
 }
 
 // New constructs a Client. AppToken and BotToken are required.
@@ -112,7 +115,8 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{cfg: cfg, logger: logger, http: cfg.HTTPClient}, nil
+	return &Client{cfg: cfg, logger: logger, http: cfg.HTTPClient,
+		files: newFileFetcher(cfg.HTTPClient)}, nil
 }
 
 // Name returns the transport identifier.
@@ -276,6 +280,7 @@ func (c *Client) dispatchEvent(ctx context.Context, payload eventsAPIPayload, ha
 		At:           time.Now().UTC(),
 		Conversation: payload.Event.Channel,
 		MessageID:    payload.Event.TS,
+		IsDirect:     payload.Event.ChannelType == "im",
 		Thread:       payload.Event.ThreadTS,
 		Attachments:  attachments,
 	}
@@ -387,26 +392,6 @@ func isImageMIME(m string) bool {
 		return false
 	}
 	return m[:6] == "image/"
-}
-
-// downloadFile GETs the file URL with the bot token and returns the
-// bytes. Slack requires the Authorization header for
-// url_private_download; a bare GET returns HTML.
-func (c *Client) downloadFile(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("slack: build file GET: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.cfg.BotToken)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("slack: file GET: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("slack: file GET: HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxFileBody))
 }
 
 // Deliver sends a plain text message to a Slack channel id. Suitable
@@ -533,6 +518,9 @@ type slackEvent struct {
 	BotID   string `json:"bot_id,omitempty"`
 	Text    string `json:"text,omitempty"`
 	Channel string `json:"channel,omitempty"`
+	// ChannelType is "im" for a direct message with the bot, and
+	// "channel", "group" or "mpim" for conversations others read.
+	ChannelType string `json:"channel_type,omitempty"`
 	// TS is the message's id within the channel; ThreadTS is set on
 	// a message posted inside a thread and names the thread's root.
 	TS       string      `json:"ts,omitempty"`

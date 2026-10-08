@@ -98,14 +98,19 @@ type Config struct {
 	// Values above 30 seconds are permitted but discouraged — hooks
 	// fire synchronously in the request path.
 	Timeout time.Duration
+	// FailClosed makes a hook that errors (cannot start, exits
+	// non-zero, times out, or prints an unparseable verdict) deny the
+	// operation instead of being skipped. Default false: a broken hook
+	// is logged and treated as allow.
+	FailClosed bool
 }
 
 // Runner runs the hooks registered for a given event and returns the
 // effective verdict. Implementations are safe for concurrent use.
 type Runner interface {
 	// Run invokes every hook registered for event with payload as
-	// stdin. Returns the FIRST non-allow verdict; if every hook
-	// returns Allow, returns DecisionAllow.
+	// stdin. A deny from any hook wins; otherwise a modify (carrying
+	// the final modified input) if any hook modified; else allow.
 	Run(ctx context.Context, event Event, payload []byte) (Verdict, error)
 }
 
@@ -133,38 +138,79 @@ func New(byEvent map[Event][]Config, logger *slog.Logger) *Set {
 	return &Set{logger: logger, byEvent: out}
 }
 
-// Run satisfies [Runner]. Returns the first non-allow verdict; when
-// every hook returns Allow (or there are no hooks for event), returns
-// DecisionAllow. Errors from a single hook (subprocess failed,
-// verdict didn't parse) are logged at Warn and treated as Allow —
-// hook failures must not be a denial-of-service on the daemon.
+// Run satisfies [Runner]. Every hook for event runs in declaration
+// order. A deny from any hook is returned at once. A modify does not
+// stop the chain: for pre_tool_use the next hook sees the payload
+// rebuilt with the modified input, so a later scanner judges what
+// would actually run. If no hook denies, the result is modify (with
+// the last modified input) when any hook modified, else allow. A
+// modify with no payload counts as allow.
+//
+// A hook that errors (cannot start, non-zero exit, timeout,
+// unparseable verdict) is logged at Warn and skipped — hook failures
+// must not be a denial-of-service on the daemon — unless its config
+// sets FailClosed, in which case it denies.
 func (s *Set) Run(ctx context.Context, event Event, payload []byte) (Verdict, error) {
-	cfgs := s.byEvent[event]
-	if len(cfgs) == 0 {
-		return Verdict{Decision: DecisionAllow}, nil
-	}
-	for _, cfg := range cfgs {
-		verdict, err := runOne(ctx, cfg, payload, s.logger)
-		if err != nil {
-			// Fail-open: log and continue. Alternative is fail-closed,
-			// but a broken hook script must not be able to lock a
-			// production daemon out of tool use.
-			s.logger.Warn("hook.error",
-				slog.String("event", string(event)),
-				slog.String("hook", cfg.Name),
-				slog.String("err", err.Error()),
-			)
-			continue
-		}
-		if verdict.Decision == "" {
-			verdict.Decision = DecisionAllow
-		}
-		if verdict.Decision != DecisionAllow {
-			// First non-allow wins.
+	var modified json.RawMessage
+	for _, cfg := range s.byEvent[event] {
+		verdict := s.runChecked(ctx, event, cfg, payload)
+		switch {
+		case verdict.Decision == DecisionDeny:
 			return verdict, nil
+		case verdict.Decision == DecisionModify && len(verdict.Modified) > 0:
+			modified = verdict.Modified
+			payload = withModifiedInput(event, payload, modified, s.logger)
 		}
+	}
+	if modified != nil {
+		return Verdict{Decision: DecisionModify, Modified: modified}, nil
 	}
 	return Verdict{Decision: DecisionAllow}, nil
+}
+
+// runChecked runs one hook and folds an error into a verdict: allow
+// (fail-open, the default) or deny (FailClosed).
+func (s *Set) runChecked(ctx context.Context, event Event, cfg Config, payload []byte) Verdict {
+	verdict, err := runOne(ctx, cfg, payload, s.logger)
+	if err != nil {
+		s.logger.Warn("hook.error",
+			slog.String("event", string(event)),
+			slog.String("hook", cfg.Name),
+			slog.Bool("fail_closed", cfg.FailClosed),
+			slog.String("err", err.Error()),
+		)
+		if cfg.FailClosed {
+			// The error text (stderr, stdout) stays in the log; the
+			// reason reaches the model and names only the hook.
+			return Verdict{Decision: DecisionDeny, Reason: fmt.Sprintf("hook %q failed and is fail_closed", cfg.Name)}
+		}
+		return Verdict{Decision: DecisionAllow}
+	}
+	if verdict.Decision == "" {
+		verdict.Decision = DecisionAllow
+	}
+	return verdict
+}
+
+// withModifiedInput rebuilds a pre_tool_use payload around a hook's
+// modified input so the next hook sees it. Other events, and a
+// modified input that is not valid JSON, leave payload unchanged (the
+// agent loop refuses an invalid modification).
+func withModifiedInput(event Event, payload []byte, modified json.RawMessage, logger *slog.Logger) []byte {
+	if event != EventPreToolUse {
+		return payload
+	}
+	var p PreToolUsePayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return payload
+	}
+	p.Input = modified
+	next, err := json.Marshal(p)
+	if err != nil {
+		logger.Warn("hook.modified_not_json", slog.String("event", string(event)), slog.String("err", err.Error()))
+		return payload
+	}
+	return next
 }
 
 // runOne invokes a single hook script and parses its verdict.
@@ -184,6 +230,9 @@ func runOne(ctx context.Context, cfg Config, payload []byte, logger *slog.Logger
 	cmd := exec.CommandContext(callCtx, cfg.Command, cfg.Args...)
 	cmd.Env = mergeEnv(os.Environ(), cfg.Env)
 	cmd.Stdin = bytes.NewReader(payload)
+	// Without WaitDelay a grandchild that inherited stdout (sh running
+	// `sleep`) keeps Wait blocked past the timeout.
+	cmd.WaitDelay = time.Second
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

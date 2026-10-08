@@ -86,7 +86,8 @@ func TestSubmitTask_HandlerFailure(t *testing.T) {
 		last = upd
 	}
 	assert.Equal(t, a2a.TaskStatusFailed, last.Status)
-	assert.Equal(t, "boom", last.Message)
+	assert.Contains(t, last.Message, "task failed (ref ", "the peer gets a generic message; the handler error is logged")
+	assert.NotContains(t, last.Message, "boom")
 	assert.Equal(t, "handler_error", last.FailureCode)
 }
 

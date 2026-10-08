@@ -19,7 +19,10 @@ type Task struct {
 	// Prompt is the user-turn text handed to the sub-agent as its
 	// last user message. Required.
 	Prompt string
-	// System overrides the parent's system prompt. Empty inherits.
+	// System is the complete system prompt sent to the sub-agent,
+	// used verbatim (empty sends none). Spawn does not consult the
+	// parent's prompt; callers that want inheritance compose it, as
+	// the spawn_subagent tool does.
 	System string
 	// Tools names the subset of the parent's tool registry the
 	// sub-agent may invoke. Empty means "inherit every tool the

@@ -15,6 +15,323 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
+### Security (v0.0.13)
+
+Fixes from the 2026-10-08 security audit.
+
+- **Recall is scoped to the sender (High).** Automatic recall searched
+  every session and put other senders' titles and snippets into the
+  current sender's system prompt, where the model could repeat them.
+  Recall now searches only sessions whose sender equals the current
+  session's sender (local `rousseau chat` sessions form their own
+  scope), and recalled text is wrapped in an untrusted-data fence the
+  snippets cannot close. Vector recall returns nothing unless it can
+  check each hit's owner. **API change:** `RecallSearcher.Search` (and
+  `pkg/state/sqlite`'s `RecallSearcher`) now takes the sender; stores
+  gain `SearchScoped`.
+
+- **Email sender authentication can no longer be forged (High).** The
+  Authentication-Results gate accepted any header carrying
+  `dkim=pass`, including one the sender wrote, and was off by default,
+  so a forged `From:` of an allowlisted address got a full agent turn.
+  Only headers whose authserv-id is `email.trusted_authserv_id` now
+  count, and only the topmost of them; DMARC decides when present.
+  **Breaking:** an email allowlist without
+  `require_authentication_results` + `trusted_authserv_id` refuses to
+  start (exit 78); `email.insecure_trust_from: true` keeps the old
+  behaviour for test inboxes. `rousseau doctor` reports the state.
+
+- **Multi-party approval no longer bypasses policy (High).** For a
+  tool covered by a multi-party rule, the vote replaced the inner
+  approver chain, so RBAC, OPA, the risk judge and pattern deny rules
+  never ran, and voters saw only the tool name. The inner chain now
+  runs first and a deny ends the request; requests carry a digest and
+  summary of the exact input. **Chat change:** `/pending` lists open
+  requests and `/approve <token> <digest>` must quote the first 8
+  characters of the input digest. The audit record gains
+  `input_sha256` and `input_summary`.
+
+- **The claude CLI no longer inherits the daemon's secrets (Medium).**
+  The claude child process got the daemon's full environment (every
+  channel token and provider key) while running its own Bash tool, so
+  a prompt injection could read them with `env`. It now gets the
+  envscrub baseline plus `ANTHROPIC_*`, `CLAUDE_*`, and proxy and CA
+  settings. **Breaking for some setups:** variables claude's own MCP
+  servers or Bedrock/Vertex modes need (e.g. `AWS_*`, `GOOGLE_*`) go in
+  `claudecli.env_passthrough`.
+
+- Tool error text is now capped like tool output
+  (`agent.max_tool_output_bytes`), so a tool that echoes a large body
+  into its error cannot flood the context.
+
+- **Daemon file tools are confined to a workspace by default
+  (Medium).** With `tools.fs.root` unset, read, write, edit and grep
+  could reach all of `$HOME` except a short deny list. The daemon now
+  defaults the root to `$XDG_DATA_HOME/rousseau/workspace` (interactive
+  `rousseau chat` is unchanged). The deny list adds GitHub CLI, gcloud,
+  Azure, npm, PyPI and Cargo credentials, `pass`, shell histories and
+  the audit chain key; a new write-only list blocks shell start-up
+  files, systemd user units, autostart entries, `~/.local/bin`,
+  LaunchAgents and any `.git/hooks` path. Matching is case-insensitive
+  on macOS and Windows. **Breaking:** set `tools.fs.root: "/"` to keep
+  unrestricted daemon file tools.
+
+- The Gmail send tool rejects CR/LF in `to`, `subject` and `from`,
+  parses addresses, and RFC 2047-encodes the subject, so a model-
+  supplied subject can no longer inject a hidden `Bcc:` header
+  (Medium).
+
+- **grep stays inside the guard (Medium).** Only grep's starting
+  directory went through the guard; the walk then descended freely (a
+  search from `$HOME` read `~/.ssh`) and opened symlinked files that
+  pointed out of the workspace. Every directory and file is now
+  checked, symlinks, FIFOs and devices are never opened, and total
+  output is capped at 64 KiB (512 bytes per line). `read` no longer
+  blocks when pointed at a FIFO.
+
+- Bash output is capped while the command runs (1 MiB) instead of
+  after it finishes, and a timeout kills the whole process group, so a
+  backgrounded child can neither keep the call blocked nor survive it.
+  Applies to direct execution and the sandbox backends.
+- `spawn_subagent` can only lower operator limits: the model's token
+  budget and concurrency are clamped to the operator's, the task count,
+  turns and timeout are enforced server-side, and a task's system text
+  is appended to the parent's prompt instead of replacing it.
+- MCP: tools with invalid names (outside `[A-Za-z0-9_.-]{1,64}`) are
+  skipped; descriptions are capped at 2 KiB, schemas over 64 KiB fall
+  back to the permissive schema, and error bodies in tool errors are
+  capped at 4 KiB. A server line over the 1 MiB limit, or a server that
+  exits, now fails pending and later calls at once instead of after the
+  request timeout.
+
+- **File tools cannot be raced out of the workspace (Medium).** read,
+  grep, write and edit now open and write beneath the workspace root
+  through Go's `os.Root`, so a directory swapped for a symlink between
+  the path check and the file operation (for example by a bash loop)
+  cannot redirect a read or a write outside the root. Writes are
+  atomic (temp file, sync, rename), keep an existing file's
+  permissions, refuse read-only files, and create a missing root
+  0700. `edit` reads with the same size cap and regular-file check as
+  `read` (L-4).
+
+- **Outbound integration tools need approval by default (Low).** With
+  no approver configured (`allow_all`), the daemon ran tools that send
+  data to third parties (GitHub issues and comments, Gmail send,
+  Calendar events, Slack posts and reactions, Linear writes, every
+  Composio action) without asking. They are now denied unless an
+  approver allows them; `agent.approver.allow_outbound: true` restores
+  the old behaviour. `rousseau doctor` and `rousseau evidence` report
+  the posture. `a2a_dispatch` is outbound too; MCP tools are not yet
+  classified.
+
+- **gVisor counts as a sandbox only with filesystem isolation
+  (Medium).** The gVisor backend ran `runsc do` with the host's `/` as
+  the container root, so bash commands could read `$HOME` and every
+  secret on the host while the daemon reported itself sandboxed. Each
+  run now gets a private root holding only the configured read-only
+  and writable mounts, with writes kept in a memory overlay. A mount of
+  `/`, `$HOME` or a parent of `$HOME` is refused at start-up and on
+  every run. **Breaking:** runsc release-20250611.0 or later is
+  required, and writes to gVisor `writable` paths no longer reach the
+  host.
+
+- **Group conversations are off by default and get their own sessions
+  (Medium).** In a Telegram group, Slack channel, Discord server,
+  Signal group, Matrix room or iMessage group chat, the agent answered
+  an allowlisted member from that member's private session, so its
+  history, recall and tool output reached every member. Group messages
+  are now ignored, control verbs included, unless
+  `<transport>.allow_groups: true` is set. When it is, each (sender,
+  conversation) pair gets its own session and turn, so private history
+  never reaches a group. Turns in a group are not resumed after a
+  restart. **Breaking:** bots used in groups need `allow_groups: true`.
+
+- **Email ignores auto-replies and bounces (Low).** An out-of-office
+  reply or a bounce from an allowlisted address started an agent turn,
+  and the agent's reply could start another, in a loop. Mail with
+  `Auto-Submitted` (other than `no`), `Precedence: bulk|list|junk|
+  auto_reply`, `List-Id` or `List-Unsubscribe`, or from
+  `MAILER-DAEMON`/`postmaster`, is now dropped, and replies carry
+  `Auto-Submitted: auto-replied`. The body given to the agent is the
+  first `text/plain` MIME part, decoded and capped at 256 KiB, instead
+  of the raw message source.
+
+- **SSO login is bound to the handle, single-use and DM-only
+  (Medium).** `/login` bound any handle that pasted a valid token, so
+  a token seen in a group, a log or a screenshot signed its finder in
+  as the token's owner, and an issuer's tokens for any other client
+  were accepted when no audience was set. Now a token whose transport
+  claim names a handle binds only that handle, each token signs in
+  once (keyed on `jti`, or a digest of the signed input, in a new
+  `sso_spent_tokens` table on SQLite and Postgres), and `/login` in a
+  group binds nothing. **Breaking:** `sso.oidc.audience` is required;
+  `sso.oidc.allow_any_audience: true` is the explicit opt-out.
+
+- **Pattern rules match canonical, per-field input (Medium).** Deny
+  patterns matched the raw JSON text, so `{"command":"rm -rf /"}`,
+  a repeated key or a differently cased key ran a denied command.
+  Tool input is now canonicalised (escapes decoded, keys unique and
+  case-folded, numbers exact) before rules and tools see it, input
+  with repeated keys is denied, and a rule can match one `field`,
+  fully anchored. Allow rules match the tool name exactly.
+  `rousseau doctor` warns on unanchored allow patterns.
+
+- **Hook-rewritten input is approved again (Medium).** A PreToolUse
+  hook that answered "modify" replaced the input after approval, and
+  a later hook's deny could be lost. Rewritten input now goes back
+  through the approver, a deny from any hook wins, a rewrite that is
+  not valid JSON is denied, and `hooks[].fail_closed: true` denies
+  when a hook fails or times out. Hook timeouts are now enforced when
+  a hook's child keeps its output open.
+
+- **Log redaction catches every secret (Medium).** The redacting log
+  handler stopped at the first matching rule, skipped the log message
+  and matched `LogValuer` attributes before resolving them, and it
+  missed current token formats. Every rule now runs over attribute
+  values and the message, values are resolved first, and rules cover
+  OpenAI project/service keys, Slack `xoxp-`/`xoxe-`, GitHub
+  `gho_`/`ghs_`/`ghu_`/`ghr_`, Telegram bot tokens, Google `ya29.`
+  tokens, Bearer headers, PEM private keys and URL passwords.
+
+- **Bot tokens and passwords stay out of logged URL errors (Medium).**
+  Telegram puts the bot token in the request path and BlueBubbles the
+  password in the query, and a network error quoted the full URL into
+  the log. Those URLs are now redacted in every request error.
+
+- **Error details and secrets stay out of chat (Low).** Cron failures,
+  failed turns and failed tools posted the full error, which can carry
+  child-process output, into chat. Chat now shows "failed (ref …)"
+  and the log holds the detail under the same ref. Progress bullets
+  pass through the redactor. `rousseau doctor` redacts every Postgres
+  DSN form, keyword and query-string passwords included (L-11).
+
+- **Transport input checks (Info).** Every transport marks direct
+  conversations (`IncomingMessage.IsDirect`). Telegram drops messages
+  sent as a channel or by an anonymous group admin, which share one
+  sender ID across Telegram (I-1). Signal refuses attachment IDs that
+  are paths (S-12). Slack sends its bot token only to
+  `https://files.slack.com`, refuses cross-host redirects and treats
+  an oversized file as an error (S-13).
+
+- **/link needs confirmation and /unlink needs ownership (Low).** Any
+  sender could `/link` a handle they did not control to their identity
+  or `/unlink` someone else's handle. `/link <transport>:<sender>` now
+  issues a six-digit code, valid 10 minutes, that the target handle
+  must send back with `/confirm <code>`; a wrong code cancels the
+  request. `/unlink` only removes a handle linked to the caller's own
+  identity, and both reject unknown transports.
+
+- **Strangers get no replies (Low).** A sender outside the allowlist
+  got answers from control verbs (`/status`, `/cancel`), rate-limit
+  notices and some command errors, which confirmed the bot existed.
+  Everything now stays silent for them except `/login` when SSO is on.
+  `/logout` without a binding replies "not signed in" and writes no
+  audit record.
+
+- **The release image no longer runs a second repository's code
+  (High).** `docker/Dockerfile` ran `chezmoi init --apply` against the
+  dotfiles repository's `main` branch at build time, so whatever was
+  there, `run_` scripts included, executed inside every signed and
+  attested image, and builds were not reproducible from the tag. The
+  release image now gets a reviewed `.gitconfig` instead and ships no
+  chezmoi. The dev image (`Dockerfile.builder`) fetches the dotfiles at
+  a pinned commit with checksum checks; `scripts/dotfiles-pin.sh` and a
+  monthly workflow keep the pin current.
+
+- **A2A tasks belong to the peer that sent them (Medium).** Only
+  `POST /tasks` recorded the authenticated peer; `/message:send` and
+  JSON-RPC fell back to the body's `from_agent`, so a token holder
+  could act as any other peer, and any peer could read, follow or
+  cancel another's task. Every route now records the authenticated
+  peer as the task owner, other peers get 404, and a reused task ID is
+  refused (409) instead of replacing the running task.
+
+- **The A2A agent card is signed only for a configured URL (Medium).**
+  The card URL came from `Host` / `X-Forwarded-Host` and was signed
+  with the operator's key, so a forged header got a validly signed
+  card pointing at an attacker. Cards are signed only when
+  `a2a.server.public_url` is set and always advertise it; forwarded
+  headers count only from `a2a.server.trusted_proxies`. **Breaking:**
+  without `public_url` the card is served unsigned.
+
+- **A2A and SCIM listen on loopback unless TLS is configured
+  (Medium).** The A2A server listened on `:8443` in plaintext with no
+  body or idle timeouts and no limit on concurrent tasks. The default
+  bind is now `127.0.0.1:8443`; a non-loopback A2A or SCIM bind without
+  `tls_cert_file` + `tls_key_file` refuses to start unless
+  `allow_plaintext: true`. Requests get read and idle deadlines, and a
+  peer may run 4 tasks at once (32 in total, `max_inflight_per_peer` /
+  `max_inflight`); more get 429. **Breaking:** off-host plaintext
+  binds no longer start.
+
+- A2A hardening (Low): bearer tokens are kept only as SHA-256 digests
+  and compared in constant time; peers and `/readyz` get "failed (ref
+  …)" instead of internal error text; a client that trusts publisher
+  keys no longer falls back to the unsigned legacy card on a 404; the
+  default artifact fetcher refuses loopback, private, link-local
+  (cloud metadata) and CGNAT addresses and ignores proxy variables.
+
+- **Release pipeline (Medium).** `install.sh` refuses to install when
+  a release's signature is missing (`ROUSSEAU_SKIP_COSIGN=1`
+  overrides) and accepts only this repository's `release.yml` at the
+  exact tag as signer, not any fork. `container-release` jobs get only
+  the permissions they use. The DCO exemption for Dependabot keys on
+  the PR opener's account, not a free-text author name. Dispatch
+  inputs reach workflow scripts as validated environment variables
+  instead of being pasted into them. Release builds no longer restore
+  caches written by main or PR runs.
+
+- **Provenance covers what is shipped (Low).** SLSA provenance
+  attested four binaries a separate workflow rebuilt, never the
+  archives on the release page. `release.yml` now attests the
+  GoReleaser archives themselves, checked against `checksums.txt`;
+  `slsa.yml` is removed. Image bases are pinned by multi-arch digest,
+  toolchains by exact version, builder Python packages by hash, and
+  Dependabot watches the Dockerfiles.
+
+- **Helm chart tracks the release (Low).** The chart's appVersion was
+  v0.0.3, the default full image ran under the distroless UID, the
+  probes hit a metrics port the daemon never opened, and the mounted
+  config was never read. The chart is now 0.0.2 for v0.0.13, defaults
+  to the distroless image (`image.flavour`), sets `metrics_addr` and
+  `--config`, and has an optional NetworkPolicy; a release fails if
+  appVersion does not match the tag. **Breaking:** the full image
+  needs `image.flavour=full` and UID/GID 1000.
+
+- **Audit chain v2 (Low).** Chain fields were joined with a NUL byte,
+  so two different records could hash alike, and an exported boot
+  record could never verify. New records use a length-prefixed,
+  versioned encoding with canonical detail JSON; existing v1 chains
+  still verify. `rousseau audit verify <file>` checks an OTLP-JSON
+  export from a SIEM or collector.
+
+- **The audit chain key must be owner-only (Low).** A key readable by
+  group or others now stops startup; the configured key file and
+  `$XDG_STATE_HOME/rousseau` are denied to file tools; `rousseau
+  evidence` fingerprints the key the daemon actually uses.
+  **Breaking:** `chmod 0600` the key (podman secrets: `mode=0400`).
+
+- Erasure and search (Low): `session delete-by-sender` also clears the
+  interrupted-turn journal on both drivers and lists SQLite migration
+  backups that still hold the erased data. Recall quotes each search
+  term, so words like `don't` no longer break it. Session search and
+  the MCP session tools clamp limits to 1..200 (default 20); the MCP
+  list tool no longer returns every session when no limit is given.
+  Skill signatures are checked over the bytes that were loaded, not a
+  second read of the file.
+
+- **Sign-in and approval (Low).** The OAuth loopback flow uses PKCE,
+  ignores stray callbacks and no longer logs the auth URL. OIDC keys
+  are used only for their declared `alg` and `use`, discovery and JWKS
+  are capped at 1 MiB, `jwks_uri` must be https on the issuer's host
+  (or `sso.oidc.jwks_allowed_hosts`), and failed refreshes back off
+  while the last good keys keep working. Tool calls the claude CLI
+  makes are judged as the user whose turn caused them, and a stalled
+  toolgate client times out. Multi-party rules can name
+  `approver_groups`; only members may vote. An expired licence now
+  switches licensed features off at runtime and sets
+  `rousseau_license_valid` to 0.
+
 ### Phase 1: trust and cost (2026-10-06)
 
 Security and correctness work from the October 2026 audit. Three

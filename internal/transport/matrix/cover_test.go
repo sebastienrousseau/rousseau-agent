@@ -123,8 +123,10 @@ func TestStart_BackoffElapsesAndResyncs(t *testing.T) {
 // leave the loop running for the remaining events.
 func TestRoute_SkipsUnroutableEvents(t *testing.T) {
 	var sends atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		sends.Add(1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut { // joined_members lookups are GETs
+			sends.Add(1)
+		}
 		http.Error(w, "forbidden", http.StatusForbidden)
 	}))
 	defer srv.Close()

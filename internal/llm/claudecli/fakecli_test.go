@@ -27,6 +27,7 @@ type fakeCLI struct {
 	path      string
 	argvFile  string
 	stdinFile string
+	envFile   string
 }
 
 func newFakeCLI(t *testing.T, stdout, stderr string, exitCode int) *fakeCLI {
@@ -39,26 +40,36 @@ func newFakeCLI(t *testing.T, stdout, stderr string, exitCode int) *fakeCLI {
 	errFile := filepath.Join(dir, "stderr")
 	argvFile := filepath.Join(dir, "argv")
 	stdinFile := filepath.Join(dir, "stdin")
+	envFile := filepath.Join(dir, "env")
 	require.NoError(t, os.WriteFile(outFile, []byte(stdout), 0o600))
 	require.NoError(t, os.WriteFile(errFile, []byte(stderr), 0o600))
 
 	script := fmt.Sprintf(`#!/bin/sh
+env > %q
 for a in "$@"; do printf '%%s\n' "$a" >> %q; done
 cat > %q
 cat %q
 cat %q >&2
 exit %d
-`, argvFile, stdinFile, outFile, errFile, exitCode)
+`, envFile, argvFile, stdinFile, outFile, errFile, exitCode)
 
 	bin := filepath.Join(dir, "claude")
 	require.NoError(t, os.WriteFile(bin, []byte(script), 0o700)) //nolint:gosec // deliberately executable test fixture
-	return &fakeCLI{path: bin, argvFile: argvFile, stdinFile: stdinFile}
+	return &fakeCLI{path: bin, argvFile: argvFile, stdinFile: stdinFile, envFile: envFile}
 }
 
 // stdin returns what the fake binary read on standard input.
 func (f *fakeCLI) stdin(t *testing.T) string {
 	t.Helper()
 	raw, err := os.ReadFile(f.stdinFile)
+	require.NoError(t, err, "fake CLI was never invoked")
+	return string(raw)
+}
+
+// env returns the environment the fake binary ran with.
+func (f *fakeCLI) env(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(f.envFile)
 	require.NoError(t, err, "fake CLI was never invoked")
 	return string(raw)
 }

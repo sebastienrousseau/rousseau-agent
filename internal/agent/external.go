@@ -15,7 +15,12 @@ import (
 // events, tagged executor=external, so governance and the audit trail
 // cover the default claudecli path too. The caller blocks the call on
 // DecisionDeny and relays reason to the model.
+//
+// The caller's ctx (the toolgate server's) carries no identity; the
+// identity of the turn running for req.SessionID is attached, so the
+// call is judged as the user whose turn caused it.
 func (a *Agent) DecideExternal(ctx context.Context, req ApprovalRequest) (Decision, string) {
+	ctx = a.withTurnIdentity(ctx, req.SessionID)
 	detail := func(extra map[string]any) map[string]any {
 		d := map[string]any{"executor": "external"}
 		for k, v := range extra {

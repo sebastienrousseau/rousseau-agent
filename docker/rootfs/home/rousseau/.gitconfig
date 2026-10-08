@@ -1,0 +1,38 @@
+# Git defaults for the rousseau-agent release image.
+#
+# Copied into the image by docker/Dockerfile. This file replaces the
+# settings the image used to take from the maintainer's dotfiles at
+# build time (security finding H-4); it is reviewed here like any other
+# source file. No identity is set: operators supply user.name and
+# user.email at runtime (see "Git identity" in docker/README.md).
+#
+# Signing uses the SSH key the operator mounts through the state
+# volume (~/.ssh -> ~/.local/share/rousseau/keys/ssh).
+
+[user]
+	signingkey = ~/.ssh/id_ed25519
+
+[gpg]
+	format = ssh
+
+[commit]
+	gpgsign = true
+
+[tag]
+	gpgSign = true
+
+# docker/README.md "Git identity" relies on this: merges of unsigned or
+# unverifiable commits are refused.
+[merge]
+	verifySignatures = true
+
+# Verify every object received over the wire.
+[fetch]
+	fsckObjects = true
+[transfer]
+	fsckObjects = true
+[receive]
+	fsckObjects = true
+
+[init]
+	defaultBranch = main

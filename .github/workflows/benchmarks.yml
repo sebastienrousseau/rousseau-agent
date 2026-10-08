@@ -94,12 +94,24 @@ jobs:
       - name: Build rousseau (so runners exec a real binary)
         run: go build -o "$RUNNER_TEMP/rousseau" ./cmd/rousseau
 
+      # Dispatch inputs arrive through env and are validated before they
+      # reach $GITHUB_ENV (L-27): interpolating ${{ inputs.* }} into the
+      # script let an input inject shell or extra env lines (a newline
+      # in "model" could set any variable for later steps).
       - name: Set benchmark environment
+        env:
+          IN_LIMIT: ${{ inputs.limit || '0' }}
+          IN_MODEL: ${{ inputs.model || 'claude-opus-4-6' }}
         run: |
-          echo "ROUSSEAU_BENCH_DIR=$HOME/bench-corpora"          >> "$GITHUB_ENV"
-          echo "ROUSSEAU_BENCH_LIMIT=${{ inputs.limit || 0 }}"    >> "$GITHUB_ENV"
-          echo "ROUSSEAU_BENCH_MODEL=${{ inputs.model || 'claude-opus-4-6' }}" >> "$GITHUB_ENV"
-          echo "PATH=$RUNNER_TEMP:$PATH"                          >> "$GITHUB_ENV"
+          set -euo pipefail
+          [[ "$IN_LIMIT" =~ ^[0-9]+$ ]] || { echo "::error::limit must be a non-negative integer"; exit 1; }
+          [[ "$IN_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$ ]] || { echo "::error::model has unexpected characters"; exit 1; }
+          {
+            printf 'ROUSSEAU_BENCH_DIR=%s\n' "$HOME/bench-corpora"
+            printf 'ROUSSEAU_BENCH_LIMIT=%s\n' "$IN_LIMIT"
+            printf 'ROUSSEAU_BENCH_MODEL=%s\n' "$IN_MODEL"
+            printf 'PATH=%s\n' "$RUNNER_TEMP:$PATH"
+          } >> "$GITHUB_ENV"
 
       - name: Run SWE-Bench Verified
         if: steps.key.outputs.present == 'true' && (inputs.benchmark == 'all' || inputs.benchmark == 'swe-bench' || inputs.benchmark == '')

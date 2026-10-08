@@ -47,7 +47,7 @@ func newChatCmd(opts *Options) *cobra.Command {
 			defer func() { _ = store.Close() }() //nolint:errcheck // best-effort cleanup
 
 			registry := tools.NewRegistry()
-			guard, err := buildFSGuard(cfg.Tools.FS)
+			guard, err := buildFSGuard(cfg.Tools.FS, cfg.Observability.AuditEgress)
 			if err != nil {
 				return err
 			}

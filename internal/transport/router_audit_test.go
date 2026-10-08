@@ -145,26 +145,6 @@ func TestRouter_LogoutSuccessEmitsAuditRecord(t *testing.T) {
 		"logout must resolve actor BEFORE unbinding so audit names the identity")
 }
 
-func TestRouter_LogoutWithoutPriorBindingSucceedsWithEmptyActor(t *testing.T) {
-	// Idempotent path: logout with no prior login still lands
-	// an audit record so the operator can see attempts. Actor
-	// is empty (no identity was ever bound).
-	audit := &captureAuditSink{}
-	router := NewRouter(&stubRunner{}, newMemStore(), newMemJID(), silentLogger(), RouterOptions{
-		Transport: "whatsapp",
-		SSO:       stubDirectory{},
-		SSOStore:  newMemBindings(),
-		AuditSink: audit,
-	})
-	_, err := router.Handle(context.Background(), IncomingMessage{From: "+never-logged-in", Body: "/logout"})
-	require.NoError(t, err)
-
-	recs := audit.snapshot()
-	require.Len(t, recs, 1)
-	assert.Equal(t, "success", recs[0].Result)
-	assert.Empty(t, recs[0].Actor)
-}
-
 func TestRouter_NoAuditSinkIsNoop(t *testing.T) {
 	// The nil-sink path must not panic and must not emit
 	// anything — property that the sink is truly opt-in.

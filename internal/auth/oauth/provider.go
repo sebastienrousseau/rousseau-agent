@@ -32,10 +32,13 @@ type Provider interface {
 	Name() string
 	// AuthCodeURL builds the browser URL the operator visits to
 	// authorise. state must be embedded verbatim in the callback URL
-	// and is used for CSRF protection.
-	AuthCodeURL(state string) string
-	// Exchange trades a callback code for an access/refresh token.
-	Exchange(ctx context.Context, code string) (*Token, error)
+	// and is used for CSRF protection. verifier is the flow's PKCE
+	// code verifier (RFC 7636); implementations send its S256
+	// challenge.
+	AuthCodeURL(state, verifier string) string
+	// Exchange trades a callback code for an access/refresh token,
+	// presenting the same PKCE verifier passed to AuthCodeURL.
+	Exchange(ctx context.Context, code, verifier string) (*Token, error)
 	// Refresh trades a refresh token for a fresh access token. Some
 	// providers issue a new refresh token here; if so, callers should
 	// persist the returned Token verbatim.

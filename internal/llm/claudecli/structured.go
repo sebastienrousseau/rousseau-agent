@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
@@ -39,7 +38,7 @@ func (p *Provider) CompleteStructured(ctx context.Context, req agent.Request, sc
 	if p.cfg.Model != "" {
 		args = append(args, "--model", p.cfg.Model)
 	}
-	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
+	cmd := p.command(ctx, args)
 	cmd.Stdin = strings.NewReader(prompt)
 	setGracefulCancel(cmd)
 	out, err := p.run(cmd)

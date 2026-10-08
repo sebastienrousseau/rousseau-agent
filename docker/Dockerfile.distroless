@@ -9,8 +9,9 @@
 # Target size: ~30 MB (vs 530 MB for :latest).
 
 ########################  BUILDER  ########################
-ARG GO_VERSION=1.26
-FROM golang:${GO_VERSION}-alpine AS builder
+# Digest-pinned (L-28): the same multi-arch index as docker/Dockerfile;
+# keep the three in step. golang:1.26.8-alpine3.24 as of 2026-10-08.
+FROM golang:1.26.8-alpine3.24@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
 
 WORKDIR /src
 
@@ -39,7 +40,10 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # distroless static — no shell, no libc, no package manager. Runs
 # under a non-root user (UID 65532) by default. TLS certificates are
 # baked in via /etc/ssl/certs/ca-certificates.crt.
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+# gcr.io/distroless/static-debian12:nonroot (multi-arch index) as of
+# 2026-10-08. Refresh: the Docker-Content-Digest header of
+#   https://gcr.io/v2/distroless/static-debian12/manifests/nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS runtime
 
 COPY --from=builder /out/rousseau /usr/local/bin/rousseau
 

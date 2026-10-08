@@ -407,3 +407,12 @@ func TestStart_ContinuesOnPollError(t *testing.T) {
 	err = c.Start(ctx, transport.HandlerFunc(func(context.Context, transport.IncomingMessage) (string, error) { return "", nil }))
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
+
+func TestNew_GateRequiresTrustedAuthservID(t *testing.T) {
+	_, err := New(Config{
+		IMAPAddr: "i:1", IMAPUsername: "u", IMAPPassword: "p",
+		SMTPAddr: "s:1", SMTPUsername: "u", SMTPPassword: "p",
+		From: "bot@x", RequireAuthResults: true,
+	}, silentLogger())
+	assert.ErrorContains(t, err, "TrustedAuthservID is required")
+}

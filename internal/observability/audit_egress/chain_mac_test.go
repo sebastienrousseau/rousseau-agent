@@ -14,7 +14,11 @@ func rechain(records []Record) {
 	prev := ""
 	for i := range records {
 		records[i].Chain.PrevHash = prev
-		records[i].Chain.Hash = canonicalHash(records[i])
+		h, err := recordHash(records[i])
+		if err != nil {
+			panic(err)
+		}
+		records[i].Chain.Hash = h
 		prev = records[i].Chain.Hash
 	}
 }

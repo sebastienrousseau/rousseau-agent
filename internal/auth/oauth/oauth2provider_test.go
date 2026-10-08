@@ -60,7 +60,7 @@ func TestNewOAuth2Provider_Basics(t *testing.T) {
 	p := NewOAuth2Provider("test", mockCfg(srv))
 	assert.Equal(t, "test", p.Name())
 
-	u := p.AuthCodeURL("state-xyz")
+	u := p.AuthCodeURL("state-xyz", oauth2.GenerateVerifier())
 	assert.Contains(t, u, "state=state-xyz")
 	assert.Contains(t, u, "access_type=offline")
 	assert.Contains(t, u, "client_id=cid")
@@ -69,7 +69,7 @@ func TestNewOAuth2Provider_Basics(t *testing.T) {
 func TestOAuth2Provider_ExchangeRoundTrip(t *testing.T) {
 	srv := oauthMockServer(t)
 	p := NewOAuth2Provider("test", mockCfg(srv))
-	tok, err := p.Exchange(context.Background(), "code-xyz")
+	tok, err := p.Exchange(context.Background(), "code-xyz", "verifier-xyz")
 	require.NoError(t, err)
 	require.NotNil(t, tok)
 	assert.Equal(t, "at-live", tok.AccessToken)
@@ -84,7 +84,7 @@ func TestOAuth2Provider_ExchangeErrorSurfaces(t *testing.T) {
 	}))
 	defer srv.Close()
 	p := NewOAuth2Provider("test", mockCfg(srv))
-	_, err := p.Exchange(context.Background(), "bad")
+	_, err := p.Exchange(context.Background(), "bad", "verifier-xyz")
 	assert.ErrorContains(t, err, "exchange")
 }
 

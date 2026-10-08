@@ -5,23 +5,43 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 	"github.com/sebastienrousseau/rousseau-agent/internal/transport/email"
 )
 
-// warnUnauthenticatedEmail reminds the operator that an allow-list
-// keyed on the From header is advisory until the MTA's
-// Authentication-Results gate is on.
-func warnUnauthenticatedEmail(required bool, logger *slog.Logger) {
-	if required {
-		return
+// validateEmailAuth refuses an email allowlist keyed on a forgeable
+// From header: anyone could then act as an allowlisted sender, tools
+// included. The gate needs our MTA's authserv-id, since senders can
+// write Authentication-Results headers too.
+func validateEmailAuth(cfg config.EmailConfig, allow []string, allowAnyone bool, logger *slog.Logger) error {
+	switch {
+	case cfg.RequireAuthenticationResults && strings.TrimSpace(cfg.TrustedAuthservID) == "":
+		return errors.New("email.trusted_authserv_id is required with email.require_authentication_results: set it to the authserv-id your MTA writes in Authentication-Results")
+	case cfg.RequireAuthenticationResults, allowAnyone || len(allow) == 0:
+		return nil
+	case cfg.InsecureTrustFrom:
+		logger.Warn("email.allowlist_unauthenticated",
+			slog.String("effect", "the From header is trivially forged, so anyone can act as an allowlisted sender"),
+			slog.String("fix", "set email.require_authentication_results and email.trusted_authserv_id"))
+		return nil
+	default:
+		return errors.New("email allowlist keys on the From header, which anyone can forge: set email.require_authentication_results: true and email.trusted_authserv_id, or email.insecure_trust_from: true for a test inbox")
 	}
-	logger.Warn("email.allowlist_unauthenticated",
-		slog.String("effect", "the From header is trivially forged, so the allow-list is advisory"),
-		slog.String("fix", "set email.require_authentication_results: true once your MTA adds Authentication-Results"))
+}
+
+// checkEmailSenders applies the sender policy every chat transport
+// has, plus the email-specific rule that an allowlist must rest on
+// authenticated mail.
+func checkEmailSenders(cfg config.EmailConfig, allow []string, opts *Options) error {
+	if err := validateEmailAuth(cfg, allow, opts.AllowAnyone, opts.Logger); err != nil {
+		return needsOperator(err)
+	}
+	return requireSenderPolicy("email", allow, opts.AllowAnyone)
 }
 
 func newEmailCmd(opts *Options) *cobra.Command {
@@ -70,7 +90,7 @@ func newEmailCmd(opts *Options) *cobra.Command {
 				allow = cfg.Email.Allowlist
 			}
 			allow = normalizeEmailAllowlist(allow)
-			if err := requireSenderPolicy("email", allow, opts.AllowAnyone); err != nil {
+			if err := checkEmailSenders(cfg.Email, allow, opts); err != nil {
 				return err
 			}
 
@@ -107,11 +127,11 @@ func newEmailCmd(opts *Options) *cobra.Command {
 				ReplyHeader: cfg.Email.ReplyHeader,
 
 				RequireAuthResults: cfg.Email.RequireAuthenticationResults,
+				TrustedAuthservID:  cfg.Email.TrustedAuthservID,
 			}, opts.Logger)
 			if err != nil {
 				return err
 			}
-			warnUnauthenticatedEmail(cfg.Email.RequireAuthenticationResults, opts.Logger)
 
 			shutdown, err := wiring.startCron(ctx, func(dctx context.Context, target, body string) error {
 				return client.Deliver(dctx, target, body)

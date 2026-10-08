@@ -128,9 +128,9 @@ func TestRender_Terminal(t *testing.T) {
 			GlyphBullet + " stopped after 4m12s · 3 tools",
 		},
 		{
-			"failed with a reason",
-			State{Terminal: true, Outcome: KindError, Err: "provider:\n timeout"},
-			GlyphFailed + " failed after 4m12s — provider: timeout",
+			"failed with a ref",
+			State{Terminal: true, Outcome: KindError, Err: "provider:\n timeout", Ref: "7f3a2c"},
+			GlyphFailed + " failed after 4m12s (ref 7f3a2c)",
 		},
 		{
 			"failed without a reason",
@@ -195,4 +195,13 @@ func TestBulletGlyph(t *testing.T) {
 	assert.Equal(t, GlyphDenied, bulletGlyph(Bullet{Denied: true}))
 	assert.Equal(t, GlyphFailed, bulletGlyph(Bullet{Failed: true, Denied: true}),
 		"failure ranks above denial when both flags are set")
+}
+
+// A failure's detail can carry a provider's child output; the chat
+// line shows only the generic outcome.
+func TestRender_FailureDetailStaysOutOfChat(t *testing.T) {
+	st := State{Terminal: true, Outcome: KindError, Err: "claude cli: FAKE-DETAIL"}
+	got := Render(st, 4*time.Minute+12*time.Second)
+	assert.Equal(t, GlyphFailed+" failed after 4m12s", got)
+	assert.NotContains(t, got, "FAKE-DETAIL")
 }

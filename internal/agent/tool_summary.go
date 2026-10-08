@@ -4,7 +4,16 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/observability/redact"
 )
+
+// SummarizeToolInput is the short, human-readable form of a tool
+// call's input used in progress bullets and approval requests. See
+// summarizeToolInput for the rules.
+func SummarizeToolInput(name string, raw json.RawMessage) string {
+	return summarizeToolInput(name, raw)
+}
 
 // summarizeToolInput extracts a short, human-friendly hint from a
 // tool's JSON input for the progress feed — the "foo.go" in
@@ -32,27 +41,26 @@ func summarizeToolInput(name string, raw json.RawMessage) string {
 	if err := json.Unmarshal(raw, &m); err != nil || len(m) == 0 {
 		return ""
 	}
+	// The summary lands in chat bullets. Redact before truncating so a
+	// whole token is still whole when the rules see it.
+	return trimSummary(redact.String(summaryField(name, m)))
+}
+
+// summaryField picks the untruncated headline for a tool's input.
+func summaryField(name string, m map[string]any) string {
 	switch strings.ToLower(name) {
 	case "read", "write", "edit", "notebookedit", "notebook_edit":
-		return trimSummary(stringField(m, "file_path", "notebook_path", "path"))
+		return stringField(m, "file_path", "notebook_path", "path")
 	case "bash":
-		return trimSummary(firstLine(stringField(m, "command")))
-	case "grep":
-		if pat := stringField(m, "pattern"); pat != "" {
-			return trimSummary(pat)
-		}
-		return trimSummary(stringField(m, "path"))
-	case "glob":
-		return trimSummary(stringField(m, "pattern", "path"))
+		return firstLine(stringField(m, "command"))
+	case "grep", "glob":
+		return stringField(m, "pattern", "path")
 	case "webfetch", "web_fetch":
-		return trimSummary(stringField(m, "url"))
+		return stringField(m, "url")
 	case "websearch", "web_search":
-		return trimSummary(stringField(m, "query"))
+		return stringField(m, "query")
 	case "task", "agent":
-		if d := stringField(m, "description"); d != "" {
-			return trimSummary(d)
-		}
-		return trimSummary(stringField(m, "subagent_type", "prompt"))
+		return stringField(m, "description", "subagent_type", "prompt")
 	case "todowrite", "todo_write":
 		// A concrete count is more useful than a first-item snippet
 		// when the list has many entries.
@@ -61,7 +69,7 @@ func summarizeToolInput(name string, raw json.RawMessage) string {
 		}
 		return ""
 	}
-	return trimSummary(firstStringValue(m, "url", "path", "file_path", "query", "pattern", "command", "description", "prompt"))
+	return firstStringValue(m, "url", "path", "file_path", "query", "pattern", "command", "description", "prompt")
 }
 
 // stringField returns the first non-empty string value in m among keys.

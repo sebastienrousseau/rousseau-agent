@@ -21,11 +21,12 @@ func buildHooks(cfg config.HooksConfig, logger *slog.Logger) hooks.Runner {
 		out := make([]hooks.Config, 0, len(in))
 		for _, h := range in {
 			out = append(out, hooks.Config{
-				Name:    h.Name,
-				Command: h.Command,
-				Args:    h.Args,
-				Env:     h.Env,
-				Timeout: time.Duration(h.TimeoutSeconds) * time.Second,
+				Name:       h.Name,
+				Command:    h.Command,
+				Args:       h.Args,
+				Env:        h.Env,
+				Timeout:    time.Duration(h.TimeoutSeconds) * time.Second,
+				FailClosed: h.FailClosed,
 			})
 		}
 		byEvent[e] = out

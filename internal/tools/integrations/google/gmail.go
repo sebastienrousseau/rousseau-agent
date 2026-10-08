@@ -5,7 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"net/mail"
 	"net/url"
+	"strings"
 )
 
 // GmailListTool lists message ids matching a search query.
@@ -117,6 +120,9 @@ func NewGmailSendTool(c *Client) *GmailSendTool { return &GmailSendTool{c: c} }
 // Name implements tools.Tool.
 func (*GmailSendTool) Name() string { return "gmail_send" }
 
+// Outbound implements tools.Outbound: it sends an email.
+func (*GmailSendTool) Outbound() bool { return true }
+
 // Description implements tools.Tool.
 func (*GmailSendTool) Description() string {
 	return "Send a plain-text email via Gmail. Required: to, subject, body. Optional: from (defaults to authenticated user)."
@@ -145,7 +151,10 @@ func (t *GmailSendTool) Execute(ctx context.Context, input json.RawMessage) (str
 	if args.To == "" || args.Subject == "" || args.Body == "" {
 		return "", fmt.Errorf("to, subject and body are required")
 	}
-	raw := buildRFC5322(args.From, args.To, args.Subject, args.Body)
+	raw, err := buildRFC5322(args.From, args.To, args.Subject, args.Body)
+	if err != nil {
+		return "", err
+	}
 	body := map[string]any{
 		"raw": base64.URLEncoding.EncodeToString(raw),
 	}
@@ -156,16 +165,55 @@ func (t *GmailSendTool) Execute(ctx context.Context, input json.RawMessage) (str
 	return jsonString(out)
 }
 
-// buildRFC5322 renders a minimal, plain-text RFC 5322 message.
-func buildRFC5322(from, to, subject, body string) []byte {
-	var b []byte
-	if from != "" {
-		b = append(b, []byte("From: "+from+"\r\n")...)
+// buildRFC5322 renders a minimal, plain-text RFC 5322 message. Every
+// header value is model-controlled, so each is checked for CR/LF (header
+// injection, CWE-93), addresses are parsed and re-rendered, and the
+// subject is RFC 2047 encoded.
+func buildRFC5322(from, to, subject, body string) ([]byte, error) {
+	for name, v := range map[string]string{"from": from, "to": to, "subject": subject} {
+		if strings.ContainsAny(v, "\r\n") {
+			return nil, fmt.Errorf("%s must not contain CR or LF", name)
+		}
 	}
-	b = append(b, []byte("To: "+to+"\r\n")...)
-	b = append(b, []byte("Subject: "+subject+"\r\n")...)
-	b = append(b, []byte("Content-Type: text/plain; charset=utf-8\r\n")...)
-	b = append(b, []byte("\r\n")...)
-	b = append(b, []byte(body)...)
-	return b
+	toHdr, err := formatAddressList(to)
+	if err != nil {
+		return nil, fmt.Errorf("invalid to address: %w", err)
+	}
+	var sb strings.Builder
+	if from != "" {
+		fromAddr, err := mail.ParseAddress(from)
+		if err != nil {
+			return nil, fmt.Errorf("invalid from address: %w", err)
+		}
+		sb.WriteString("From: " + formatAddress(fromAddr) + "\r\n")
+	}
+	sb.WriteString("To: " + toHdr + "\r\n")
+	sb.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", subject) + "\r\n")
+	sb.WriteString("MIME-Version: 1.0\r\n")
+	sb.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	sb.WriteString("\r\n")
+	sb.WriteString(body)
+	return []byte(sb.String()), nil
+}
+
+// formatAddressList parses a comma-separated address list and renders it
+// back in canonical form.
+func formatAddressList(list string) (string, error) {
+	addrs, err := mail.ParseAddressList(list)
+	if err != nil {
+		return "", err
+	}
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = formatAddress(a)
+	}
+	return strings.Join(out, ", "), nil
+}
+
+// formatAddress renders a parsed address, keeping a bare addr-spec bare.
+func formatAddress(a *mail.Address) string {
+	if a.Name == "" {
+		return a.Address
+	}
+	return a.String()
 }

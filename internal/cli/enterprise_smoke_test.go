@@ -93,7 +93,7 @@ func TestEnterpriseGates_AllFeaturesUnlock(t *testing.T) {
 			},
 			BindingTTL: 24 * time.Hour,
 			SCIM: config.SCIMConfig{
-				Addr:        ":7643",
+				Addr:        "127.0.0.1:7643",
 				BearerToken: "test-scim-token",
 				BaseURL:     "https://rousseau.example",
 			},
@@ -126,7 +126,7 @@ func TestEnterpriseGates_AllFeaturesUnlock(t *testing.T) {
 	// condition buildSCIM returns nil so downstream StartBackgroundServers
 	// silently skips it. Test the wire-up landed.
 	require.NotNil(t, wiring.SCIMServer, "SCIM server must bind when configured + FeatureSSO unlocked")
-	assert.Equal(t, ":7643", wiring.SCIMAddr, "SCIM addr must be surfaced on wiring for the transport runner")
+	assert.Equal(t, "127.0.0.1:7643", wiring.SCIMAddr, "SCIM addr must be surfaced on wiring for the transport runner")
 
 	// SSO bindings: always non-nil (fallback is sso.NoBindings), but
 	// the real backing store must be present, not the no-op. Pin by
@@ -178,7 +178,7 @@ func TestEnterpriseGates_UnlicensedFallsBackToCore(t *testing.T) {
 		SSO: config.SSOConfig{
 			Kind: "oidc",
 			OIDC: config.SSOOIDCConfig{Issuer: "https://example-idp.okta.com", Audience: "rousseau"},
-			SCIM: config.SCIMConfig{Addr: ":7643", BearerToken: "x"},
+			SCIM: config.SCIMConfig{Addr: "127.0.0.1:7643", BearerToken: "x"},
 		},
 	}
 	opts.Config.Observability.AuditEgress = config.AuditEgressConfig{

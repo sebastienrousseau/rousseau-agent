@@ -348,7 +348,7 @@ func TestHandleStatus(t *testing.T) {
 			return nil
 		})
 		s := newServer(t, h, nil)
-		state := s.spawnTask(a2a.Task{TaskID: "t1", Prompt: "p"})
+		state := mustSpawn(t, s, a2a.Task{TaskID: "t1", Prompt: "p"})
 		<-done
 		waitFor(t, state.isTerminal)
 
@@ -379,7 +379,7 @@ func TestHandleCancel(t *testing.T) {
 	t.Run("cancel propagates to the handler context", func(t *testing.T) {
 		h, _ := blockingHandler(t)
 		s := newServer(t, h, nil)
-		s.spawnTask(a2a.Task{TaskID: "t-cancel", Prompt: "p"})
+		mustSpawn(t, s, a2a.Task{TaskID: "t-cancel", Prompt: "p"})
 
 		rec := httptest.NewRecorder()
 		s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/tasks/t-cancel/cancel", nil))
@@ -462,7 +462,7 @@ func TestHandleEvents_UnknownTask(t *testing.T) {
 
 func TestHandleEvents_NonFlusherWriter(t *testing.T) {
 	s := newServer(t, noopHandler(), nil)
-	s.spawnTask(a2a.Task{TaskID: "t-noflush", Prompt: "p"})
+	mustSpawn(t, s, a2a.Task{TaskID: "t-noflush", Prompt: "p"})
 
 	w := newPlainWriter()
 	req := httptest.NewRequest(http.MethodGet, "/tasks/t-noflush/events", nil)
@@ -533,7 +533,7 @@ func TestHandleEvents_LateSubscriberGetsHistoryOnly(t *testing.T) {
 	ts := httptest.NewServer(s.Router())
 	defer ts.Close()
 
-	s.spawnTask(a2a.Task{TaskID: "t-late", Prompt: "p"})
+	mustSpawn(t, s, a2a.Task{TaskID: "t-late", Prompt: "p"})
 	<-done
 
 	resp, err := http.Get(ts.URL + "/tasks/t-late/events") //nolint:noctx // test
@@ -550,7 +550,7 @@ func TestHandleEvents_LateSubscriberGetsHistoryOnly(t *testing.T) {
 func TestHandleEvents_ClientDisconnect(t *testing.T) {
 	h, _ := blockingHandler(t)
 	s := newServer(t, h, nil)
-	state := s.spawnTask(a2a.Task{TaskID: "t-disc", Prompt: "p"})
+	state := mustSpawn(t, s, a2a.Task{TaskID: "t-disc", Prompt: "p"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, "/tasks/t-disc/events", nil).WithContext(ctx)
@@ -680,12 +680,13 @@ func TestSpawnTask(t *testing.T) {
 		s := newServer(t, handlerFunc(func(context.Context, a2a.Task, func(a2a.TaskUpdate)) error {
 			return errors.New("kaboom")
 		}), nil)
-		state := s.spawnTask(a2a.Task{TaskID: "t-err", Prompt: "p"})
+		state := mustSpawn(t, s, a2a.Task{TaskID: "t-err", Prompt: "p"})
 		waitFor(t, state.isTerminal)
 
 		snap := state.snapshot()
 		assert.Equal(t, a2a.TaskStatusFailed, snap.Status)
-		assert.Equal(t, "kaboom", snap.Last.Message)
+		assert.True(t, strings.HasPrefix(snap.Last.Message, "task failed (ref "), snap.Last.Message)
+		assert.NotContains(t, snap.Last.Message, "kaboom", "handler detail stays in the log")
 		assert.Equal(t, "handler_error", snap.Last.FailureCode)
 		assert.Equal(t, "t-err", snap.Last.TaskID)
 	})
@@ -695,7 +696,7 @@ func TestSpawnTask(t *testing.T) {
 			emit(a2a.TaskUpdate{Status: a2a.TaskStatusCancelled, Message: "aborted"})
 			return errors.New("ignored")
 		}), nil)
-		state := s.spawnTask(a2a.Task{TaskID: "t-term", Prompt: "p"})
+		state := mustSpawn(t, s, a2a.Task{TaskID: "t-term", Prompt: "p"})
 		waitFor(t, state.isTerminal)
 		// Let any (incorrect) extra emit land before asserting.
 		time.Sleep(50 * time.Millisecond)
@@ -708,7 +709,7 @@ func TestSpawnTask(t *testing.T) {
 
 	t.Run("silent handler gets a synthesised completed update", func(t *testing.T) {
 		s := newServer(t, noopHandler(), nil)
-		state := s.spawnTask(a2a.Task{TaskID: "t-silent", Prompt: "p"})
+		state := mustSpawn(t, s, a2a.Task{TaskID: "t-silent", Prompt: "p"})
 		waitFor(t, state.isTerminal)
 
 		snap := state.snapshot()
@@ -722,7 +723,7 @@ func TestSpawnTask(t *testing.T) {
 			emit(a2a.TaskUpdate{TaskID: "explicit", Status: a2a.TaskStatusCompleted, At: at})
 			return nil
 		}), nil)
-		state := s.spawnTask(a2a.Task{TaskID: "t-stamp", Prompt: "p"})
+		state := mustSpawn(t, s, a2a.Task{TaskID: "t-stamp", Prompt: "p"})
 		waitFor(t, state.isTerminal)
 
 		snap := state.snapshot()
@@ -743,7 +744,7 @@ func TestSpawnTask(t *testing.T) {
 			Prompt:         "look at this",
 			InputArtifacts: []a2a.Artifact{{URI: "artifact://1", Name: "diff"}},
 		}
-		state := s.spawnTask(want)
+		state := mustSpawn(t, s, want)
 		waitFor(t, state.isTerminal)
 		assert.Equal(t, want, got)
 	})
@@ -754,6 +755,9 @@ func TestSpawnTask_ConcurrentTasksAreIsolated(t *testing.T) {
 		emit(a2a.TaskUpdate{Status: a2a.TaskStatusCompleted, OutputText: task.Prompt})
 		return nil
 	}), nil)
+	// All 25 tasks share the anonymous peer; lift the in-flight caps
+	// so this test exercises isolation, not admission control.
+	s.MaxInflightPerPeer, s.MaxInflight = 25, 25
 
 	var wg sync.WaitGroup
 	states := make([]*taskState, 25)
@@ -761,7 +765,7 @@ func TestSpawnTask_ConcurrentTasksAreIsolated(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			states[i] = s.spawnTask(a2a.Task{TaskID: fmt.Sprintf("t-%d", i), Prompt: fmt.Sprintf("p-%d", i)})
+			states[i] = mustSpawn(t, s, a2a.Task{TaskID: fmt.Sprintf("t-%d", i), Prompt: fmt.Sprintf("p-%d", i)})
 		}(i)
 	}
 	wg.Wait()

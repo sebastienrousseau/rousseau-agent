@@ -53,7 +53,7 @@ func TestVectorRecall_NilRetrieverReturnsEmpty(t *testing.T) {
 
 func TestVectorRecall_NoUserMessageReturnsEmpty(t *testing.T) {
 	fake := &fakeVectorRetriever{}
-	v := &vectorRecall{retriever: fake}
+	v := &vectorRecall{retriever: fake, OwnerOf: ownedByAnyone}
 	got := v.SystemAppendix(context.Background(), newSession())
 	assert.Empty(t, got)
 	assert.Empty(t, fake.query, "retriever must not fire when there is no user text")
@@ -64,11 +64,11 @@ func TestVectorRecall_HappyPathComposesAppendix(t *testing.T) {
 		{Row: recall.Row{SessionID: "old-1", Text: "we talked about kafka rebalances"}, Score: 0.9},
 		{Row: recall.Row{SessionID: "old-2", Text: "the postgres migration hit a rollback"}, Score: 0.7},
 	}}
-	v := &vectorRecall{retriever: fake}
+	v := &vectorRecall{retriever: fake, OwnerOf: ownedByAnyone}
 	sess := newSession(userMsg("how did we handle kafka?"))
 
 	got := v.SystemAppendix(context.Background(), sess)
-	assert.Contains(t, got, "# Related prior sessions")
+	assert.Contains(t, got, `<prior-context source="recall" trust="untrusted">`)
 	assert.Contains(t, got, "session old-1")
 	assert.Contains(t, got, "we talked about kafka rebalances")
 	assert.Contains(t, got, "session old-2")
@@ -78,7 +78,7 @@ func TestVectorRecall_HappyPathComposesAppendix(t *testing.T) {
 
 func TestVectorRecall_LimitOverridesDefault(t *testing.T) {
 	fake := &fakeVectorRetriever{hits: []recall.Hit{{Row: recall.Row{SessionID: "x", Text: "y"}}}}
-	v := &vectorRecall{retriever: fake, Limit: 7}
+	v := &vectorRecall{retriever: fake, Limit: 7, OwnerOf: ownedByAnyone}
 	_ = v.SystemAppendix(context.Background(), newSession(userMsg("hi")))
 	assert.Equal(t, 7, fake.k)
 }
@@ -89,6 +89,7 @@ func TestVectorRecall_SkipSessionIDFiltersCurrent(t *testing.T) {
 		{Row: recall.Row{SessionID: "drop-me", Text: "current session's echo"}},
 	}}
 	v := &vectorRecall{
+		OwnerOf:       ownedByAnyone,
 		retriever:     fake,
 		SkipSessionID: func(*agent.Session) string { return "drop-me" },
 	}
@@ -102,6 +103,7 @@ func TestVectorRecall_AllHitsFilteredReturnsEmpty(t *testing.T) {
 		{Row: recall.Row{SessionID: "only-current", Text: "echo"}},
 	}}
 	v := &vectorRecall{
+		OwnerOf:       ownedByAnyone,
 		retriever:     fake,
 		SkipSessionID: func(*agent.Session) string { return "only-current" },
 	}
@@ -111,7 +113,7 @@ func TestVectorRecall_AllHitsFilteredReturnsEmpty(t *testing.T) {
 
 func TestVectorRecall_RetrieverErrorReturnsEmpty(t *testing.T) {
 	fake := &fakeVectorRetriever{err: errors.New("boom")}
-	v := &vectorRecall{retriever: fake}
+	v := &vectorRecall{retriever: fake, OwnerOf: ownedByAnyone}
 	got := v.SystemAppendix(context.Background(), newSession(userMsg("hi")))
 	assert.Empty(t, got, "retriever errors are swallowed — recall is best-effort")
 }
@@ -121,11 +123,12 @@ func TestVectorRecall_TitleForHitOverridesDefault(t *testing.T) {
 		{Row: recall.Row{SessionID: "abc", Text: "body"}, Score: 0.9},
 	}}
 	v := &vectorRecall{
+		OwnerOf:     ownedByAnyone,
 		retriever:   fake,
 		TitleForHit: func(h recall.Hit) string { return "Score " + fmtFloat(h.Score) },
 	}
 	got := v.SystemAppendix(context.Background(), newSession(userMsg("hi")))
-	assert.Contains(t, got, "## Score 0.90")
+	assert.Contains(t, got, "Score 0.90")
 }
 
 // TestVectorRecall_TitleForHitReturningEmptyFallsBackToDefault
@@ -137,11 +140,12 @@ func TestVectorRecall_TitleForHitReturningEmptyFallsBackToDefault(t *testing.T) 
 		{Row: recall.Row{SessionID: "abc", Text: "body"}},
 	}}
 	v := &vectorRecall{
+		OwnerOf:     ownedByAnyone,
 		retriever:   fake,
 		TitleForHit: func(recall.Hit) string { return "" },
 	}
 	got := v.SystemAppendix(context.Background(), newSession(userMsg("hi")))
-	assert.Contains(t, got, "## session abc")
+	assert.Contains(t, got, "session abc")
 }
 
 func TestLastUserText_MultipleContentBlocksJoined(t *testing.T) {
@@ -208,4 +212,32 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return digits
+}
+
+// ownedByAnyone reports every session as owned by the empty sender,
+// which matches the test sessions built by newSession.
+func ownedByAnyone(context.Context, string) (string, error) { return "", nil }
+
+// Vector recall keeps only hits from sessions the current sender owns.
+func TestVectorRecall_DropsOtherSendersHits(t *testing.T) {
+	fake := &fakeVectorRetriever{hits: []recall.Hit{
+		{Row: recall.Row{SessionID: "alice-1", Text: "alice salary 91000"}, Score: 0.9},
+		{Row: recall.Row{SessionID: "bob-1", Text: "bob invoice template"}, Score: 0.8},
+	}}
+	owners := map[string]string{"alice-1": "telegram:alice", "bob-1": "telegram:bob"}
+	v := &vectorRecall{retriever: fake, OwnerOf: func(_ context.Context, id string) (string, error) {
+		return owners[id], nil
+	}}
+	sess := newSession(userMsg("invoice and salary"))
+	sess.Sender = "telegram:bob"
+	got := v.SystemAppendix(context.Background(), sess)
+	assert.NotContains(t, got, "91000")
+	assert.Contains(t, got, "bob invoice template")
+}
+
+// Without an owner lookup vector recall returns nothing.
+func TestVectorRecall_NoOwnerLookupFailsClosed(t *testing.T) {
+	fake := &fakeVectorRetriever{hits: []recall.Hit{{Row: recall.Row{SessionID: "x", Text: "secret"}}}}
+	v := &vectorRecall{retriever: fake}
+	assert.Empty(t, v.SystemAppendix(context.Background(), newSession(userMsg("secret"))))
 }

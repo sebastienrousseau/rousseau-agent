@@ -78,6 +78,9 @@ type Client struct {
 	mu    sync.Mutex
 	since string // opaque cursor returned by the last /sync
 
+	// direct caches each room's one-to-one verdict (see isDirectRoom).
+	direct directCache
+
 	// inflight runs each event off the sync loop (see
 	// transport.Inflight); nil (inline) outside Start.
 	inflight *transport.Inflight
@@ -218,6 +221,7 @@ func (c *Client) handleEvent(ctx context.Context, roomID string, evt timelineEve
 		At:           time.Unix(evt.OriginServerTS/1000, (evt.OriginServerTS%1000)*int64(time.Millisecond)),
 		Conversation: roomID,
 		MessageID:    evt.EventID,
+		IsDirect:     c.isDirectRoom(ctx, roomID),
 		Attachments:  attachments,
 	}
 	c.logger.Info("matrix.incoming",

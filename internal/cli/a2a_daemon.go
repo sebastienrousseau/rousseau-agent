@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -26,9 +27,11 @@ import (
 	"github.com/sebastienrousseau/rousseau-agent/internal/config"
 )
 
-// defaultA2AListen is the shipped bind address. Non-privileged port
-// per the deployment story — 8443 needs no capabilities.
-const defaultA2AListen = ":8443"
+// defaultA2AListen is the shipped bind address: loopback only, so an
+// unconfigured server is never reachable from the network. A
+// non-loopback listen needs TLS or allow_plaintext (checkListenTLS).
+// Non-privileged port — 8443 needs no capabilities.
+const defaultA2AListen = "127.0.0.1:8443"
 
 // defaultA2AAgentName is what shows up on the served CapabilityCard
 // when the operator hasn't set agent_name.
@@ -48,6 +51,9 @@ type a2aRuntime struct {
 	// Signed is true when a signing key was successfully loaded so
 	// the served AgentCard carries a JWS signature.
 	Signed bool
+	// TLSCertFile / TLSKeyFile, when set, make runA2AServer serve TLS.
+	TLSCertFile string
+	TLSKeyFile  string
 }
 
 // buildA2AServer composes an [a2a/server.Server] from cfg. Returns
@@ -74,17 +80,12 @@ func buildA2AServer(cfg config.A2AConfig, ag *agent.Agent, logger *slog.Logger) 
 	if listen == "" {
 		listen = defaultA2AListen
 	}
-	agentName := cfg.Server.AgentName
-	if agentName == "" {
-		agentName = defaultA2AAgentName
-	}
-	agentID := cfg.Server.AgentID
-	if agentID == "" {
-		if host, err := os.Hostname(); err == nil {
-			agentID = host
-		} else {
-			agentID = agentName
-		}
+	if err := checkListenTLS(listen, cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile, cfg.Server.AllowPlaintext); err != nil {
+		logger.Warn("a2a.insecure_listen",
+			slog.String("addr", listen),
+			slog.String("err", err.Error()),
+		)
+		return nil
 	}
 
 	tokens, err := loadA2ABearerTokens(cfg.Server.AuthTokensFile, logger)
@@ -109,11 +110,123 @@ func buildA2AServer(cfg config.A2AConfig, ag *agent.Agent, logger *slog.Logger) 
 		return nil
 	}
 
-	skills := make([]a2a.SkillDescriptor, 0, len(cfg.Server.ExposedSkills))
-	for _, name := range cfg.Server.ExposedSkills {
+	card := a2aCapabilityCard(cfg.Server)
+	handler := newA2ATaskHandler(ag, cfg.Server.ExposedSkills, logger)
+	// Auth is mandatory here (no tokens → refused above), so every
+	// task must carry the authenticated peer.
+	handler.requirePeer = true
+	srv, err := server.New(card, handler, tokens)
+	if err != nil {
+		logger.Warn("a2a.server_new", slog.String("err", err.Error()))
+		return nil
+	}
+
+	rt := &a2aRuntime{
+		Server: srv, Addr: listen, AuthCount: len(tokens),
+		TLSCertFile: cfg.Server.TLSCertFile, TLSKeyFile: cfg.Server.TLSKeyFile,
+	}
+	srv.Logger = logger
+	srv.MaxInflightPerPeer = cfg.Server.MaxInflightPerPeer
+	srv.MaxInflight = cfg.Server.MaxInflight
+	if err := applyA2ACardTrust(srv, cfg.Server); err != nil {
+		logger.Warn("a2a.trusted_proxies_invalid",
+			slog.String("err", err.Error()),
+		)
+		return nil
+	}
+	rt.Signed = loadA2ACardSigningKey(srv, cfg.Server, logger)
+	logger.Info("a2a.server_configured",
+		slog.String("addr", listen),
+		slog.String("agent_id", card.AgentID),
+		slog.Bool("tls", rt.TLSCertFile != ""),
+		slog.Int("bearer_tokens", len(tokens)),
+		slog.Int("exposed_skills", len(cfg.Server.ExposedSkills)),
+		slog.Bool("signed_card", rt.Signed),
+	)
+	return rt
+}
+
+// applyA2ACardTrust copies the card-URL trust settings onto srv:
+// public_url (the only URL the card is ever signed for) and
+// trusted_proxies (the only sources whose X-Forwarded-* headers are
+// honoured). An unparsable proxy entry is an error: silently dropping
+// it would change which headers are trusted.
+func applyA2ACardTrust(srv *server.Server, cfg config.A2AServerConfig) error {
+	srv.PublicURL = cfg.PublicURL
+	proxies, err := parseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return err
+	}
+	srv.TrustedProxies = proxies
+	return nil
+}
+
+// parseTrustedProxies parses CIDR prefixes; a bare IP is a /32 or /128.
+func parseTrustedProxies(entries []string) ([]netip.Prefix, error) {
+	out := make([]netip.Prefix, 0, len(entries))
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if p, err := netip.ParsePrefix(e); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(e)
+		if err != nil {
+			return nil, fmt.Errorf("trusted_proxies entry %q is not an IP or CIDR", e)
+		}
+		out = append(out, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return out, nil
+}
+
+// loadA2ACardSigningKey loads signing_key_file onto srv. Returns true
+// when the key loaded. The card is signed only when public_url is also
+// set; a key without it is reported so operators know why peers see
+// an unsigned card.
+func loadA2ACardSigningKey(srv *server.Server, cfg config.A2AServerConfig, logger *slog.Logger) bool {
+	if cfg.SigningKeyFile == "" {
+		return false
+	}
+	key, err := loadA2AServerSigningKey(cfg.SigningKeyFile)
+	if err != nil {
+		logger.Warn("a2a.signing_key_unreadable",
+			slog.String("file", cfg.SigningKeyFile),
+			slog.String("err", err.Error()),
+			slog.String("hint", "AgentCard will serve unsigned; peers with RequireSignedCard will reject"),
+		)
+		return false
+	}
+	srv.SigningKey = key
+	if cfg.PublicURL == "" {
+		logger.Warn("a2a.signing_without_public_url",
+			slog.String("hint", "set a2a.server.public_url; without it the AgentCard is served unsigned"),
+		)
+		return false
+	}
+	return true
+}
+
+// a2aCapabilityCard builds the served card: agent_name (default
+// rousseau-agent), agent_id (default the hostname) and the exposed
+// skills.
+func a2aCapabilityCard(cfg config.A2AServerConfig) a2a.CapabilityCard {
+	agentName := cfg.AgentName
+	if agentName == "" {
+		agentName = defaultA2AAgentName
+	}
+	agentID := cfg.AgentID
+	if agentID == "" {
+		if host, err := os.Hostname(); err == nil {
+			agentID = host
+		} else {
+			agentID = agentName
+		}
+	}
+	skills := make([]a2a.SkillDescriptor, 0, len(cfg.ExposedSkills))
+	for _, name := range cfg.ExposedSkills {
 		skills = append(skills, a2a.SkillDescriptor{Name: name})
 	}
-	card := a2a.CapabilityCard{
+	return a2a.CapabilityCard{
 		AgentID:           agentID,
 		Name:              agentName,
 		Version:           Version(),
@@ -121,36 +234,6 @@ func buildA2AServer(cfg config.A2AConfig, ag *agent.Agent, logger *slog.Logger) 
 		SupportsStreaming: true,
 		PublishedAt:       time.Now().UTC(),
 	}
-
-	handler := newA2ATaskHandler(ag, cfg.Server.ExposedSkills, logger)
-	srv, err := server.New(card, handler, tokens)
-	if err != nil {
-		logger.Warn("a2a.server_new", slog.String("err", err.Error()))
-		return nil
-	}
-
-	rt := &a2aRuntime{Server: srv, Addr: listen, AuthCount: len(tokens)}
-	if cfg.Server.SigningKeyFile != "" {
-		key, err := loadA2AServerSigningKey(cfg.Server.SigningKeyFile)
-		if err != nil {
-			logger.Warn("a2a.signing_key_unreadable",
-				slog.String("file", cfg.Server.SigningKeyFile),
-				slog.String("err", err.Error()),
-				slog.String("hint", "AgentCard will serve unsigned; peers with RequireSignedCard will reject"),
-			)
-		} else {
-			srv.SigningKey = key
-			rt.Signed = true
-		}
-	}
-	logger.Info("a2a.server_configured",
-		slog.String("addr", listen),
-		slog.String("agent_id", agentID),
-		slog.Int("bearer_tokens", len(tokens)),
-		slog.Int("exposed_skills", len(cfg.Server.ExposedSkills)),
-		slog.Bool("signed_card", rt.Signed),
-	)
-	return rt
 }
 
 // loadA2ABearerTokens reads the newline-separated bearer-token
@@ -290,6 +373,14 @@ func loadA2AClientTrustList(paths []string) ([]ed25519.PublicKey, error) {
 	return out, nil
 }
 
+// serveA2AHTTP serves TLS when the runtime carries a certificate.
+func serveA2AHTTP(srv *http.Server, ln net.Listener, rt *a2aRuntime) error {
+	if rt.TLSCertFile != "" {
+		return srv.ServeTLS(ln, rt.TLSCertFile, rt.TLSKeyFile)
+	}
+	return srv.Serve(ln)
+}
+
 // runA2AServer runs the assembled server against the configured
 // address until ctx cancels. Called from StartBackgroundServers in
 // its own goroutine. A bind failure is a critical operator misconfig
@@ -309,12 +400,9 @@ func runA2AServer(ctx context.Context, rt *a2aRuntime, logger *slog.Logger) {
 	}
 	logger.Info("a2a.listening", slog.String("addr", ln.Addr().String()))
 
-	httpSrv := &http.Server{
-		Handler:           rt.Server.Router(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpSrv := server.HTTPServer(rt.Server.Router())
 	done := make(chan error, 1)
-	go func() { done <- httpSrv.Serve(ln) }()
+	go func() { done <- serveA2AHTTP(httpSrv, ln, rt) }()
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

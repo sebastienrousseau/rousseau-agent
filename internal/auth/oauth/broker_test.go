@@ -17,16 +17,23 @@ import (
 
 // fakeProvider satisfies Provider with configurable responses.
 type fakeProvider struct {
-	name      string
-	authURL   string
-	exchange  func(ctx context.Context, code string) (*Token, error)
+	name     string
+	authURL  string
+	exchange func(ctx context.Context, code string) (*Token, error)
+	// verifiers records the PKCE verifier seen by each call, in
+	// order: AuthCodeURL appends, then Exchange appends.
+	verifiers []string
 	refresh   func(ctx context.Context, rt string) (*Token, error)
 	clientErr error
 }
 
-func (f *fakeProvider) Name() string                    { return f.name }
-func (f *fakeProvider) AuthCodeURL(state string) string { return f.authURL + "?state=" + state }
-func (f *fakeProvider) Exchange(ctx context.Context, code string) (*Token, error) {
+func (f *fakeProvider) Name() string { return f.name }
+func (f *fakeProvider) AuthCodeURL(state, verifier string) string {
+	f.verifiers = append(f.verifiers, verifier)
+	return f.authURL + "?state=" + state
+}
+func (f *fakeProvider) Exchange(ctx context.Context, code, verifier string) (*Token, error) {
+	f.verifiers = append(f.verifiers, verifier)
 	return f.exchange(ctx, code)
 }
 func (f *fakeProvider) Refresh(ctx context.Context, rt string) (*Token, error) {

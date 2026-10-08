@@ -29,6 +29,10 @@ type a2aTaskHandler struct {
 	agent         *agent.Agent
 	exposedSkills map[string]struct{} // name → {}
 	logger        *slog.Logger
+	// requirePeer is true when the server authenticates peers: every
+	// task must then carry Task.Peer, and the body's self-declared
+	// from_agent never stands in for it.
+	requirePeer bool
 }
 
 // newA2ATaskHandler constructs the handler. exposedSkills is an
@@ -63,14 +67,19 @@ func (h *a2aTaskHandler) OnTask(ctx context.Context, task a2a.Task, emit func(a2
 
 	msg, err := h.agent.Turn(ctx, sess)
 	if err != nil {
+		// The peer gets a generic message and a reference; the
+		// detail (provider errors can name hosts, keys' prefixes,
+		// paths) stays in the log under that reference.
+		ref := a2a.ErrorRef()
 		h.logger.Warn("a2a.turn_failed",
+			slog.String("ref", ref),
 			slog.String("task_id", task.TaskID),
 			slog.String("from_agent", task.FromAgent),
 			slog.String("err", err.Error()),
 		)
 		emit(a2a.TaskUpdate{
 			Status:      a2a.TaskStatusFailed,
-			Message:     err.Error(),
+			Message:     a2a.PeerErrorMessage("turn failed", ref),
 			FailureCode: "turn_error",
 		})
 		// Same rationale as the validate path: we've emitted the
@@ -86,10 +95,14 @@ func (h *a2aTaskHandler) OnTask(ctx context.Context, task a2a.Task, emit func(a2
 	return nil
 }
 
-// validateTask enforces the two operator-facing invariants:
+// validateTask enforces the operator-facing invariants:
+//  0. With auth on, the task carries the authenticated peer.
 //  1. Non-empty prompt or a whitelisted SkillName.
 //  2. Named skills must be in the exposed allow-list.
 func (h *a2aTaskHandler) validateTask(task a2a.Task) error {
+	if h.requirePeer && task.Peer == "" {
+		return fmt.Errorf("task carries no authenticated peer")
+	}
 	if task.Prompt == "" && task.SkillName == "" {
 		return fmt.Errorf("task must set prompt or skill_name")
 	}
@@ -114,9 +127,11 @@ func (h *a2aTaskHandler) newSession(task a2a.Task) *agent.Session {
 	// Sender feeds RBAC, identity bindings and the audit trail, so it
 	// must come from the authenticated peer, never from the body's
 	// self-declared from_agent. Fall back to the label only when the
-	// server runs without auth (nothing to bind to).
+	// server runs without auth (nothing to bind to); with auth on, a
+	// task without a peer is refused by validateTask and never gets a
+	// from_agent-derived sender.
 	peer := task.Peer
-	if peer == "" {
+	if peer == "" && !h.requirePeer {
 		peer = task.FromAgent
 	}
 	sess.Sender = "a2a/" + peer

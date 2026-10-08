@@ -35,9 +35,11 @@ import (
 // return. If none of the entries verify against a trusted key, the
 // call returns an error wrapping [a2a.ErrCardBadSignature]. Unsigned
 // cards are accepted UNLESS [Config.RequireSignedCard] is set (in
-// which case the call fails with [a2a.ErrCardUnsigned]). Legacy-shape
-// cards fetched via the fallback are never verified — the legacy
-// path predates signing and cannot carry signatures.
+// which case the call fails with [a2a.ErrCardUnsigned]). The legacy
+// fallback is refused whenever a signature policy is configured
+// (trusted keys or RequireSignedCard): legacy cards cannot carry
+// signatures, so a 404 on the v1 route must not downgrade a client
+// that pins publisher keys to an unverified card.
 func (c *Client) GetAgentCard(ctx context.Context) (a2a.AgentCard, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
@@ -52,8 +54,8 @@ func (c *Client) GetAgentCard(ctx context.Context) (a2a.AgentCard, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
-		if c.cfg.RequireSignedCard {
-			return a2a.AgentCard{}, fmt.Errorf("a2a/client: peer only speaks legacy and RequireSignedCard is set; legacy cards cannot be signed")
+		if c.cardPolicyActive() {
+			return a2a.AgentCard{}, fmt.Errorf("a2a/client: peer has no v1 card and a signature policy is configured (trusted keys or RequireSignedCard); legacy cards cannot be signed")
 		}
 		legacy, err := c.FetchCard(ctx)
 		if err != nil {
@@ -72,6 +74,12 @@ func (c *Client) GetAgentCard(ctx context.Context) (a2a.AgentCard, error) {
 		return a2a.AgentCard{}, err
 	}
 	return card, nil
+}
+
+// cardPolicyActive reports whether the operator configured any card
+// signature policy, which rules out the unsignable legacy card.
+func (c *Client) cardPolicyActive() bool {
+	return c.cfg.RequireSignedCard || len(c.cfg.TrustedPublisherKeys) > 0
 }
 
 // verifyCardSignature applies the operator's trust policy to a fresh

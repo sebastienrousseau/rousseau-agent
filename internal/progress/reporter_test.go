@@ -204,14 +204,15 @@ func TestReporter_PostsNewMessagesWhenTheSinkCannotEdit(t *testing.T) {
 	h.pulse(15 * time.Second)
 	assert.Len(t, sink.sends(), 2)
 
-	h.publish(Event{Key: "k", Kind: KindError, Err: "provider blew up"})
+	h.publish(Event{Key: "k", Kind: KindError, Err: "provider blew up", Ref: "abc123"})
 	<-h.done
 
 	got := sink.sends()
 	require.Len(t, got, 3)
 	assert.False(t, got[2].Replace)
 	assert.Contains(t, got[2].Text, GlyphFailed+" failed after")
-	assert.Contains(t, got[2].Text, "provider blew up")
+	assert.Contains(t, got[2].Text, "(ref abc123)")
+	assert.NotContains(t, got[2].Text, "provider blew up")
 }
 
 func TestReporter_StaleEditHandleFallsBackToANewMessage(t *testing.T) {

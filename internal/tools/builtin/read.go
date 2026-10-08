@@ -70,7 +70,7 @@ func (t *ReadTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 	if limit <= 0 {
 		limit = defaultReadMaxBytes
 	}
-	b, err := readRegular(path, limit)
+	b, err := readRegular(t.Guard, path, limit)
 	if err != nil {
 		return "", fmt.Errorf("read: %s: %w", in.Path, err)
 	}
@@ -83,19 +83,12 @@ func (t *ReadTool) Execute(_ context.Context, raw json.RawMessage) (string, erro
 // readRegular reads at most limit bytes from a regular file, refusing
 // directories, devices and FIFOs up front and a file that grows past
 // the limit mid-read.
-func readRegular(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path) //nolint:gosec // path vetted by fsguard
+func readRegular(g *fsguard.Guard, path string, limit int64) ([]byte, error) {
+	f, info, err := openRegular(g, path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only handle
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
-	}
 	if info.Size() > limit {
 		return nil, fmt.Errorf("%d bytes, over the %d byte limit", info.Size(), limit)
 	}
@@ -107,6 +100,27 @@ func readRegular(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("grew past the %d byte limit while reading", limit)
 	}
 	return b, nil
+}
+
+// openRegular opens path (already vetted by the guard) for reading
+// without blocking on a FIFO, beneath the workspace root when one is
+// set (so a swapped symlink cannot escape it), and refuses anything
+// that is not a regular file. The caller closes the file.
+func openRegular(g *fsguard.Guard, path string) (*os.File, os.FileInfo, error) {
+	f, err := guardOrDefault(g).OpenRead(path, openFlags)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close() //nolint:errcheck // already failing
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close() //nolint:errcheck // already failing
+		return nil, nil, errors.New("not a regular file")
+	}
+	return f, info, nil
 }
 
 // Compile-time interface satisfaction check.

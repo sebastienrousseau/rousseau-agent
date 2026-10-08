@@ -97,6 +97,7 @@ func TestDispatchEvent_ImageFileBecomesAttachment(t *testing.T) {
 
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {
@@ -122,6 +123,7 @@ func TestDispatchEvent_ImageOnlyStillRoutes(t *testing.T) {
 	fs := newFileServer(t, "xoxb-y", pngHeader)
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {
@@ -142,6 +144,7 @@ func TestDispatchEvent_NonImageFileIsSkipped(t *testing.T) {
 	fs := newFileServer(t, "xoxb-y", []byte{})
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	envelope := eventEnvelope(t, "here", "application/pdf", fs)
 	ws := &fakeWS{}
@@ -161,6 +164,7 @@ func TestDispatchEvent_FileDownloadFailureIsSkipped(t *testing.T) {
 	fs.failWithErr = true
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	envelope := eventEnvelope(t, "with pic", "image/png", fs)
 	ws := &fakeWS{}
@@ -181,6 +185,7 @@ func TestDispatchEvent_OversizeFileIsDropped(t *testing.T) {
 		MediaPolicy: media.Policy{MaxImageBytes: 3},
 	}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	envelope := eventEnvelope(t, "small caps", "image/png", fs)
 	ws := &fakeWS{}
@@ -201,6 +206,7 @@ func TestDispatchEvent_FileShareSubtypeAdmitted(t *testing.T) {
 	fs := newFileServer(t, "xoxb-y", pngHeader)
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	envelope := eventEnvelope(t, "", "image/png", fs)
 	ws := &fakeWS{}
@@ -241,6 +247,7 @@ func TestDownloadFile_UsesBotToken(t *testing.T) {
 	fs := newFileServer(t, "xoxb-y", []byte("payload"))
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	body, err := c.downloadFile(context.Background(), fs.srv.URL+"/files/F1")
 	require.NoError(t, err)
@@ -253,6 +260,7 @@ func TestDownloadFile_HTTPErrorSurfaces(t *testing.T) {
 	fs.status = http.StatusUnauthorized
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	_, err = c.downloadFile(context.Background(), fs.srv.URL+"/files/F1")
 	require.Error(t, err)
@@ -273,6 +281,7 @@ func TestDispatchEvent_EnvelopeMIMELyingLogsAndDelivers(t *testing.T) {
 	fs := newFileServer(t, "xoxb-y", pngHeader)
 	c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y"}, silentLogger())
 	require.NoError(t, err)
+	trustFileServer(t, c, fs.srv)
 
 	envelope := eventEnvelope(t, "", "image/jpeg", fs)
 	ws := &fakeWS{}

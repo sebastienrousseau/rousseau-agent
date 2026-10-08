@@ -74,8 +74,25 @@ type A2AServerConfig struct {
 	// doesn't expose a network surface without operator opt-in.
 	Enabled bool `mapstructure:"enabled"`
 	// Listen is the bind address (Go net.Listen syntax). Empty
-	// defaults to :7443.
+	// defaults to 127.0.0.1:8443 (loopback only). A non-loopback bind
+	// requires TLSCertFile + TLSKeyFile, or AllowPlaintext; otherwise
+	// the A2A server refuses to start.
 	Listen string `mapstructure:"listen"`
+	// TLSCertFile and TLSKeyFile are the PEM certificate chain and
+	// private key the A2A server terminates TLS with. Set both or
+	// neither.
+	TLSCertFile string `mapstructure:"tls_cert_file"`
+	TLSKeyFile  string `mapstructure:"tls_key_file"`
+	// AllowPlaintext permits a non-loopback Listen without TLS, for a
+	// deployment where a reverse proxy on a private network terminates
+	// TLS. Bearer tokens and task content cross that hop in clear text.
+	AllowPlaintext bool `mapstructure:"allow_plaintext"`
+	// MaxInflightPerPeer caps running tasks per authenticated peer.
+	// Over the cap a new task is refused with 429 (JSON-RPC -32029).
+	// Zero uses 4.
+	MaxInflightPerPeer int `mapstructure:"max_inflight_per_peer"`
+	// MaxInflight caps running tasks across all peers. Zero uses 32.
+	MaxInflight int `mapstructure:"max_inflight"`
 	// AuthTokensFile points at a newline-separated bearer-token
 	// allowlist. Every non-empty non-comment line is one accepted
 	// token. Comments start with '#'. Empty disables auth — DO NOT
@@ -96,6 +113,18 @@ type A2AServerConfig struct {
 	// invoke via the SkillName field on a Task. Empty means no
 	// skill is exposed — the default handler receives every task.
 	ExposedSkills []string `mapstructure:"exposed_skills"`
+	// PublicURL is the externally reachable base URL peers use (e.g.
+	// https://agent.example.com). The well-known AgentCard advertises
+	// it and is JWS-signed only when it is set together with
+	// SigningKeyFile. Empty serves a card whose URL comes from the
+	// request, unsigned, so a forged Host / X-Forwarded-Host can never
+	// obtain a card signed by the operator's key.
+	PublicURL string `mapstructure:"public_url"`
+	// TrustedProxies lists reverse-proxy addresses (IP or CIDR) whose
+	// X-Forwarded-Proto / X-Forwarded-Host headers are honoured when
+	// deriving the card URL. Empty ignores those headers from every
+	// client. An unparsable entry refuses to start the A2A server.
+	TrustedProxies []string `mapstructure:"trusted_proxies"`
 }
 
 // A2AClientConfig is one outbound-peer entry.
@@ -113,7 +142,8 @@ type A2AClientConfig struct {
 	// TrustedPublisherKeys are file paths to base64-encoded Ed25519
 	// public keys the operator has authorised to sign this peer's
 	// AgentCard. When non-empty, the client verifies the card's
-	// signatures[] before treating it as authoritative.
+	// signatures[] before treating it as authoritative, and refuses
+	// to fall back to the peer's legacy (unsignable) card.
 	TrustedPublisherKeys []string `mapstructure:"trusted_publisher_keys"`
 	// RequireSignedCard, when true, causes the client to reject
 	// unsigned cards even in the "no trusted key list" case. Use
@@ -155,9 +185,10 @@ type SSOConfig struct {
 // SCIMConfig configures the SCIM 2.0 Service Provider.
 type SCIMConfig struct {
 	// Addr binds the SCIM HTTP endpoint. Empty leaves the
-	// server off. Standard IdPs expect https:// (behind a
-	// reverse-proxy that terminates TLS); the daemon serves
-	// plain HTTP.
+	// server off. Standard IdPs expect https://: set TLSCertFile
+	// + TLSKeyFile, or bind loopback behind a TLS-terminating
+	// reverse proxy. A non-loopback Addr without TLS leaves the
+	// server off unless AllowPlaintext is set.
 	Addr string `mapstructure:"addr"`
 	// BearerToken is the shared secret the IdP presents in
 	// the Authorization: Bearer header. Required when Addr is
@@ -167,6 +198,15 @@ type SCIMConfig struct {
 	// for the SCIM Meta.Location field. Optional; empty uses
 	// relative /scim/v2/... paths.
 	BaseURL string `mapstructure:"base_url"`
+	// TLSCertFile and TLSKeyFile are the PEM certificate chain and
+	// private key the SCIM endpoint terminates TLS with. Set both or
+	// neither.
+	TLSCertFile string `mapstructure:"tls_cert_file"`
+	TLSKeyFile  string `mapstructure:"tls_key_file"`
+	// AllowPlaintext permits a non-loopback Addr without TLS (a
+	// reverse proxy on a private network terminates TLS). Without it
+	// a non-loopback plaintext bind leaves the SCIM server off.
+	AllowPlaintext bool `mapstructure:"allow_plaintext"`
 }
 
 // SSOOIDCConfig is the operator-facing view of internal/auth/sso's
@@ -178,9 +218,20 @@ type SSOOIDCConfig struct {
 	// Required. The verifier fetches /.well-known/openid-configuration
 	// under this base at first VerifyToken call.
 	Issuer string `mapstructure:"issuer"`
-	// Audience is the expected `aud` claim on inbound tokens.
-	// Optional; when empty, aud is not checked. Recommended.
+	// Audience is the expected `aud` claim on inbound tokens: this
+	// daemon's client id at the IdP. Required unless
+	// AllowAnyAudience is set.
 	Audience string `mapstructure:"audience"`
+	// AllowAnyAudience skips the `aud` check. Only for an issuer that
+	// serves this daemon alone: otherwise a token the IdP issued for
+	// any of its other clients signs a user in here.
+	AllowAnyAudience bool `mapstructure:"allow_any_audience"`
+	// JWKSAllowedHosts (sso.oidc.jwks_allowed_hosts) lists extra hosts
+	// the discovery document's jwks_uri may name, for IdPs that serve
+	// signing keys from a host other than the issuer's. Empty admits
+	// the issuer's host only. jwks_uri must be https (plain http is
+	// accepted for loopback hosts only).
+	JWKSAllowedHosts []string `mapstructure:"jwks_allowed_hosts"`
 	// JWKSRefresh controls how often the verifier re-fetches the
 	// IdP's JWKS. Zero uses the shipped 15-minute default.
 	JWKSRefresh time.Duration `mapstructure:"jwks_refresh"`
@@ -212,8 +263,10 @@ type ToolsConfig struct {
 // FSConfig bounds the file tools (read, write, edit, grep). See
 // internal/tools/fsguard for the rules.
 type FSConfig struct {
-	// Root confines every file tool to this directory and below.
-	// Empty means any path not on the deny list.
+	// Root confines every file tool to this directory and below. In
+	// the daemon, empty means $XDG_DATA_HOME/rousseau/workspace; "/"
+	// is the explicit opt-out (any path not on the deny list). The
+	// interactive `rousseau chat` keeps empty as unrestricted.
 	Root string `mapstructure:"root"`
 	// Deny adds absolute paths to the built-in deny list (the
 	// daemon's own config and state, SSH / GPG / cloud credentials,
@@ -313,6 +366,7 @@ type MediaAudioConfig struct {
 //	    - name: no-secrets
 //	      command: /etc/rousseau/hooks/no-secrets.sh
 //	      timeout_seconds: 5
+//	      fail_closed: true   # deny when the hook errors or times out
 type HooksConfig struct {
 	PreToolUse  []HookConfig `mapstructure:"pre_tool_use"`
 	PostToolUse []HookConfig `mapstructure:"post_tool_use"`
@@ -328,6 +382,9 @@ type HookConfig struct {
 	Args           []string          `mapstructure:"args"`
 	Env            map[string]string `mapstructure:"env"`
 	TimeoutSeconds int               `mapstructure:"timeout_seconds"`
+	// FailClosed denies the operation when this hook errors or times
+	// out. Default false keeps the fail-open behaviour.
+	FailClosed bool `mapstructure:"fail_closed"`
 }
 
 // RouterConfig configures the multi-model routing provider (Provider =
@@ -633,9 +690,10 @@ type AuditEgressConfig struct {
 	// ChainHMACKeyFile, with Chained, adds a keyed MAC to every
 	// record (rousseau.audit.chain.mac) so an edited and re-hashed
 	// chain is detectable by a verifier holding the key. The file
-	// holds at least 32 bytes; mount it from a podman secret the
-	// agent's tools cannot read. A configured file that cannot be
-	// read stops startup.
+	// holds at least 32 bytes and must be mode 0600 or 0400 (a podman
+	// secret needs mode=0400); the file tools are denied the path. A
+	// configured file that cannot be read, or is open to group or
+	// others, stops startup.
 	ChainHMACKeyFile string `mapstructure:"chain_hmac_key_file"`
 }
 
@@ -660,6 +718,10 @@ type IMessageConfig struct {
 	// Allowlist holds iMessage handles (phone numbers or Apple ID
 	// addresses, as BlueBubbles reports them) allowed to reach the agent.
 	Allowlist []string `mapstructure:"allowlist"`
+	// AllowGroups lets the agent answer in group chats, channels and
+	// rooms. Off by default: every member reads the reply. When on,
+	// each (sender, conversation) pair gets its own session.
+	AllowGroups bool `mapstructure:"allow_groups"`
 }
 
 // EmailConfig configures the IMAP+SMTP email transport.
@@ -687,6 +749,15 @@ type EmailConfig struct {
 	// because not every MTA adds the header; the daemon logs a
 	// warning at startup when it is off.
 	RequireAuthenticationResults bool `mapstructure:"require_authentication_results"`
+	// TrustedAuthservID is the authserv-id your receiving MTA writes
+	// in Authentication-Results (e.g. "mx.example.com"). Required with
+	// require_authentication_results: headers carrying any other id
+	// are ignored, because senders can write them.
+	TrustedAuthservID string `mapstructure:"trusted_authserv_id"`
+	// InsecureTrustFrom lets an allowlist key on the unauthenticated
+	// From header. Only for test inboxes: anyone can then act as any
+	// allowlisted sender.
+	InsecureTrustFrom bool `mapstructure:"insecure_trust_from"`
 }
 
 // SlackConfig configures the Slack Socket Mode transport.
@@ -696,6 +767,10 @@ type SlackConfig struct {
 	BotUserID   string   `mapstructure:"bot_user_id"`
 	ReplyHeader string   `mapstructure:"reply_header"`
 	Allowlist   []string `mapstructure:"allowlist"`
+	// AllowGroups lets the agent answer in group chats, channels and
+	// rooms. Off by default: every member reads the reply. When on,
+	// each (sender, conversation) pair gets its own session.
+	AllowGroups bool `mapstructure:"allow_groups"`
 }
 
 // DiscordConfig configures the Discord Gateway transport.
@@ -703,6 +778,10 @@ type DiscordConfig struct {
 	Token       string   `mapstructure:"token"`
 	ReplyHeader string   `mapstructure:"reply_header"`
 	Allowlist   []string `mapstructure:"allowlist"`
+	// AllowGroups lets the agent answer in group chats, channels and
+	// rooms. Off by default: every member reads the reply. When on,
+	// each (sender, conversation) pair gets its own session.
+	AllowGroups bool `mapstructure:"allow_groups"`
 }
 
 // MatrixConfig configures the Matrix client-server transport.
@@ -712,6 +791,10 @@ type MatrixConfig struct {
 	UserID        string   `mapstructure:"user_id"`
 	ReplyHeader   string   `mapstructure:"reply_header"`
 	Allowlist     []string `mapstructure:"allowlist"`
+	// AllowGroups lets the agent answer in group chats, channels and
+	// rooms. Off by default: every member reads the reply. When on,
+	// each (sender, conversation) pair gets its own session.
+	AllowGroups bool `mapstructure:"allow_groups"`
 }
 
 // VertexConfig configures the Google Vertex AI provider (Anthropic on
@@ -747,6 +830,10 @@ type TelegramConfig struct {
 	BaseURL     string   `mapstructure:"base_url"`
 	ReplyHeader string   `mapstructure:"reply_header"`
 	Allowlist   []string `mapstructure:"allowlist"`
+	// AllowGroups lets the agent answer in group chats, channels and
+	// rooms. Off by default: every member reads the reply. When on,
+	// each (sender, conversation) pair gets its own session.
+	AllowGroups bool `mapstructure:"allow_groups"`
 }
 
 // SignalConfig configures the signal-cli transport.
@@ -766,6 +853,10 @@ type SignalConfig struct {
 	// Required when `media.audio.backend` is configured and the
 	// operator wants voice notes routed through transcription.
 	AttachmentsDir string `mapstructure:"attachments_dir"`
+	// AllowGroups lets the agent answer in group chats, channels and
+	// rooms. Off by default: every member reads the reply. When on,
+	// each (sender, conversation) pair gets its own session.
+	AllowGroups bool `mapstructure:"allow_groups"`
 }
 
 // WhatsAppConfig groups the whatsapp transport tuning knobs.
@@ -823,6 +914,12 @@ type ClaudeCLIConfig struct {
 	Bare bool `mapstructure:"bare"`
 	// ExtraArgs are appended to every invocation.
 	ExtraArgs []string `mapstructure:"extra_args"`
+	// EnvPassthrough names extra environment variables (or "NAME*"
+	// prefixes) the claude child may inherit. The child gets a scrubbed
+	// environment: the envscrub baseline, ANTHROPIC_*, CLAUDE_*, proxy
+	// and CA settings. Bedrock/Vertex through claude needs AWS_* or
+	// GOOGLE_* here.
+	EnvPassthrough []string `mapstructure:"env_passthrough"`
 	// DisablePolicyHook turns off the toolgate bridge. By default the
 	// daemon installs a PreToolUse hook so every tool claude runs goes
 	// through rousseau's approver and audit trail. Only disable it if
@@ -988,8 +1085,10 @@ type CompressionConfig struct {
 // ApproverConfig picks and configures the tool-call approval policy.
 //
 // mode:
-//   - "allow_all" (default): every tool call runs. Suitable when the
-//     provider is claudecli, which handles its own approvals.
+//   - "allow_all" (default): every tool call runs, except outbound
+//     integration tools in the daemon unless AllowOutbound is set.
+//     Suitable when the provider is claudecli, which handles its own
+//     approvals.
 //   - "deny_all": block every tool call. Useful as a smoke test or
 //     when running a read-only inspection session.
 //   - "pattern":  applies Allow / Deny regex rules; deny wins over
@@ -1000,6 +1099,16 @@ type ApproverConfig struct {
 	Default string         `mapstructure:"default"` // "allow" or "deny" for pattern mode
 	Allow   []PatternEntry `mapstructure:"allow"`
 	Deny    []PatternEntry `mapstructure:"deny"`
+	// AllowOutbound lets the allow_all mode (including the empty
+	// default) run outbound integration tools — the ones that send
+	// data to a third party or change third-party state, such as
+	// gmail_send, slack_post_message, github_create_issue and every
+	// Composio action. Off by default: under allow_all the daemon
+	// denies those tools, so a prompt-injected turn cannot read data
+	// and then send it out. Setting it true restores the pre-L-32
+	// behaviour. Ignored in the other modes, whose rules already
+	// decide which tools run.
+	AllowOutbound bool `mapstructure:"allow_outbound"`
 	// RBAC wraps the mode-selected approver with a group-based
 	// gate. Zero value leaves RBAC off — the mode-selected
 	// approver runs alone. Activates only when the licence
@@ -1090,6 +1199,12 @@ type MultiPartyRule struct {
 	// Timeout bounds how long the pending request lives. Zero
 	// uses approval.DefaultTimeout (15m).
 	Timeout time.Duration `mapstructure:"timeout"`
+	// ApproverGroups (approver_groups) restricts who may vote on this
+	// tool's requests to members of these SSO groups (exact match on
+	// the verified identity's groups). A vote from anyone else is
+	// audited and ignored, approve or deny. Empty lets any signed-in
+	// subject other than the requester vote.
+	ApproverGroups []string `mapstructure:"approver_groups"`
 }
 
 // RBACRule mirrors [rbac.Rule] but keeps mapstructure tags out
@@ -1101,9 +1216,16 @@ type RBACRule struct {
 
 // PatternEntry mirrors agent.PatternRule but decouples config from the
 // agent package so importers don't need both.
+//
+// Tool is compared exactly (case-sensitive). With Field empty, Match is
+// an unanchored regex over the canonical input JSON. With Field set,
+// Match is anchored (^(?:match)$) and tested against that top-level
+// string field of the input — the form to use for allow rules, since
+// an unanchored allow for "git status" also allows "git status; …".
 type PatternEntry struct {
 	Tool  string `mapstructure:"tool"`
 	Match string `mapstructure:"match"`
+	Field string `mapstructure:"field"`
 }
 
 // Load resolves configuration from CLI flags (via viper.BindPFlag in

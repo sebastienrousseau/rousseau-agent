@@ -10,6 +10,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/oauth2"
 )
 
 // Broker orchestrates one OAuth2 flow at a time. Concurrent flows on
@@ -33,6 +35,7 @@ type Broker struct {
 
 type inflightState struct {
 	provider string
+	verifier string // PKCE code verifier, sent on Exchange
 	created  time.Time
 }
 
@@ -76,14 +79,15 @@ func (b *Broker) Start(providerName string) (url, state string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	b.inflight[state] = inflightState{provider: providerName, created: time.Now()}
+	verifier := oauth2.GenerateVerifier()
+	b.inflight[state] = inflightState{provider: providerName, verifier: verifier, created: time.Now()}
 	// Age out any orphaned states from earlier abandoned flows.
 	for k, v := range b.inflight {
 		if time.Since(v.created) > 30*time.Minute {
 			delete(b.inflight, k)
 		}
 	}
-	return p.AuthCodeURL(state), state, nil
+	return p.AuthCodeURL(state, verifier), state, nil
 }
 
 // Complete finishes an in-flight OAuth flow: it looks up state,
@@ -105,7 +109,7 @@ func (b *Broker) Complete(ctx context.Context, state, code, accountID string) (*
 	if !ok {
 		return nil, fmt.Errorf("oauth: provider %q vanished mid-flow", inf.provider)
 	}
-	tok, err := p.Exchange(ctx, code)
+	tok, err := p.Exchange(ctx, code, inf.verifier)
 	if err != nil {
 		return nil, err
 	}

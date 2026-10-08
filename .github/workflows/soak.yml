@@ -43,14 +43,23 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # The dispatch input arrives through env and must be a Go
+      # duration before it is written anywhere (L-27): interpolating
+      # ${{ inputs.duration }} into the script let it inject shell.
       - name: Pick duration
         id: pick
+        env:
+          IN_DURATION: ${{ inputs.duration }}
+          EVENT: ${{ github.event_name }}
         run: |
-          if [ -n "${{ inputs.duration }}" ]; then
-            echo "duration=${{ inputs.duration }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ -n "$IN_DURATION" ]; then
+            [[ "$IN_DURATION" =~ ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$ ]] \
+              || { echo "::error::duration must be a Go duration such as 1h30m"; exit 1; }
+            printf 'duration=%s\n' "$IN_DURATION" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          case "${{ github.event_name }}" in
+          case "$EVENT" in
             schedule|workflow_dispatch) echo "duration=5h30m" >> "$GITHUB_OUTPUT" ;;
             push)                        echo "duration=10m" >> "$GITHUB_OUTPUT" ;;
             pull_request)                echo "duration=30m" >> "$GITHUB_OUTPUT" ;;

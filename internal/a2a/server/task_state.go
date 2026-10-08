@@ -13,7 +13,11 @@ import (
 // Bounded history keeps memory in check for long-running tasks; the
 // oldest updates roll off once the buffer is full.
 type taskState struct {
-	id     string
+	id string
+	// owner is the authenticated peer that created the task ("" when
+	// the server runs without auth). Only that peer can read, cancel
+	// or subscribe to it.
+	owner  string
 	task   a2a.Task
 	cancel func()
 

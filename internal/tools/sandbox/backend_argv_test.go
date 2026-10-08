@@ -83,6 +83,7 @@ func TestNone_EmptyEnvInheritsParent(t *testing.T) {
 }
 
 func TestGVisor_BuildsRunscDoArgv(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	bin := fakeRuntime(t, "runsc")
 	g := &sandbox.GVisor{Binary: bin} // zero Policy — no NoNetwork
 	res, err := g.Run(context.Background(), sandbox.Command{
@@ -91,11 +92,125 @@ func TestGVisor_BuildsRunscDoArgv(t *testing.T) {
 	})
 	require.NoError(t, err)
 	got := argvOf(res.CombinedOutput)
-	// --rootless is always on; --root=<tmpdir> is always on (per-
-	// invocation tmpdir); NoNetwork was zero so no --network=none.
+	// Global flags: --rootless, then --root=<state dir>; NoNetwork was
+	// zero so no --network=none.
 	assert.Equal(t, "--rootless", got[0])
-	assert.True(t, strings.HasPrefix(got[1], "--root="), "second flag should be --root=<tmpdir>")
-	assert.Equal(t, []string{"do", "--", "/bin/sh", "-c", "echo hi"}, got[2:])
+	assert.True(t, strings.HasPrefix(got[1], "--root="), "second flag should be --root=<state dir>")
+	assert.Equal(t, "do", got[2])
+	// The `do` flags: a forced overlay, a private root, cwd inside it.
+	sep := indexOf(got, "--")
+	require.Positive(t, sep)
+	doFlags := got[3:sep]
+	assert.Contains(t, doFlags, "-force-overlay=true")
+	assert.Contains(t, doFlags, "-cwd=/")
+	assert.Equal(t, []string{"--", "/bin/sh", "-c", "echo hi"}, got[sep:])
+}
+
+func indexOf(xs []string, want string) int {
+	for i, x := range xs {
+		if x == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// gvisorLayout runs a fake runsc that echoes its argv and lists the
+// rootfs directory passed via `do -root=`, so a test can assert what
+// the sandboxed process would see without a real runsc.
+func gvisorLayout(t *testing.T, pol sandbox.Policy) (argv, layout []string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX-only fixture")
+	}
+	path := filepath.Join(t.TempDir(), "runsc")
+	const script = `#!/bin/sh
+for a in "$@"; do
+  printf 'argv:%s\n' "$a"
+  case "$a" in
+    -root=*) (cd "${a#-root=}" && find . -type l | sed 's/^/link:/'; find . -type d | sed 's/^/dir:/'; find . -type f | sed 's/^/file:/') ;;
+  esac
+done
+`
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o755)) //nolint:gosec // deliberately executable test fixture
+	res, err := (&sandbox.GVisor{Binary: path, Policy: pol}).Run(context.Background(), sandbox.Command{Path: "/bin/true"})
+	require.NoError(t, err, res.CombinedOutput)
+	for _, line := range strings.Split(strings.TrimSpace(res.CombinedOutput), "\n") {
+		if !strings.HasPrefix(line, "argv:") {
+			layout = append(layout, line)
+		}
+	}
+	return argvOf(res.CombinedOutput), layout
+}
+
+func doRoot(t *testing.T, argv []string) string {
+	t.Helper()
+	for _, a := range argv {
+		if after, ok := strings.CutPrefix(a, "-root="); ok {
+			return after
+		}
+	}
+	t.Fatalf("no `do -root=` in argv %q", argv)
+	return ""
+}
+
+// M-11: `runsc do` without -root runs against the host's "/", so a
+// "sandboxed" bash could read ~/.ssh and the daemon config. The do
+// root must be a private directory holding only the mounted paths.
+func TestGVisor_DoRootIsPrivateNotHostSlash(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ws := t.TempDir()
+	argv, layout := gvisorLayout(t, sandbox.Policy{NoNetwork: true, Writable: []string{ws}})
+
+	root := doRoot(t, argv)
+	assert.NotEqual(t, "/", filepath.Clean(root), "the sandbox root must not be the host /")
+	assert.Contains(t, argv, "-volume="+ws+":"+ws, "the workspace is bind-mounted")
+	assert.Contains(t, layout, "dir:."+ws, "the workspace mount point exists in the root")
+	for _, a := range argv {
+		if src, ok := strings.CutPrefix(a, "-volume="); ok {
+			src, _, _ = strings.Cut(src, ":")
+			assert.False(t, src == "/" || strings.HasPrefix(home+"/", src+"/"),
+				"volume %q exposes $HOME", src)
+		}
+	}
+	for _, l := range layout {
+		assert.NotContains(t, l, home, "nothing under $HOME may appear in the root")
+	}
+}
+
+// A symlinked system dir (merged /usr: /bin -> usr/bin) is recreated
+// as the same link inside the root instead of being bind-mounted, so
+// the link resolves inside the sandbox.
+func TestGVisor_SymlinkedReadonlyBecomesLinkInRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	require.NoError(t, os.Mkdir(target, 0o755))
+	link := filepath.Join(dir, "link")
+	require.NoError(t, os.Symlink("real", link))
+
+	argv, layout := gvisorLayout(t, sandbox.Policy{Readonly: []string{target, link}})
+	assert.Contains(t, argv, "-volume="+target+":"+target)
+	assert.NotContains(t, argv, "-volume="+link+":"+link)
+	assert.Contains(t, layout, "link:."+link)
+}
+
+// A mount that is $HOME, an ancestor of it, or "/" would put the
+// secrets the sandbox exists to hide back inside it; Run refuses.
+func TestGVisor_RefusesMountExposingHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := fakeRuntime(t, "runsc")
+	for _, p := range []sandbox.Policy{
+		{Writable: []string{home}},
+		{Writable: []string{filepath.Dir(home)}},
+		{Readonly: []string{"/"}},
+	} {
+		_, err := (&sandbox.GVisor{Binary: bin, Policy: p}).Run(context.Background(), sandbox.Command{Path: "/bin/true"})
+		require.Error(t, err, "%+v", p)
+		assert.Contains(t, err.Error(), "HOME")
+	}
 }
 
 func TestGVisor_DefaultPolicyFiresNoNetwork(t *testing.T) {

@@ -26,15 +26,17 @@ func TestVerify_UnreadableSigPathSurfacesStatError(t *testing.T) {
 	require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o600))
 
 	v := &skills.SSHKeygenVerifier{AllowedSignersFile: allowed, Signer: "test-signer"}
-	err := v.Verify(context.Background(), filepath.Join(notADir, "nested.md"))
+	err := v.Verify(context.Background(), filepath.Join(notADir, "nested.md"), []byte("x"))
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, skills.ErrUnsigned)
 	assert.Contains(t, err.Error(), "stat sig")
 }
 
-// TestVerify_SignedBodyMissingIsAnError covers a signature left behind
-// after its skill file was deleted.
-func TestVerify_SignedBodyMissingIsAnError(t *testing.T) {
+// TestVerify_ChecksTheGivenBytesNotTheFile: the verifier checks the
+// bytes it is handed. A signature whose skill file was deleted, or
+// whose file still holds the signed bytes while different bytes were
+// loaded, does not vouch for what was loaded.
+func TestVerify_ChecksTheGivenBytesNotTheFile(t *testing.T) {
 	tmp := t.TempDir()
 	priv, pub := generateSSHKeyPair(t, tmp)
 	allowed := writeAllowedSigners(t, tmp, pub, "test-signer")
@@ -42,12 +44,15 @@ func TestVerify_SignedBodyMissingIsAnError(t *testing.T) {
 	skillDir := filepath.Join(tmp, "skills")
 	path := writeSkill(t, skillDir, "orphan", "body")
 	signBlob(t, priv, "rousseau-skills", path)
-	require.NoError(t, os.Remove(path))
 
 	v := &skills.SSHKeygenVerifier{AllowedSignersFile: allowed, Signer: "test-signer"}
-	err := v.Verify(context.Background(), path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "read ")
+	require.NoError(t, v.Verify(context.Background(), path, []byte("body")))
+	err := v.Verify(context.Background(), path, []byte("other body"))
+	assert.ErrorIs(t, err, skills.ErrBadSignature)
+
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, v.Verify(context.Background(), path, []byte("body")),
+		"the file is not re-read")
 }
 
 // TestVerify_DerivesSignerFromAllowedSignersFile exercises the
@@ -68,7 +73,7 @@ func TestVerify_DerivesSignerFromAllowedSignersFile(t *testing.T) {
 	signBlob(t, priv, "rousseau-skills", path)
 
 	v := &skills.SSHKeygenVerifier{AllowedSignersFile: allowed}
-	assert.NoError(t, v.Verify(context.Background(), path))
+	assert.NoError(t, v.Verify(context.Background(), path, readBody(t, path)))
 }
 
 // TestVerify_UnderivableSignerIsAnError covers both failure modes of the
@@ -97,7 +102,7 @@ func TestVerify_UnderivableSignerIsAnError(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			v := &skills.SSHKeygenVerifier{AllowedSignersFile: tc.signers}
-			err := v.Verify(context.Background(), path)
+			err := v.Verify(context.Background(), path, readBody(t, path))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "no signer pinned and none derivable")
 		})
@@ -121,7 +126,7 @@ func TestLoadVerified_NilLoggerStillFilters(t *testing.T) {
 
 type alwaysFailVerifier struct{}
 
-func (alwaysFailVerifier) Verify(context.Context, string) error { return skills.ErrUnsigned }
+func (alwaysFailVerifier) Verify(context.Context, string, []byte) error { return skills.ErrUnsigned }
 
 // TestFromDir_LoadErrorPropagates proves a corrupt skill file fails the
 // provider construction rather than being silently skipped.

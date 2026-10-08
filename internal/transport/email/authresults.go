@@ -20,27 +20,72 @@ func isHeaderSection(s *imap.FetchItemBodySection) bool {
 	return s != nil && s.Specifier == imap.PartSpecifierHeader
 }
 
-// authResultsPass reports whether the message carries an
-// Authentication-Results header with dkim=pass whose signing domain
-// (header.d= or header.i=) matches, or is a parent of, the From
-// address's domain. A message with no such header fails: the MTA
-// either did not authenticate it or does not add the header, and in
-// both cases the From address proves nothing.
-func authResultsPass(m *imapclient.FetchMessageBuffer, from string) bool {
+// authResultsPass reports whether the receiving MTA authenticated the
+// From domain. Only Authentication-Results headers whose authserv-id
+// is authservID (our own MTA) count, and only the topmost of them:
+// any other instance may have been written by the sender, and RFC 8601
+// only obliges an MTA to strip headers carrying its own id. The
+// trusted header passes on dmarc=pass for the From domain, or, when it
+// carries no DMARC result, on a dkim=pass whose signing domain is the
+// From domain or a parent of it. Anything else fails.
+func authResultsPass(m *imapclient.FetchMessageBuffer, from, authservID string) bool {
 	_, domain, ok := strings.Cut(from, "@")
-	if !ok || domain == "" {
+	if !ok || domain == "" || strings.TrimSpace(authservID) == "" {
 		return false
 	}
+	domain = strings.ToLower(domain)
 	for _, line := range authResultsLines(m) {
-		if dkimPassFor(line, strings.ToLower(domain)) {
-			return true
+		id, results := splitAuthservID(line)
+		if !strings.EqualFold(id, authservID) {
+			continue // not ours: possibly written by the sender
 		}
+		return resultPasses(results, domain) // the topmost trusted header decides
 	}
 	return false
 }
 
-// authResultsLines extracts every Authentication-Results value from
-// the header section(s) of the fetched message.
+// splitAuthservID returns the authserv-id of an Authentication-Results
+// value (its first token; a trailing version number is dropped) and
+// the result clauses after the first ';'.
+func splitAuthservID(line string) (string, string) {
+	head, rest, _ := strings.Cut(line, ";")
+	fields := strings.Fields(head)
+	if len(fields) == 0 {
+		return "", ""
+	}
+	return fields[0], rest
+}
+
+// resultPasses applies DMARC when the trusted header carries a DMARC
+// result for domain, and aligned DKIM otherwise.
+func resultPasses(results, domain string) bool {
+	if verdict, ok := dmarcResult(results, domain); ok {
+		return verdict == "pass"
+	}
+	return dkimPassFor(results, domain)
+}
+
+// dmarcResult finds the dmarc=<verdict> clause whose header.from is
+// domain and returns the verdict.
+func dmarcResult(results, domain string) (string, bool) {
+	for _, clause := range strings.Split(results, ";") {
+		fields := strings.Fields(clause)
+		if len(fields) == 0 {
+			continue
+		}
+		method, verdict, _ := strings.Cut(strings.ToLower(fields[0]), "=")
+		if method != "dmarc" {
+			continue
+		}
+		for _, p := range fields[1:] {
+			if key, val, ok := strings.Cut(p, "="); ok && strings.EqualFold(key, "header.from") && strings.EqualFold(val, domain) {
+				return verdict, true
+			}
+		}
+	}
+	return "", false
+}
+
 func authResultsLines(m *imapclient.FetchMessageBuffer) []string {
 	if m == nil {
 		return nil

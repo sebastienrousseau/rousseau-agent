@@ -41,6 +41,46 @@ func TestRequireSandboxPolicy(t *testing.T) {
 	}
 }
 
+// M-11: gvisor counts as a sandbox only while it confines the
+// filesystem. A mount that is $HOME, an ancestor of it, or "/" puts
+// ~/.ssh and the daemon config back in reach of bash, so the daemon
+// refuses to start; allow_unsandboxed (an opt-in for kind none) does
+// not cover a sandbox configured to expose the host.
+func TestRequireSandboxPolicy_GVisorMustConfineFilesystem(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ws := filepath.Join(home, ".local", "share", "rousseau", "workspace")
+	gv := func(sb config.BashSandboxConfig) config.BashConfig {
+		sb.Kind = "gvisor"
+		return config.BashConfig{Sandbox: sb}
+	}
+	cases := []struct {
+		name    string
+		cfg     config.BashConfig
+		wantErr bool
+	}{
+		{"default mounts", gv(config.BashSandboxConfig{}), false},
+		{"workspace under home", gv(config.BashSandboxConfig{Writable: []string{ws}}), false},
+		{"writable home", gv(config.BashSandboxConfig{Writable: []string{home}}), true},
+		{"readonly parent of home", gv(config.BashSandboxConfig{Readonly: []string{filepath.Dir(home)}}), true},
+		{"readonly slash", gv(config.BashSandboxConfig{Readonly: []string{"/"}}), true},
+		{"opt-in does not cover exposure", gv(config.BashSandboxConfig{Writable: []string{home}, AllowUnsandboxed: true}), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireSandboxPolicy(tc.cfg, "slack")
+			if !tc.wantErr {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "slack")
+			assert.Contains(t, err.Error(), "gvisor")
+			assert.Contains(t, err.Error(), "HOME")
+		})
+	}
+}
+
 // The daemon refuses to assemble with an unsandboxed bash tool and no
 // opt-in; this is the regression guard for the default-deny posture.
 func TestAssembleDaemon_RefusesUnsandboxedBashWithoutOptIn(t *testing.T) {
@@ -52,7 +92,7 @@ func TestAssembleDaemon_RefusesUnsandboxedBashWithoutOptIn(t *testing.T) {
 }
 
 func TestBuildFSGuard_RejectsRelativeRoot(t *testing.T) {
-	_, err := buildFSGuard(config.FSConfig{Root: "relative"})
+	_, err := buildFSGuard(config.FSConfig{Root: "relative"}, config.AuditEgressConfig{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tools.fs")
 }
@@ -65,7 +105,7 @@ func TestRegisterFileTools_ShareOneGuard(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	root := t.TempDir()
-	g, err := buildFSGuard(config.FSConfig{Root: root})
+	g, err := buildFSGuard(config.FSConfig{Root: root}, config.AuditEgressConfig{})
 	require.NoError(t, err)
 
 	reg := tools.NewRegistry()

@@ -19,6 +19,12 @@ permissions:
 jobs:
   dco-check:
     name: dco sign-off
+    # Dependabot PRs are exempt: there is no human contributor to
+    # attest. The exemption keys on the PR opener's login, which GitHub
+    # sets from the authenticated account. It used to key on each
+    # commit's author NAME, which anyone can set to "dependabot[bot]"
+    # with `git config user.name` (L-26).
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -43,16 +49,12 @@ jobs:
           # `awk` filter below, the while-loop reads those blank
           # lines as commits with empty SHA + empty trailer and
           # every real commit gets flagged as missing.
-          # Bot-authored commits are exempt from DCO: dependabot and
-          # github-actions have no human contributor to attest, and
-          # both are already GPG-signed by GitHub's own identity. This
-          # matches the pattern most CNCF/LF projects use (e.g.
-          # kubernetes/kubernetes exempts dependabot from DCO).
           #
           # Format ordering matters: `%an` MUST come before
           # `%(trailers:...)` — the trailer field appends its own
           # newline, so any format field placed AFTER it appears on
           # a subsequent line and the read-loop assigns it wrong.
+          # %an is only reported; no commit is exempt by author name.
           #
           # `--no-merges` skips merge commits. Those are created by
           # `gh pr update-branch` or `git merge` when a PR is refreshed
@@ -60,13 +62,9 @@ jobs:
           # (not the contributor), and by convention aren't
           # DCO-attested (the substantive DCO lives on the merged
           # commits themselves).
-          bot_authors="^(dependabot\[bot\]|dependabot-preview\[bot\]|github-actions\[bot\])$"
           while IFS=$'\t' read -r sha author trailers; do
               if [ -z "$sha" ]; then
                   continue # skip blank lines between records
-              fi
-              if [[ "$author" =~ $bot_authors ]]; then
-                  continue # bot commit — exempt
               fi
               if [ -z "$trailers" ]; then
                   echo "::error::commit $sha (author: $author) is missing a Signed-off-by trailer"

@@ -231,8 +231,8 @@ type searchableRecall struct {
 }
 
 // Search satisfies [agent.RecallSearcher].
-func (r *searchableRecall) Search(ctx context.Context, query string, limit int) ([]agent.SearchHit, error) {
-	hits, err := r.store.Search(ctx, query, sqlitestore.SearchOptions{Limit: limit})
+func (r *searchableRecall) Search(ctx context.Context, sender, query string, limit int) ([]agent.SearchHit, error) {
+	hits, err := r.store.SearchScoped(ctx, sender, query, sqlitestore.SearchOptions{Limit: limit})
 	if err != nil {
 		return nil, err
 	}

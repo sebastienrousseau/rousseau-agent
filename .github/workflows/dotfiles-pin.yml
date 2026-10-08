@@ -1,0 +1,73 @@
+# Monthly bump of the dotfiles pin in docker/Dockerfile.builder (H-4).
+#
+# The dev image applies the maintainer's dotfiles from one commit,
+# `ARG DOTFILES_REF=<sha>`. Dependabot cannot update a SHA held in an
+# ARG, so this job resolves the dotfiles repository's main branch and,
+# when it moved, opens a PR that changes only that line. The PR body
+# links the upstream compare view: review that diff before merging,
+# because whatever it contains runs in the next builder image.
+#
+# The release daemon image carries no dotfiles at all; this workflow
+# never touches docker/Dockerfile.
+#
+# Note: a PR opened with GITHUB_TOKEN does not trigger other workflows.
+# Close and reopen it (or push to it) to run CI before merging.
+
+name: dotfiles pin
+
+on:
+  schedule:
+    - cron: "0 6 1 * *" # 06:00 UTC on the 1st of each month
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.repository == 'sebastienrousseau/rousseau-agent'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Resolve the new pin
+        id: bump
+        run: |
+          set -euo pipefail
+          read -r old new < <(scripts/dotfiles-pin.sh bump)
+          scripts/dotfiles-pin.sh check --fetch
+          {
+            printf 'old=%s\n' "$old"
+            printf 'new=%s\n' "$new"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open a PR
+        if: steps.bump.outputs.old != steps.bump.outputs.new
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD: ${{ steps.bump.outputs.old }}
+          NEW: ${{ steps.bump.outputs.new }}
+        run: |
+          set -euo pipefail
+          branch="chore/dotfiles-pin-${NEW:0:12}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            printf 'branch %s already exists; nothing to do\n' "$branch"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add docker/Dockerfile.builder
+          git commit -s -m "chore(docker): bump dotfiles pin to ${NEW:0:12}"
+          git push origin "$branch"
+          body="$(printf 'Bumps DOTFILES_REF in docker/Dockerfile.builder\nfrom %s to %s.\n\nReview the upstream diff before merging; it runs in the next agent-builder image:\nhttps://github.com/sebastienrousseau/dotfiles/compare/%s...%s\n' "$OLD" "$NEW" "$OLD" "$NEW")"
+          gh pr create --base main --head "$branch" \
+            --title "chore(docker): bump dotfiles pin to ${NEW:0:12}" \
+            --body "$body"

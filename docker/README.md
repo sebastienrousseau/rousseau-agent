@@ -143,6 +143,14 @@ ambiguous senders).
 
 ### Git identity
 
+The image applies no dotfiles. Its git defaults (SSH commit and tag
+signing with `~/.ssh/id_ed25519`, `merge.verifySignatures`, object
+fsck on fetch) come from
+[`rootfs/home/rousseau/.gitconfig`](rootfs/home/rousseau/.gitconfig),
+reviewed in this repository. Only the `agent-builder` dev image applies
+the maintainer's dotfiles, from the commit pinned in
+`Dockerfile.builder` (`DOTFILES_REF`).
+
 The image carries no git identity, so the agent cannot commit until you
 give it one. Set it at runtime with a Quadlet drop-in (it survives image
 rebuilds), e.g. `~/.config/containers/systemd/rousseau-agent.container.d/30-git-identity.conf`:
@@ -230,11 +238,18 @@ Every image tag published to `ghcr.io/sebastienrousseau/rousseau-agent`
 is signed with cosign under GitHub OIDC. Verify before pulling:
 
 ```bash
+VERSION=v0.0.13   # the tag you are pulling
 cosign verify \
-  --certificate-identity-regexp 'https://github\.com/sebastienrousseau/rousseau-agent/\.github/workflows/.+' \
+  --certificate-identity "https://github.com/sebastienrousseau/rousseau-agent/.github/workflows/container-release.yml@refs/tags/${VERSION}" \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  ghcr.io/sebastienrousseau/rousseau-agent:distroless
+  "ghcr.io/sebastienrousseau/rousseau-agent:distroless-${VERSION}"
 ```
+
+The identity is exact: the daemon images are signed only by
+`container-release.yml` running for that tag. The `base-` and
+`builder-` images are signed by `agent-images.yml` (identity
+`…/.github/workflows/agent-images.yml@refs/tags/${VERSION}` for a tag,
+`…@refs/heads/main` for the weekly `edge` rebuild).
 
 * * *
 

@@ -142,6 +142,7 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 				At:           in.Event.Info.Timestamp,
 				Conversation: in.Event.Info.Chat.String(),
 				MessageID:    in.Event.Info.ID,
+				IsDirect:     true, // ResolveInbound skips groups
 			},
 			Chat: in.Event.Info.Chat,
 		}
@@ -175,6 +176,7 @@ func Dispatch(ctx context.Context, in DispatchInput) {
 				At:           in.Event.Info.Timestamp,
 				Conversation: in.Event.Info.Chat.String(),
 				MessageID:    in.Event.Info.ID,
+				IsDirect:     true, // ResolveInbound skips groups
 				Attachments:  []transport.Attachment{*att},
 			},
 			Chat: in.Event.Info.Chat,

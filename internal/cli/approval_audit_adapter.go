@@ -39,6 +39,8 @@ func (a *approvalAuditAdapter) EmitApprovalRequest(ctx context.Context, rec appr
 			"needed_approvals": rec.NeededCount,
 			"expires_at":       rec.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			"session_id":       rec.SessionID,
+			"input_sha256":     rec.InputSHA256,
+			"input_summary":    rec.InputSummary,
 		},
 	})
 }

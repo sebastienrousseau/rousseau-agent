@@ -120,7 +120,7 @@ func (p *Provider) buildStreamArgs(req agent.Request) []string {
 // startStream launches claude and wires stdout/stderr. Extracted to
 // let the recover path re-spawn identically after a rotate.
 func (p *Provider) startStream(ctx context.Context, args []string, input string) (*exec.Cmd, io.Reader, *bytes.Buffer, error) {
-	cmd := exec.CommandContext(ctx, p.cfg.Binary, args...)
+	cmd := p.command(ctx, args)
 	cmd.Stdin = strings.NewReader(input) // see promptText
 	setGracefulCancel(cmd)
 	stdout, err := cmd.StdoutPipe()

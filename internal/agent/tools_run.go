@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,6 +116,14 @@ func (a *Agent) runOneTool(ctx context.Context, use *ToolUse, sessionID string) 
 		return errorResult(use, fmt.Sprintf("%s: %s is not an available tool; use one of %s",
 			ErrToolNotFound, use.Name, strings.Join(a.registry.Names(), ", ")))
 	}
+	// One canonical byte form for the approver, the hooks and the
+	// tool: a policy cannot be dodged with a JSON escape or a repeated
+	// key that the tool would decode differently from the matcher.
+	canonical, err := CanonicalInput(use.Input)
+	if err != nil {
+		return a.denyTool(ctx, use, sessionID, ErrNonCanonicalInput.Error(), "invalid_input", "invalid_input", "tool.invalid_input", "tool call blocked: ")
+	}
+	use.Input = canonical
 	if decision, reason := a.opts.Approver.Approve(ctx, ApprovalRequest{
 		ToolName:  use.Name,
 		Input:     use.Input,
@@ -141,8 +152,9 @@ func (a *Agent) denyTool(ctx context.Context, use *ToolUse, sessionID, reason, m
 
 // preToolHook fires the PreToolUse hook AFTER the Approver so
 // operators can layer policy-as-code on top of the pattern-based
-// allow list. A deny returns (result, true); a modify rewrites
-// use.Input in place; hook failures fail open.
+// allow list. A deny returns (result, true); a modify is canonicalised
+// and approved again before it replaces use.Input (see
+// applyHookModify); hook failures follow each hook's fail_closed.
 func (a *Agent) preToolHook(ctx context.Context, use *ToolUse, sessionID string) (Content, bool) {
 	if a.opts.Hooks == nil {
 		return Content{}, false
@@ -166,16 +178,66 @@ func (a *Agent) preToolHook(ctx context.Context, use *ToolUse, sessionID string)
 		}
 		return a.denyTool(ctx, use, sessionID, reason, "hook_deny", "hook_denied", "tool.hook_denied", "tool call blocked by hook: "), true
 	case hooks.DecisionModify:
-		// A hook that wants to rewrite the input surfaces the new
-		// input on `modified`; validate it parses as JSON, otherwise
-		// leave the original untouched.
-		var probe map[string]any
-		if len(verdict.Modified) > 0 && json.Unmarshal(verdict.Modified, &probe) == nil {
-			use.Input = verdict.Modified
-			a.logger.Info("tool.hook_modified", slog.String("name", use.Name))
-		}
+		return a.applyHookModify(ctx, use, sessionID, verdict.Modified)
 	}
 	return Content{}, false
+}
+
+// applyHookModify replaces use.Input with a hook's modified input only
+// after the Approver has approved that input too: the first approval
+// covered the original, not what the hook wrote. The modified input
+// is canonicalised first (same form as runOneTool gives the
+// approver); one that is not valid JSON or repeats a key is denied,
+// since the hook did not accept the original either. A modify that
+// canonicalises to the already-approved input needs no second look.
+func (a *Agent) applyHookModify(ctx context.Context, use *ToolUse, sessionID string, modified json.RawMessage) (Content, bool) {
+	if len(modified) == 0 {
+		return Content{}, false
+	}
+	canonical, err := CanonicalInput(modified)
+	if err != nil {
+		return a.denyTool(ctx, use, sessionID, "modified input is not valid JSON or repeats a key",
+			"hook_deny", "hook_denied", "tool.hook_denied", "tool call blocked by hook: "), true
+	}
+	if bytes.Equal(canonical, use.Input) {
+		return Content{}, false
+	}
+	original, rewritten := sha256Hex(use.Input), sha256Hex(canonical)
+	if decision, reason := a.opts.Approver.Approve(ctx, ApprovalRequest{
+		ToolName:  use.Name,
+		Input:     canonical,
+		SessionID: sessionID,
+	}); decision == DecisionDeny {
+		return a.denyModified(ctx, use, sessionID, reason, map[string]any{
+			"input_sha256_original": original,
+			"input_sha256_modified": rewritten,
+		}), true
+	}
+	use.Input = canonical
+	a.logger.Info("tool.hook_modified", slog.String("name", use.Name),
+		slog.String("input_sha256_original", original),
+		slog.String("input_sha256_modified", rewritten))
+	return Content{}, false
+}
+
+// denyModified records the Approver's denial of hook-modified input,
+// with the digests of both inputs on the audit record.
+func (a *Agent) denyModified(ctx context.Context, use *ToolUse, sessionID, reason string, detail map[string]any) Content {
+	if reason == "" {
+		reason = "denied by policy"
+	}
+	observability.ToolCalls.WithLabelValues(use.Name, "deny").Inc()
+	a.logger.Warn("tool.denied", slog.String("name", use.Name), slog.String("reason", reason), slog.String("stage", "hook_modified"))
+	a.emitEvent(ctx, progress.Event{Kind: progress.KindToolDenied, Tool: use.Name, Err: reason})
+	detail["reason"] = reason
+	detail["stage"] = "hook_modified"
+	a.emitToolAudit(ctx, "deny", use.Name, "denied", sessionID, detail)
+	return errorResult(use, "tool call blocked: "+reason)
+}
+
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // executeTool runs an approved call under its own span and reports
@@ -207,9 +269,12 @@ func (a *Agent) executeTool(ctx context.Context, tool tools.Tool, use *ToolUse, 
 	auditDetail := map[string]any{"elapsed_ms": time.Since(toolStart).Milliseconds()}
 	if err != nil {
 		result.IsError = true
-		result.Output = err.Error()
-		done.Err = err.Error()
-		a.logger.Warn("tool.error", slog.String("name", use.Name), slog.String("err", err.Error()))
+		result.Output = a.boundOutput(err.Error())
+		// done reaches chat via the explain trail; the error stays in
+		// the log under the same ref.
+		done.Ref = progress.NewRef()
+		done.Err = progress.FailureText(done.Ref)
+		a.logger.Warn("tool.error", slog.String("name", use.Name), slog.String("ref", done.Ref), slog.String("err", err.Error()))
 		auditResult = "error"
 		auditDetail["error"] = err.Error()
 	}

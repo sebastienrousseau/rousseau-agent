@@ -196,11 +196,13 @@ func TestBuildA2AServer_HappyPath_SignedCard(t *testing.T) {
 			Enabled:        true,
 			AuthTokensFile: tokens,
 			SigningKeyFile: keyPath,
+			PublicURL:      "https://signed-peer.example",
 			AgentName:      "signed-peer",
 		},
 	}, fakeAgent{}.agent(), a2aSilentLogger())
 	require.NotNil(t, rt)
 	assert.True(t, rt.Signed)
+	assert.Equal(t, "https://signed-peer.example", rt.Server.PublicURL)
 	// Sanity: served card verifies against our pub.
 	card := a2a.UpgradeCard(rt.Server.Card)
 	signed, err := a2a.SignAgentCard(card, rt.Server.SigningKey)

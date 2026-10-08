@@ -27,6 +27,9 @@ jobs:
       # Providers and stores must stay independent of the agent loop
       # (import internal/model, not internal/agent).
       - run: scripts/depcheck.sh
+      # install.sh failure paths (missing signature, wrong signer,
+      # bad checksum) against a stubbed, offline release.
+      - run: scripts/install_test.sh
 
   lint:
     name: lint

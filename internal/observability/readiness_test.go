@@ -59,14 +59,16 @@ func TestMetricsServer_ReadyzFollowsRegisteredCheck(t *testing.T) {
 
 	code, body := get("/readyz")
 	assert.Equal(t, http.StatusServiceUnavailable, code)
-	assert.Contains(t, body, "no transport")
+	assert.Contains(t, body, "not ready")
+	assert.NotContains(t, body, "no transport")
 	code, _ = get("/healthz")
 	assert.Equal(t, http.StatusOK, code, "liveness is independent of readiness")
 
 	SetReadinessCheck(func() error { return errors.New("whatsapp transport is not connected") })
 	code, body = get("/readyz")
 	assert.Equal(t, http.StatusServiceUnavailable, code)
-	assert.Contains(t, body, "not connected")
+	assert.Contains(t, body, "not ready")
+	assert.NotContains(t, body, "not connected", "readiness detail stays in the logs, not on the unauthenticated probe")
 
 	SetReadinessCheck(func() error { return nil })
 	code, body = get("/readyz")

@@ -1,7 +1,7 @@
 .PHONY: help setup build install test test-race lint vet vuln check clean tidy fmt bench fuzz \
         image image-base image-builder image-daemon image-distroless image-lite \
         images quadlet-install quadlet-status deploy container-check cover cover-html cover-gate \
-        complexity complexity-baseline
+        complexity complexity-baseline install-test
 
 BIN         := bin/rousseau
 PKG         := ./...
@@ -71,7 +71,10 @@ complexity-baseline: ## Regenerate .complexity-baseline.txt after shrinking an o
 depcheck: ## Providers and stores must not depend on internal/agent
 	@bash scripts/depcheck.sh
 
-check: vet depcheck lint complexity test-race vuln ## Full quality gate
+install-test: ## Offline tests for scripts/install.sh (signature failure paths)
+	@bash scripts/install_test.sh
+
+check: vet depcheck install-test lint complexity test-race vuln ## Full quality gate
 
 build: ## Build the binary
 	@mkdir -p bin

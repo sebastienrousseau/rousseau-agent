@@ -1,3 +1,4 @@
+{{- $config := include "rousseau-agent.config" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,6 +40,10 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           args:
             - {{ .Values.command | quote }}
+            {{- if $config }}
+            - "--config"
+            - "/etc/rousseau/config.yaml"
+            {{- end }}
             {{- range .Values.extraArgs }}
             - {{ . | quote }}
             {{- end }}
@@ -97,9 +102,12 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.config }}
+            {{- if $config }}
+            # subPath: mounting the whole ConfigMap at /etc/rousseau
+            # would hide the full image's /etc/rousseau/skills.
             - name: config
-              mountPath: /etc/rousseau
+              mountPath: /etc/rousseau/config.yaml
+              subPath: config.yaml
               readOnly: true
             {{- end }}
             {{- if .Values.persistence.enabled }}
@@ -111,7 +119,7 @@ spec:
             - name: tmp
               mountPath: /tmp
       volumes:
-        {{- if .Values.config }}
+        {{- if $config }}
         - name: config
           configMap:
             name: {{ include "rousseau-agent.fullname" . }}-config

@@ -13,7 +13,7 @@ import (
 // neither used to be accepted and bound for 24 hours.
 func TestOIDC_RejectsTokensMissingExpOrIss(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	noExp := s.signToken(t, map[string]any{"iss": s.url, "sub": "u1"})
@@ -31,7 +31,7 @@ func TestOIDC_RejectsTokensMissingExpOrIss(t *testing.T) {
 // /login spam cannot turn every attempt into an IdP round-trip.
 func TestOIDC_UnknownKidRefreshIsRateLimited(t *testing.T) {
 	s := newOIDCTestServer(t)
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, JWKSRefresh: time.Hour}, silentLogger())
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: s.url, JWKSRefresh: time.Hour, AllowAnyAudience: true}, silentLogger())
 	require.NoError(t, err)
 
 	claims := map[string]any{"iss": s.url, "sub": "u1", "exp": time.Now().Add(time.Hour).Unix()}

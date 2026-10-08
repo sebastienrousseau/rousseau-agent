@@ -19,7 +19,7 @@ Configured via `tools.bash.sandbox` in `config.yaml`. Default is
 |---|---|---:|---|---|
 | `none` | direct exec | 0ms | — | shipped |
 | `nsjail` | kernel namespaces | ~5ms | `nsjail` binary | scaffolded, wiring TODO |
-| `gvisor` | user-space syscall interception | ~15ms | `runsc` binary (release-20240226+) | scaffolded, mount TODO |
+| `gvisor` | user-space syscall interception, private root + memory overlay | ~15ms | `runsc` binary (release-20250611.0+) | wired; smoke test runs only where runsc is installed |
 | `firecracker` | microVM per invocation | ~200ms (pooled) | firecracker binary + rootfs image | scaffold-only |
 
 ## Threat model per backend

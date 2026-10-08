@@ -16,8 +16,11 @@ package server
 // binding's :subscribe route emits.
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -29,12 +32,12 @@ import (
 func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4<<20))
 	if err != nil {
-		writeJSONRPCErr(w, nil, a2a.JSONRPCErrParseError, "read body: "+err.Error())
+		writeJSONRPCErr(w, nil, a2a.JSONRPCErrParseError, s.peerError("read body", err))
 		return
 	}
 	var req a2a.JSONRPCRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeJSONRPCErr(w, nil, a2a.JSONRPCErrParseError, "parse envelope: "+err.Error())
+		writeJSONRPCErr(w, nil, a2a.JSONRPCErrParseError, s.peerError("parse envelope", err))
 		return
 	}
 	if err := req.Validate(); err != nil {
@@ -44,11 +47,11 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case a2a.MethodSendMessage:
-		s.handleJSONRPCSendMessage(w, req)
+		s.handleJSONRPCSendMessage(r.Context(), w, req)
 	case a2a.MethodGetTask:
-		s.handleJSONRPCGetTask(w, req)
+		s.handleJSONRPCGetTask(r.Context(), w, req)
 	case a2a.MethodCancelTask:
-		s.handleJSONRPCCancelTask(w, req)
+		s.handleJSONRPCCancelTask(r.Context(), w, req)
 	case a2a.MethodSendStreamingMessage, a2a.MethodSubscribeToTask:
 		// Streaming methods share the SSE mechanics of the REST
 		// binding's :subscribe route but wrap their frames in the
@@ -64,10 +67,10 @@ func (s *Server) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 
 // handleJSONRPCSendMessage dispatches a JSON-RPC SendMessage call to
 // the same task-spawning path the REST /message:send route uses.
-func (s *Server) handleJSONRPCSendMessage(w http.ResponseWriter, req a2a.JSONRPCRequest) {
+func (s *Server) handleJSONRPCSendMessage(ctx context.Context, w http.ResponseWriter, req a2a.JSONRPCRequest) {
 	var msg a2a.Message
 	if err := json.Unmarshal(req.Params, &msg); err != nil {
-		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, "params must be a Message: "+err.Error())
+		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, s.peerError("params must be a Message", err))
 		return
 	}
 	prompt := a2a.PromptFromMessage(msg)
@@ -83,7 +86,11 @@ func (s *Server) handleJSONRPCSendMessage(w http.ResponseWriter, req a2a.JSONRPC
 	if legacyTask.TaskID == "" {
 		legacyTask.TaskID = newTaskID()
 	}
-	state := s.spawnTask(legacyTask)
+	state, err := s.spawnTask(ctx, legacyTask)
+	if err != nil {
+		writeJSONRPCErr(w, req.ID, spawnErrCode(err), s.spawnErrText(err))
+		return
+	}
 
 	writeJSONRPCResult(w, req.ID, a2a.SpecTask{
 		ID:        state.id,
@@ -95,23 +102,37 @@ func (s *Server) handleJSONRPCSendMessage(w http.ResponseWriter, req a2a.JSONRPC
 	})
 }
 
+// spawnErrCode maps a spawnTask error to its JSON-RPC error code. A
+// reused task id is an invalid parameter; a full in-flight cap is
+// -32029 (rate limited).
+func spawnErrCode(err error) int {
+	switch {
+	case errors.Is(err, errTaskExists):
+		return a2a.JSONRPCErrInvalidParams
+	case errors.Is(err, errTooManyTasks):
+		return a2a.JSONRPCErrRateLimited
+	default:
+		return a2a.JSONRPCErrInternal
+	}
+}
+
 // jsonrpcTaskIDParams is the shape both GetTask and CancelTask expect.
 type jsonrpcTaskIDParams struct {
 	ID string `json:"id"`
 }
 
 // handleJSONRPCGetTask returns a snapshot of the referenced task.
-func (s *Server) handleJSONRPCGetTask(w http.ResponseWriter, req a2a.JSONRPCRequest) {
+func (s *Server) handleJSONRPCGetTask(ctx context.Context, w http.ResponseWriter, req a2a.JSONRPCRequest) {
 	var params jsonrpcTaskIDParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, "params.id required: "+err.Error())
+		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, s.peerError("params.id required", err))
 		return
 	}
 	if params.ID == "" {
 		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, "params.id required")
 		return
 	}
-	state := s.lookup(params.ID)
+	state := s.lookupFor(ctx, params.ID)
 	if state == nil {
 		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrTaskNotFound, "no such task: "+params.ID)
 		return
@@ -128,17 +149,17 @@ func (s *Server) handleJSONRPCGetTask(w http.ResponseWriter, req a2a.JSONRPCRequ
 }
 
 // handleJSONRPCCancelTask cancels the referenced task.
-func (s *Server) handleJSONRPCCancelTask(w http.ResponseWriter, req a2a.JSONRPCRequest) {
+func (s *Server) handleJSONRPCCancelTask(ctx context.Context, w http.ResponseWriter, req a2a.JSONRPCRequest) {
 	var params jsonrpcTaskIDParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, "params.id required: "+err.Error())
+		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, s.peerError("params.id required", err))
 		return
 	}
 	if params.ID == "" {
 		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrInvalidParams, "params.id required")
 		return
 	}
-	state := s.lookup(params.ID)
+	state := s.lookupFor(ctx, params.ID)
 	if state == nil {
 		writeJSONRPCErr(w, req.ID, a2a.JSONRPCErrTaskNotFound, "no such task: "+params.ID)
 		return
@@ -159,7 +180,9 @@ func (s *Server) handleJSONRPCCancelTask(w http.ResponseWriter, req a2a.JSONRPCR
 func writeJSONRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 	resp, err := a2a.NewResultResponse(id, result)
 	if err != nil {
-		writeJSONRPCErr(w, id, a2a.JSONRPCErrInternal, "marshal result: "+err.Error())
+		ref := a2a.ErrorRef()
+		slog.Default().Warn("a2a.peer_error: marshal result", slog.String("ref", ref), slog.String("err", err.Error()))
+		writeJSONRPCErr(w, id, a2a.JSONRPCErrInternal, a2a.PeerErrorMessage("internal error", ref))
 		return
 	}
 	writeJSONRPCEnvelope(w, http.StatusOK, resp)

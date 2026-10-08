@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/agent"
@@ -37,6 +36,11 @@ type vectorRecall struct {
 	// keeping the seam identical avoids surprise when swapping
 	// backends).
 	SkipSessionID func(*agent.Session) string
+	// OwnerOf returns the sender of a session. Hits from sessions not
+	// owned by the current session's sender are dropped; with no
+	// lookup set, recall returns nothing (fail closed), so this
+	// backend can never be wired without sender scoping.
+	OwnerOf func(ctx context.Context, sessionID string) (string, error)
 	// TitleForHit lets the caller format the title heading in the
 	// composed appendix. Nil falls back to "session <sessionID>".
 	TitleForHit func(recall.Hit) string
@@ -63,6 +67,19 @@ func (v *vectorRecall) SystemAppendix(ctx context.Context, s *agent.Session) str
 	if err != nil || len(hits) == 0 {
 		return ""
 	}
+	kept := v.ownHits(ctx, s, hits)
+	if len(kept) == 0 {
+		return ""
+	}
+	return composeVectorRecall(kept, v.TitleForHit)
+}
+
+// ownHits keeps the hits from sessions the current sender owns,
+// minus the current session itself.
+func (v *vectorRecall) ownHits(ctx context.Context, s *agent.Session, hits []recall.Hit) []recall.Hit {
+	if v.OwnerOf == nil {
+		return nil
+	}
 	skip := ""
 	if v.SkipSessionID != nil {
 		skip = v.SkipSessionID(s)
@@ -72,12 +89,11 @@ func (v *vectorRecall) SystemAppendix(ctx context.Context, s *agent.Session) str
 		if h.SessionID == skip {
 			continue
 		}
-		kept = append(kept, h)
+		if owner, err := v.OwnerOf(ctx, h.SessionID); err == nil && owner == s.Sender {
+			kept = append(kept, h)
+		}
 	}
-	if len(kept) == 0 {
-		return ""
-	}
-	return composeVectorRecall(kept, v.TitleForHit)
+	return kept
 }
 
 // lastUserText returns the newest user-role text block from s, if
@@ -109,8 +125,7 @@ func lastUserText(s *agent.Session) (string, bool) {
 }
 
 func composeVectorRecall(hits []recall.Hit, titleFor func(recall.Hit) string) string {
-	var b strings.Builder
-	b.WriteString("\n\n# Related prior sessions\n\n")
+	out := make([]agent.SearchHit, 0, len(hits))
 	for _, h := range hits {
 		title := ""
 		if titleFor != nil {
@@ -119,7 +134,7 @@ func composeVectorRecall(hits []recall.Hit, titleFor func(recall.Hit) string) st
 		if title == "" {
 			title = "session " + h.SessionID
 		}
-		fmt.Fprintf(&b, "## %s\n\n%s\n\n", title, h.Text)
+		out = append(out, agent.SearchHit{SessionID: h.SessionID, Title: title, Snippet: h.Text})
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return agent.FormatRecall(out)
 }

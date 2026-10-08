@@ -125,7 +125,9 @@ type SyncPeeker interface {
 func (s *Supervisor) Wrap(next Handler) Handler {
 	peeker, _ := next.(SyncPeeker)
 	return HandlerFunc(func(ctx context.Context, msg IncomingMessage) (string, error) {
-		key := msg.From
+		// Keyed by conversation so a group message never steers into
+		// the sender's running DM turn, or the other way round.
+		key := ConversationKey(msg)
 		d := control.Decide(msg.Body)
 		if d.IsControl() {
 			s.logger.Info("transport.control",

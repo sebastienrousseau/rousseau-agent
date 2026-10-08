@@ -22,6 +22,8 @@ package observability
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -252,10 +254,14 @@ func StartMetricsServer(ctx context.Context, addr string, logger *slog.Logger) e
 	// can actually do work (transport connected). A daemon whose
 	// bridge has been dead for days must not pass readiness just
 	// because its process is alive.
+	// The probe is unauthenticated, so the reason goes to the log
+	// under a reference and the body says only "not ready (ref …)".
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		if err := Ready(); err != nil {
+			ref := readyRef()
+			logger.Warn("metrics.not_ready", slog.String("ref", ref), slog.String("err", err.Error()))
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write([]byte("not ready: " + err.Error())) //nolint:errcheck // best-effort
+			_, _ = w.Write([]byte("not ready (ref " + ref + ")")) //nolint:errcheck // best-effort
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -280,4 +286,12 @@ func StartMetricsServer(ctx context.Context, addr string, logger *slog.Logger) e
 		return err
 	}
 	return nil
+}
+
+// readyRef returns a short random reference tying a /readyz failure
+// to its log line.
+func readyRef() string {
+	var b [6]byte
+	_, _ = rand.Read(b[:]) // crypto/rand.Read does not fail on supported platforms
+	return hex.EncodeToString(b[:])
 }

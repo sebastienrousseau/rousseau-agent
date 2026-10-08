@@ -36,6 +36,7 @@ func TestDispatchEvent_StrangerFileIsNotDownloaded(t *testing.T) {
 			c, err := New(Config{AppToken: "xapp-x", BotToken: "xoxb-y", BaseURL: srv.URL,
 				HTTPClient: srv.Client(), IsAllowed: tc.gate}, silentLogger())
 			require.NoError(t, err)
+			trustFileServer(t, c, srv)
 			_ = c.dispatchEvent(context.Background(), eventsAPIPayload{Event: slackEvent{ //nolint:errcheck // only the fetch matters
 				Type: "message", SubType: "file_share", User: "U-stranger", Channel: "C1", Text: "look",
 				Files: []slackFile{{ID: "F1", Mimetype: "image/png", Size: 12, URLPrivateDownload: srv.URL + "/files/F1"}},

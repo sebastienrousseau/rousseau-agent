@@ -64,7 +64,8 @@ func TestGmailListTool_HandlesEmptyInput(t *testing.T) {
 }
 
 func TestBuildRFC5322_Roundtrip(t *testing.T) {
-	got := buildRFC5322("bot@x", "user@y", "subj", "body")
+	got, err := buildRFC5322("bot@x", "user@y", "subj", "body")
+	require.NoError(t, err)
 	assert.Contains(t, string(got), "From: bot@x")
 	assert.Contains(t, string(got), "To: user@y")
 	assert.Contains(t, string(got), "Subject: subj")
@@ -74,7 +75,8 @@ func TestBuildRFC5322_Roundtrip(t *testing.T) {
 func TestBuildRFC5322_NoFrom(t *testing.T) {
 	// From is optional; when Gmail sends its default From: header is
 	// injected server-side.
-	got := buildRFC5322("", "user@y", "subj", "body")
+	got, err := buildRFC5322("", "user@y", "subj", "body")
+	require.NoError(t, err)
 	assert.NotContains(t, string(got), "From: ")
 	assert.Contains(t, string(got), "To: user@y")
 }

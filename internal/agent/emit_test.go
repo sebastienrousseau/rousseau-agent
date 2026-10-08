@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -167,14 +169,21 @@ func TestEmitTerminal_DeadlineIsCancelled(t *testing.T) {
 
 func TestEmitTerminal_OtherErrorMarksKindError(t *testing.T) {
 	rec := &recPub{}
-	a := New(&stubProvider{}, tools.NewRegistry(), silentLogger(),
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	a := New(&stubProvider{}, tools.NewRegistry(), logger,
 		Options{Progress: rec})
 	s := NewSession("s")
-	boom := errors.New("provider blew up")
+	boom := errors.New("provider blew up: FAKE-DETAIL")
 
 	a.emitTerminal(context.Background(), s, time.Now(), boom)
 	events := rec.snapshot()
 	require.Len(t, events, 1)
 	assert.Equal(t, progress.KindError, events[0].Kind)
-	assert.Equal(t, "provider blew up", events[0].Err)
+	// Chat gets the generic text and a ref; the log keeps the error.
+	require.NotEmpty(t, events[0].Ref)
+	assert.Equal(t, progress.FailureText(events[0].Ref), events[0].Err)
+	assert.NotContains(t, events[0].Err, "FAKE-DETAIL")
+	assert.Contains(t, logs.String(), "ref="+events[0].Ref)
+	assert.Contains(t, logs.String(), "FAKE-DETAIL")
 }

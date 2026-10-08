@@ -134,6 +134,15 @@ type RouterOptions struct {
 	// a daemon restarted mid-turn can tell the sender (see
 	// sqlite.TurnJournal). Needs Transport.
 	TurnJournal TurnJournal
+	// AllowGroups lets the agent answer in group conversations (see
+	// [IsGroup]). Off by default: a reply in a group reaches every
+	// member. When on, each (sender, conversation) pair gets its own
+	// session, so a sender's private history never reaches a group.
+	AllowGroups bool
+	// LinkCodes holds pending /link confirmations. Share one across
+	// the routers of every transport so a code issued on one can be
+	// confirmed from another. Nil gives the router its own.
+	LinkCodes *LinkCodes
 }
 
 // TurnJournal records agent turns in flight.
@@ -156,12 +165,15 @@ type Router struct {
 	ssoDir     sso.Directory
 	ssoStore   sso.BindingStore
 	ssoTTL     time.Duration
+	spender    sso.TokenSpender
 	auditSink  audit_egress.Sink
 	approvals  *approval.PendingManager
 	buildStamp string
 	idleAfter  time.Duration
 	forkSess   func(ctx context.Context, fromID, toID string) error
 	journal    TurnJournal
+	groups     bool
+	linkCodes  *LinkCodes
 	now        func() time.Time
 	// senders serialises session lookup and rebinding per sender; a
 	// router-wide mutex used to make every sender wait on one slow
@@ -186,7 +198,16 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		// if the caller wires SSO without also wiring the store.
 		ssoStore = sso.NoBindings{}
 	}
+	linkCodes := opts.LinkCodes
+	if linkCodes == nil {
+		linkCodes = NewLinkCodes()
+	}
+	spender, ok := ssoStore.(sso.TokenSpender)
+	if !ok {
+		spender = &sso.MemorySpender{}
+	}
 	return &Router{
+		spender:    spender,
 		runner:     runner,
 		store:      store,
 		jidMap:     jidMap,
@@ -204,6 +225,8 @@ func NewRouter(runner TurnRunner, store SessionStore, jidMap JIDMapper, logger *
 		idleAfter:  opts.SessionIdleTimeout,
 		forkSess:   opts.ForkSession,
 		journal:    opts.TurnJournal,
+		groups:     opts.AllowGroups,
+		linkCodes:  linkCodes,
 		now:        time.Now,
 	}
 }
@@ -251,6 +274,14 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 			return reply, nil
 		}
 	}
+
+	// Group conversations are ignored unless the operator opted in:
+	// every member reads the reply.
+	if IsGroup(msg) && !r.groups {
+		r.logger.Debug("transport.group_ignored", slog.String("from", msg.From))
+		return "", nil
+	}
+	who := ConversationKey(msg)
 
 	if !r.allowed(ctx, msg.From) {
 		r.logger.Warn("transport.rejected", slog.String("from", msg.From))
@@ -315,61 +346,20 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 	// only affects future inbound, which is the operator-visible
 	// intent.
 	if strings.TrimSpace(msg.Body) == "/clear" {
-		reply, err := r.cmdClear(ctx, msg.From)
+		reply, err := r.cmdClear(ctx, who)
 		if err != nil {
 			return "", fmt.Errorf("router: clear: %w", err)
 		}
 		return reply, nil
 	}
 
-	// Session-lifecycle verbs. All keyed on msg.From so they
-	// operate on the sender's own sessions only — a listing / rename
-	// / resume / delete from Alice can never touch Bob's data.
+	// Session-lifecycle verbs. All keyed on the conversation key so
+	// they operate on the sender's own sessions only — a listing /
+	// rename / resume / delete from Alice can never touch Bob's data,
+	// and a group's sessions stay apart from Alice's DM sessions.
 	// Same "runs above the identity gate" reasoning as /clear.
-	if body := strings.TrimSpace(msg.Body); strings.HasPrefix(body, "/") {
-		parts := strings.SplitN(body, " ", 2)
-		var arg string
-		if len(parts) == 2 {
-			arg = strings.TrimSpace(parts[1])
-		}
-		switch parts[0] {
-		case "/sessions":
-			reply, err := r.cmdSessions(ctx, msg.From)
-			if err != nil {
-				return "", fmt.Errorf("router: sessions: %w", err)
-			}
-			return reply, nil
-		case "/name":
-			reply, err := r.cmdName(ctx, msg.From, arg)
-			if err != nil {
-				return "", fmt.Errorf("router: name: %w", err)
-			}
-			return reply, nil
-		case "/resume":
-			reply, err := r.cmdResume(ctx, msg.From, arg)
-			if err != nil {
-				return "", fmt.Errorf("router: resume: %w", err)
-			}
-			return reply, nil
-		case "/delete":
-			reply, err := r.cmdDelete(ctx, msg.From, arg)
-			if err != nil {
-				return "", fmt.Errorf("router: delete: %w", err)
-			}
-			return reply, nil
-		case "/save":
-			reply, err := r.cmdSave(ctx, msg.From, arg)
-			if err != nil {
-				return "", fmt.Errorf("router: save: %w", err)
-			}
-			return reply, nil
-		case "/find":
-			reply, err := r.cmdFind(ctx, msg.From, arg)
-			if err != nil {
-				return "", fmt.Errorf("router: find: %w", err)
-			}
-			return reply, nil
-		}
+	if reply, matched, err := r.handleSessionVerb(ctx, who, msg.Body); matched {
+		return reply, err
 	}
 
 	// Chat-command interception: /whoami, /link, /unlink handled
@@ -382,7 +372,7 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		}
 	}
 
-	sess, rotatedFrom, err := r.turnSessionFor(ctx, msg.From)
+	sess, rotatedFrom, err := r.turnSessionFor(ctx, who)
 	if err != nil {
 		return "", fmt.Errorf("router: session: %w", err)
 	}
@@ -393,7 +383,12 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 		// cut off by a crash, timeout or restart must not lose it.
 		r.saveSession(ctx, sess)
 	}
-	defer r.journalTurn(ctx, msg.From, msg.Body)()
+	// The journal resumes a cut-off turn by replying to the sender
+	// directly, which is wrong for a group turn: those are not
+	// journalled.
+	if who == msg.From {
+		defer r.journalTurn(ctx, msg.From, msg.Body)()
+	}
 	final, err := r.runTurn(ctx, sess)
 	// Save on failure too: tool calls that already ran are side
 	// effects the next turn's model must see in the history.
@@ -407,6 +402,34 @@ func (r *Router) Handle(ctx context.Context, msg IncomingMessage) (string, error
 			r.idleAfter, shortSessionID(rotatedFrom), reply)
 	}
 	return reply, nil
+}
+
+// handleSessionVerb runs the session-lifecycle verbs (/sessions,
+// /name, /resume, /delete, /save, /find) for who. matched is false
+// when body is not one of them.
+func (r *Router) handleSessionVerb(ctx context.Context, who, body string) (string, bool, error) {
+	body = strings.TrimSpace(body)
+	if !strings.HasPrefix(body, "/") {
+		return "", false, nil
+	}
+	verb, arg, _ := strings.Cut(body, " ")
+	arg = strings.TrimSpace(arg)
+	cmd, ok := map[string]func(context.Context, string, string) (string, error){
+		"/sessions": func(ctx context.Context, who, _ string) (string, error) { return r.cmdSessions(ctx, who) },
+		"/name":     r.cmdName,
+		"/resume":   r.cmdResume,
+		"/delete":   r.cmdDelete,
+		"/save":     r.cmdSave,
+		"/find":     r.cmdFind,
+	}[verb]
+	if !ok {
+		return "", false, nil
+	}
+	reply, err := cmd(ctx, who, arg)
+	if err != nil {
+		return "", true, fmt.Errorf("router: %s: %w", strings.TrimPrefix(verb, "/"), err)
+	}
+	return reply, true, nil
 }
 
 // journalTurn records that from's turn has started and returns the
@@ -455,6 +478,7 @@ var syncCommands = map[string]struct{}{
 	"/link":     {},
 	"/lk":       {}, // shortcut for /link (/l would collide with /login)
 	"/unlink":   {},
+	"/confirm":  {},
 	"/ul":       {}, // shortcut for /unlink
 	"/version":  {},
 	"/v":        {}, // shortcut for /version
@@ -486,6 +510,7 @@ var syncCommands = map[string]struct{}{
 	"/logout":  {},
 	"/lo":      {}, // shortcut for /logout
 	"/approve": {},
+	"/pending": {},
 	"/ap":      {}, // shortcut for /approve
 	"/deny":    {},
 	"/ny":      {}, // shortcut for /deny (/d is taken by /delete)

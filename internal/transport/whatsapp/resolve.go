@@ -139,6 +139,7 @@ func ResolveInbound(evt *events.Message, ownID *types.JID) Resolved {
 			At:           evt.Info.Timestamp,
 			Conversation: evt.Info.Chat.String(),
 			MessageID:    evt.Info.ID,
+			IsDirect:     true, // groups are skipped above
 		},
 		Chat: evt.Info.Chat,
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/progress"
@@ -48,8 +49,13 @@ func (a *Agent) emitTerminal(ctx context.Context, s *Session, start time.Time, e
 		ev.Kind = progress.KindCancelled
 		ev.Err = err.Error()
 	default:
+		// The progress feed is chat-facing; the error is not. Log it
+		// once under a ref and publish only the ref.
+		ref := progress.NewRef()
+		a.logger.Error("turn.failed", slog.String("ref", ref), slog.String("err", err.Error()))
 		ev.Kind = progress.KindError
-		ev.Err = err.Error()
+		ev.Err = progress.FailureText(ref)
+		ev.Ref = ref
 	}
 	a.emit(ctx, s, ev)
 }

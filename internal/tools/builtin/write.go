@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools"
 	"github.com/sebastienrousseau/rousseau-agent/internal/tools/fsguard"
@@ -60,14 +58,11 @@ func (t *WriteTool) Execute(_ context.Context, raw json.RawMessage) (string, err
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return "", fmt.Errorf("write: parse input: %w", err)
 	}
-	path, err := resolvePath(t.Guard, "write", in.Path)
+	path, err := resolveWritePath(t.Guard, "write", in.Path)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("write: mkdir: %w", err)
-	}
-	if err := os.WriteFile(path, []byte(in.Content), 0o644); err != nil { //nolint:gosec // path vetted by fsguard; tool output is not secret
+	if err := guardOrDefault(t.Guard).WriteFile(path, []byte(in.Content), 0o644); err != nil {
 		return "", fmt.Errorf("write: %w", err)
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(in.Content), in.Path), nil

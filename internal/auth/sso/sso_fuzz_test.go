@@ -119,7 +119,7 @@ func TestFuzz_MalformedTokensNeverPanic(t *testing.T) {
 	// The verifier needs a Directory — construct a tolerant one
 	// pointing at a nonexistent issuer. Bad discovery is exactly
 	// what a random token would fail on anyway.
-	d, err := NewOIDCDirectory(OIDCConfig{Issuer: "http://127.0.0.1:1"}, nil)
+	d, err := NewOIDCDirectory(OIDCConfig{Issuer: "http://127.0.0.1:1", AllowAnyAudience: true}, nil)
 	require.NoError(t, err)
 
 	f := fuzztest.New(t)
