@@ -47,7 +47,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          go-version: '1.26.6'
+          go-version: '1.26.9'
           # No module/build cache on the release path (L-30): a cache
           # written by a main or PR run must not feed a signed release.
           cache: false
@@ -61,8 +61,17 @@ jobs:
       # cosign for goreleaser's `signs:` block. Keyless mode signs
       # via the Actions OIDC identity — no long-lived key or
       # password, transparent Sigstore log entry per artifact.
+      #
+      # cosign stays on v2 here: v3 writes a single bundle by default and
+      # ignores the --output-signature/--output-certificate flags that
+      # .goreleaser.yaml uses, so v0.0.13's signing step failed with
+      # "create bundle file: open : no such file or directory".
+      # install.sh and SECURITY.md verify checksums.txt.sig + .pem, so a
+      # move to the bundle format has to change them together.
       - name: install cosign (keyless artifact signing)
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.5.2
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           distribution: goreleaser

@@ -235,16 +235,24 @@ func TestParseOTLPLogs_ConcatenatedPayloadsAndUnchainedSkipped(t *testing.T) {
 }
 
 func TestParseOTLPLogs_Malformed(t *testing.T) {
-	for name, in := range map[string]string{
-		"truncated": `{"resourceLogs": [`,
-		"badseq":    `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":[{"key":"rousseau.audit.chain.hash","value":{"stringValue":"aa"}},{"key":"rousseau.audit.chain.sequence","value":{"stringValue":"x"}}]}]}]}]}`,
-		"badver":    `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":[{"key":"rousseau.audit.chain.hash","value":{"stringValue":"aa"}},{"key":"rousseau.audit.chain.version","value":{"stringValue":"300"}}]}]}]}]}`,
-		"badtime":   `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"timeUnixNano":"soon","attributes":[{"key":"rousseau.audit.chain.hash","value":{"stringValue":"aa"}}]}]}]}]}`,
-		"baddetail": `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":[{"key":"rousseau.audit.chain.hash","value":{"stringValue":"aa"}},{"key":"rousseau.audit.detail","value":{"stringValue":"[1"}}]}]}]}]}`,
+	const seq = `{"key":"rousseau.audit.chain.sequence","value":{"stringValue":"1"}},`
+	const hash = `{"key":"rousseau.audit.chain.hash","value":{"stringValue":"aa"}}`
+	wrap := func(rec string) string {
+		return `{"resourceLogs":[{"scopeLogs":[{"logRecords":[` + rec + `]}]}]}`
+	}
+	// Each case is otherwise well formed, so it fails at the named check
+	// and not at an earlier one.
+	for name, tc := range map[string]struct{ in, want string }{
+		"truncated": {`{"resourceLogs": [`, "otlp export:"},
+		"badseq":    {wrap(`{"attributes":[` + hash + `,{"key":"rousseau.audit.chain.sequence","value":{"stringValue":"x"}}]}`), "chain sequence"},
+		"badver":    {wrap(`{"attributes":[` + seq + hash + `,{"key":"rousseau.audit.chain.version","value":{"stringValue":"300"}}]}`), "chain version"},
+		"badtime":   {wrap(`{"timeUnixNano":"soon","attributes":[` + hash + `]}`), "timeUnixNano"},
+		"baddetail": {wrap(`{"attributes":[` + seq + hash + `,{"key":"rousseau.audit.detail","value":{"stringValue":"[1"}}]}`), "detail"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ParseOTLPLogs(strings.NewReader(in))
-			assert.Error(t, err)
+			_, err := ParseOTLPLogs(strings.NewReader(tc.in))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
 }
@@ -270,4 +278,38 @@ func TestVerifyChainSegment_AnchorsOnFirstRecord(t *testing.T) {
 	recs := cap.snapshot()[1:]
 	assert.Error(t, VerifyChain(recs), "a window that does not start at genesis is not a full chain")
 	assert.NoError(t, Verify(recs, VerifyOptions{Segment: true}))
+}
+
+func TestVerifyChainMAC_EmptyKeyIsAnError(t *testing.T) {
+	err := VerifyChainMAC([]Record{{Actor: "alice"}}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty MAC key")
+}
+
+func TestCanonicalDetailV2_TooDeepIsAnError(t *testing.T) {
+	d := map[string]any{}
+	cur := d
+	for range maxDetailDepth + 2 {
+		next := map[string]any{}
+		cur["k"] = next
+		cur = next
+	}
+	_, err := canonicalDetailV2(d)
+	assert.ErrorIs(t, err, errDetailTooDeep)
+}
+
+func TestCanonicalDetailV2_BytesAndUnexportedFieldsAreSkipped(t *testing.T) {
+	type withHidden struct {
+		Name   string
+		hidden string
+	}
+	// []byte marshals as base64 and unexported fields are not marshalled,
+	// so neither can carry invalid UTF-8 into the hash input.
+	d := map[string]any{
+		"raw":    []byte{0xff, 0xfe},
+		"struct": withHidden{Name: "ok", hidden: "\xff"},
+	}
+	got, err := canonicalDetailV2(d)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"raw":"//4=","struct":{"Name":"ok"}}`, string(got))
 }

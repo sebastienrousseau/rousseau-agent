@@ -15,6 +15,25 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
+### v0.0.14
+
+- **Release binaries are back.** The v0.0.13 tag published its container
+  images, but the binary release stopped at signing: the workflow had
+  picked up cosign 3, which ignores the `--output-signature` and
+  `--output-certificate` flags our GoReleaser config uses. The release
+  job now installs cosign 2.5.2, the version v0.0.11 signed with, so
+  `checksums.txt.sig` and `.pem` are produced as `install.sh` expects.
+  The v0.0.13 code and images are unchanged; v0.0.14 adds the binaries.
+- otel modules move to 1.47.0 and `golang.org/x/crypto` to 0.57.0.
+  Dependabot now groups otel, `golang.org/x` and Docker updates into
+  one PR each, and holds new Go minor and Node major base images for a
+  deliberate update.
+- **Built with Go 1.26.9 and `golang.org/x/net` 0.60.0.** govulncheck
+  flagged the `net/http` fix in Go 1.26.9 and GO-2026-6617 in
+  `x/net`; the toolchain line, every workflow and the image bases move
+  to 1.26.9, so v0.0.14 binaries and images carry both fixes.
+- Helm chart 0.0.3 tracks v0.0.14.
+
 ### Security (v0.0.13)
 
 Fixes from the 2026-10-08 security audit.

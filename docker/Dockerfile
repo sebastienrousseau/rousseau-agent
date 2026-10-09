@@ -21,8 +21,8 @@
 # `podman manifest inspect <image>@<digest>` must list several
 # platforms. The same digest is pinned in Dockerfile.distroless and
 # Dockerfile.lite; keep the three in step.
-# golang:1.26.8-alpine3.24 (index) as of 2026-10-08
-FROM golang:1.26.8-alpine3.24@sha256:8ac98ca534ac3f51e1f420a1dd2c15e74c75cfa0f23f3ad27eb5d7236c349a0c AS builder
+# golang:1.26.9-alpine3.24 (index) as of 2026-10-09
+FROM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
 
 WORKDIR /src
 
@@ -271,7 +271,7 @@ ENV PATH=/home/rousseau/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 # `rust@latest` changed under every rebuild. Only the /tmp cleanup
 # tolerates failure (an unmatched glob).
 ARG MISE_PYTHON=3.12.15
-ARG MISE_GO=1.26.8
+ARG MISE_GO=1.26.9
 ARG MISE_RUST=1.99.0
 RUN MISE_YES=1 mise use -g python@${MISE_PYTHON} go@${MISE_GO} rust@${MISE_RUST} \
  && mise ls \
