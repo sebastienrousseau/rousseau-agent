@@ -28,6 +28,10 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
   Dependabot now groups otel, `golang.org/x` and Docker updates into
   one PR each, and holds new Go minor and Node major base images for a
   deliberate update.
+- **Built with Go 1.26.9 and `golang.org/x/net` 0.60.0.** govulncheck
+  flagged the `net/http` fix in Go 1.26.9 and GO-2026-6617 in
+  `x/net`; the toolchain line, every workflow and the image bases move
+  to 1.26.9, so v0.0.14 binaries and images carry both fixes.
 - Helm chart 0.0.3 tracks v0.0.14.
 
 ### Security (v0.0.13)
