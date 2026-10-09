@@ -9,7 +9,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.78.0
 	github.com/aws/aws-sdk-go-v2 v1.47.1
 	github.com/aws/aws-sdk-go-v2/config v1.33.6
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.62.0
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.1
 	github.com/aws/smithy-go v1.28.1
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
