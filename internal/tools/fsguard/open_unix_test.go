@@ -63,7 +63,11 @@ func TestWriteFile_AtomicKeepsPermsAndRefusesReadOnly(t *testing.T) {
 	ws := t.TempDir()
 	g, err := New(ws, nil)
 	require.NoError(t, err)
-	p := filepath.Join(ws, "a", "b", "file")
+	// WriteFile takes a resolved path, as write and edit pass it. On macOS
+	// t.TempDir is under /var, a symlink to /private/var, so the raw path
+	// is not beneath the resolved root.
+	p, err := g.ResolveForWrite(filepath.Join(ws, "a", "b", "file"))
+	require.NoError(t, err)
 	require.NoError(t, g.WriteFile(p, []byte("one"), 0o644))
 	require.NoError(t, os.Chmod(p, 0o600))
 	require.NoError(t, g.WriteFile(p, []byte("two"), 0o644))
