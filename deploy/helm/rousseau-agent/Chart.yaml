@@ -16,7 +16,7 @@ version: 0.0.3
 # It must equal the release tag: release.yml refuses to publish a tag
 # whose appVersion differs, so bump it in the release PR. When bumping,
 # run `helm lint` + a `--dry-run` install against the new image.
-appVersion: "v0.0.14"
+appVersion: "v0.0.15"
 
 kubeVersion: ">=1.28.0-0"
 

@@ -2,7 +2,7 @@ package cli
 
 import (
 	"context"
-	"os"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -54,9 +54,17 @@ func TestChatCmd_RunsTUIUntilContextCancelled(t *testing.T) {
 	// holds the file lock, so the signal is "file grew past its
 	// empty-schema size" — a save extends the file.
 	require.Eventually(t, func() bool {
-		info, err := os.Stat(opts.Config.State.Path)
-		return err == nil && info.Size() > 32*1024 // empty schema is ~28KB
-	}, 30*time.Second, 100*time.Millisecond, "chat did not persist session before timeout")
+		db, err := sql.Open("sqlite", "file:"+opts.Config.State.Path+"?mode=ro")
+		if err != nil {
+			return false
+		}
+		defer func() { _ = db.Close() }() //nolint:errcheck
+		var count int
+		if err := db.QueryRow("SELECT count(*) FROM sessions").Scan(&count); err != nil {
+			return false
+		}
+		return count == 1
+	}, 10*time.Second, 50*time.Millisecond, "chat did not persist session before timeout")
 	cancel()
 
 	select {
