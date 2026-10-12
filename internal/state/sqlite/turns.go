@@ -68,33 +68,28 @@ func (j *TurnJournal) End(ctx context.Context, transport, sender string) error {
 // never ended, i.e. were cut off by a restart or crash. Call it once at
 // startup, before new turns begin.
 func (j *TurnJournal) TakeInterrupted(ctx context.Context, transport string) ([]InterruptedTurn, error) {
-	tx, err := j.s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("sqlite: turn journal: %w", err)
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
-	rows, err := tx.QueryContext(ctx,
+	rows, err := j.s.db.QueryContext(ctx,
 		`SELECT sender, preview, started_at FROM turns_inflight WHERE transport = ? ORDER BY started_at`, transport)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: turn journal list: %w", err)
 	}
+	defer rows.Close() //nolint:errcheck,gosec // iteration finished
 	var out []InterruptedTurn
 	for rows.Next() {
 		var it InterruptedTurn
 		var at string
 		if err := rows.Scan(&it.Sender, &it.Preview, &at); err != nil {
-			rows.Close() //nolint:errcheck,gosec // primary error is returned
 			return nil, fmt.Errorf("sqlite: turn journal scan: %w", err)
 		}
 		it.StartedAt, _ = time.Parse(time.RFC3339, at) //nolint:errcheck // zero time on a malformed row is harmless
 		out = append(out, it)
 	}
-	rows.Close() //nolint:errcheck,gosec // iteration finished
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: turn journal: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM turns_inflight WHERE transport = ?`, transport); err != nil {
+	rows.Close() //nolint:errcheck,gosec // close early before write
+	if _, err := j.s.db.ExecContext(ctx, `DELETE FROM turns_inflight WHERE transport = ?`, transport); err != nil {
 		return nil, fmt.Errorf("sqlite: turn journal clear: %w", err)
 	}
-	return out, tx.Commit()
+	return out, nil
 }

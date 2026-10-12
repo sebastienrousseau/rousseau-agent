@@ -2,7 +2,7 @@ package cli
 
 import (
 	"context"
-	"os"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -60,13 +60,16 @@ func TestChatCmd_RunsTUIUntilContextCancelled(t *testing.T) {
 			return false
 		default:
 		}
-		if walInfo, err := os.Stat(opts.Config.State.Path + "-wal"); err == nil && walInfo.Size() > 0 {
-			return true
+		db, err := sql.Open("sqlite", "file:"+opts.Config.State.Path+"?mode=ro")
+		if err != nil {
+			return false
 		}
-		if info, err := os.Stat(opts.Config.State.Path); err == nil && info.Size() > 4096 {
-			return true
+		defer func() { _ = db.Close() }() //nolint:errcheck
+		var count int
+		if err := db.QueryRow("SELECT count(*) FROM sessions").Scan(&count); err != nil {
+			return false
 		}
-		return false
+		return count == 1
 	}, 10*time.Second, 50*time.Millisecond, "chat did not persist session before timeout")
 	cancel()
 
