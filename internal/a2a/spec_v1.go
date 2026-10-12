@@ -3,6 +3,7 @@ package a2a
 import (
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -340,7 +341,12 @@ func PromptFromMessage(m Message) string {
 	return out
 }
 
-// newMessageID mints a spec-conformant message id.
-var newMessageID = func() string {
-	return fmt.Sprintf("msg-%d", time.Now().UnixNano())
-}
+var (
+	msgIDSeq uint64
+
+	// newMessageID mints a spec-conformant message id.
+	newMessageID = func() string {
+		seq := atomic.AddUint64(&msgIDSeq, 1)
+		return fmt.Sprintf("msg-%d-%d", time.Now().UnixNano(), seq)
+	}
+)

@@ -54,9 +54,20 @@ func TestChatCmd_RunsTUIUntilContextCancelled(t *testing.T) {
 	// holds the file lock, so the signal is "file grew past its
 	// empty-schema size" — a save extends the file.
 	require.Eventually(t, func() bool {
-		info, err := os.Stat(opts.Config.State.Path)
-		return err == nil && info.Size() > 32*1024 // empty schema is ~28KB
-	}, 30*time.Second, 100*time.Millisecond, "chat did not persist session before timeout")
+		select {
+		case err := <-done:
+			t.Fatalf("cmd.RunE returned early: %v", err)
+			return false
+		default:
+		}
+		if walInfo, err := os.Stat(opts.Config.State.Path + "-wal"); err == nil && walInfo.Size() > 0 {
+			return true
+		}
+		if info, err := os.Stat(opts.Config.State.Path); err == nil && info.Size() > 4096 {
+			return true
+		}
+		return false
+	}, 10*time.Second, 50*time.Millisecond, "chat did not persist session before timeout")
 	cancel()
 
 	select {

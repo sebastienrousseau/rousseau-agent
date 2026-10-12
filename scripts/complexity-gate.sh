@@ -42,10 +42,11 @@ trap 'rm -rf "$tmp"' EXIT
 find cmd internal pkg -name '*.go' -not -name '*_test.go' | sort > "$tmp/files"
 
 # Both tools print: "<score> <package> <func> <file>:<line>:<col>" and
-# exit 1 when anything is over the limit, which xargs reports as 123.
+# exit 1 when anything is over the limit, which GNU xargs reports as 123
+# and BSD xargs reports as 1.
 # That is the expected case here, so only other exit codes abort.
 run_tool() {
-    xargs go run "$1" -over "$2" < "$tmp/files" 2>/dev/null || [ "$?" -eq 123 ]
+    xargs go run "$1" -over "$2" < "$tmp/files" 2>/dev/null || [ "$?" -eq 123 ] || [ "$?" -eq 1 ]
 }
 
 # Normalise to the baseline format and sort for stable diffs.

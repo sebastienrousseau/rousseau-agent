@@ -15,6 +15,19 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
+### v0.0.15
+
+- **Dependencies & Supply Chain**:
+  - `github.com/anthropics/anthropic-sdk-go` updated to `1.79.0`.
+  - `github.com/aws/aws-sdk-go-v2/config` updated to `1.33.7`.
+  - `github.com/aws/aws-sdk-go-v2/service/bedrockruntime` updated to `1.63.2`.
+  - `github.com/aws/smithy-go` updated to `1.28.4`.
+  - `anchore/sbom-action` updated to `0.24.3`.
+  - `actions/upload-artifact` updated to `7.0.2`.
+  - `actions/download-artifact` updated to `8.0.2`.
+  - `devcontainers/base` updated to digest `0b997af`.
+- Helm chart 0.0.3 tracks v0.0.15 (`appVersion: "v0.0.15"`).
+
 ### v0.0.14
 
 - **Release binaries are back.** The v0.0.13 tag published its container
