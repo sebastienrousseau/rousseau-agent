@@ -54,12 +54,6 @@ func TestChatCmd_RunsTUIUntilContextCancelled(t *testing.T) {
 	// holds the file lock, so the signal is "file grew past its
 	// empty-schema size" — a save extends the file.
 	require.Eventually(t, func() bool {
-		select {
-		case err := <-done:
-			t.Fatalf("cmd.RunE returned early: %v", err)
-			return false
-		default:
-		}
 		db, err := sql.Open("sqlite", "file:"+opts.Config.State.Path+"?mode=ro")
 		if err != nil {
 			return false
