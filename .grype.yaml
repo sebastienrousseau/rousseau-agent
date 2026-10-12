@@ -46,6 +46,8 @@ ignore:
       location: "/usr/local/bin/grype"
   - package:
       location: "/usr/local/bin/act"
+  - package:
+      location: "/usr/local/bin/gh"
 
   # ---------------------------------------------------------------
   # 2. Java version misdetection.
