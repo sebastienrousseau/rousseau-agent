@@ -7,6 +7,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -215,26 +216,80 @@ func TestOnEvent_KeepAliveTimeout_TriggersReconnectAtThreshold(t *testing.T) {
 	assert.True(t, logs.has("whatsapp.keepalive_reconnect"))
 }
 
-func TestOnEvent_KeepAliveTimeout_ReconnectFailureIsLogged(t *testing.T) {
+// swapReconnectBackoff makes retries after a failed reconnect immediate.
+func swapReconnectBackoff(t *testing.T) {
+	t.Helper()
+	prev := reconnectBackoff
+	reconnectBackoff = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { reconnectBackoff = prev })
+}
+
+// A failed dial leaves no socket, so no keepalive loop runs and no
+// further KeepAliveTimeout ever arrives: on 2026-10-13 one DNS timeout
+// left the daemon deaf, and reporting healthy, for two days. The
+// reconnect must therefore keep retrying, and report the session down
+// while it does.
+func TestOnEvent_KeepAliveTimeout_ReconnectRetriesUntilItSucceeds(t *testing.T) {
 	swapKeepaliveThreshold(t, 1)
-	swapForceReconnect(t, &wrappedErr{msg: "dial refused"})
+	swapReconnectBackoff(t)
+	var attempts atomic.Int32
+	prev := wmForceReconnect
+	wmForceReconnect = func(_ *whatsmeow.Client) error {
+		if attempts.Add(1) < 3 {
+			return &wrappedErr{msg: "dial tcp: lookup web.whatsapp.com: i/o timeout"}
+		}
+		return nil
+	}
+	t.Cleanup(func() { wmForceReconnect = prev })
 
 	logs := &logBuffer{}
 	c := newClientWithLog(t, logs.newLogger(), &fakeSender{})
 	c.wm = &whatsmeow.Client{}
+	c.setLinked(true)
 
 	c.onEvent(&events.KeepAliveTimeout{})
 
 	require.Eventually(t, func() bool {
-		return logs.has("whatsapp.reconnect_failed")
-	}, time.Second, 10*time.Millisecond)
+		return logs.has("whatsapp.reconnect_issued")
+	}, time.Second, 5*time.Millisecond)
+	assert.Equal(t, int32(3), attempts.Load())
+	assert.True(t, logs.has("whatsapp.reconnect_failed"))
+	assert.False(t, c.Connected(), "down until whatsmeow reports Connected")
 
-	// Even on failure the flags must clear so the next burst can try
-	// again — a stuck reconnecting=true would wedge the daemon.
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	assert.False(t, c.reconnecting)
 	assert.Equal(t, 0, c.keepaliveMisses)
+}
+
+func TestOnEvent_KeepAliveTimeout_ReconnectRetriesStopWithTheClient(t *testing.T) {
+	swapKeepaliveThreshold(t, 1)
+	swapReconnectBackoff(t)
+	var attempts atomic.Int32
+	prev := wmForceReconnect
+	wmForceReconnect = func(_ *whatsmeow.Client) error {
+		attempts.Add(1)
+		return &wrappedErr{msg: "dial refused"}
+	}
+	t.Cleanup(func() { wmForceReconnect = prev })
+
+	c := newClientWithLog(t, silentLogger(), &fakeSender{})
+	c.wm = &whatsmeow.Client{}
+
+	c.onEvent(&events.KeepAliveTimeout{})
+	require.Eventually(t, func() bool { return attempts.Load() >= 2 }, time.Second, time.Millisecond)
+	c.mu.Lock()
+	c.stopped = true
+	c.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return !c.reconnecting
+	}, time.Second, time.Millisecond)
+	settled := attempts.Load()
+	time.Sleep(20 * time.Millisecond)
+	assert.Equal(t, settled, attempts.Load(), "no attempts after Stop")
 }
 
 func TestOnEvent_KeepAliveTimeout_DoesNotFireOverlappingReconnects(t *testing.T) {

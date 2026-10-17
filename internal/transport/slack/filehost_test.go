@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
 // hitServer counts requests and the bearer tokens it was sent.
@@ -44,7 +46,8 @@ func trustFileServer(t *testing.T, c *Client, srv *httptest.Server) {
 	t.Helper()
 	u, err := url.Parse(srv.URL)
 	require.NoError(t, err)
-	c.files.scheme, c.files.host = u.Scheme, u.Host
+	c.files.allow = transport.FetchPattern(u.Scheme, u.Host)
+	c.files.origin = srv.URL
 }
 
 func TestDownloadFile_OtherHostRefusedWithoutRequest(t *testing.T) {
@@ -67,7 +70,7 @@ func TestDispatchEvent_OtherHostFileNotFetched(t *testing.T) {
 
 func TestFileFetcher_AllowsOnlyHTTPSFilesSlackCom(t *testing.T) {
 	f := newFileFetcher(http.DefaultClient)
-	assert.True(t, f.allowed("https://files.slack.com/files-pri/T1-F1/download/a.png"))
+	assert.True(t, f.allow.MatchString("https://files.slack.com/files-pri/T1-F1/download/a.png"))
 	for _, raw := range []string{
 		"http://files.slack.com/f",
 		"https://files.slack.com.evil.example/f",
@@ -77,7 +80,7 @@ func TestFileFetcher_AllowsOnlyHTTPSFilesSlackCom(t *testing.T) {
 		"https://FILES.slack.com/f",
 		"://bad",
 	} {
-		assert.False(t, f.allowed(raw), "%q", raw)
+		assert.False(t, f.allow.MatchString(raw), "%q", raw)
 	}
 }
 

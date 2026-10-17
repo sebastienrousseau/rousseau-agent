@@ -33,6 +33,7 @@ func TestRequireSandboxPolicy(t *testing.T) {
 			if tc.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "allow_unsandboxed")
+				assert.Contains(t, err.Error(), "ROUSSEAU_TOOLS_BASH_SANDBOX_ALLOW_UNSANDBOXED")
 				assert.Contains(t, err.Error(), "slack")
 				return
 			}

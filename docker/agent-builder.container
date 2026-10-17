@@ -63,6 +63,11 @@ DropCapability=all
 SeccompProfile=/usr/share/containers/seccomp.json
 SecurityLabelDisable=false
 
+# PID 1 here is `sleep infinity`, which never reaps the orphans that
+# `podman exec` builds leave behind. podman's catatonit takes PID 1
+# and reaps them.
+RunInit=true
+
 # Nested user namespaces, required by bubblewrap (Claude Code's
 # sandbox) and by rootless podman-in-podman. This does NOT grant
 # privilege — unprivileged userns is how bwrap sandboxes WITHOUT

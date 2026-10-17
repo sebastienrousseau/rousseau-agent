@@ -140,16 +140,6 @@ var (
 	qrOut io.Writer = os.Stdout
 )
 
-// keepaliveMissThreshold is the number of consecutive KeepAliveTimeout
-// events (no KeepAliveRestored between them) that triggers a forced
-// reconnect. Package-level for test overrides. Three matches the
-// observed cadence: whatsmeow's default keepalive interval is ~30s, so
-// three misses in a row is ~90s of an unresponsive server before we
-// give up on the current socket — long enough to avoid churn on a
-// single dropped ping, short enough to recover before an operator
-// notices.
-var keepaliveMissThreshold = 3
-
 // New constructs a Client. Connect is deferred until Start.
 func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if cfg.StoreDSN == "" {
@@ -406,69 +396,6 @@ func (c *Client) handleConnected() {
 	c.adoptOwnID()
 	c.setLinked(true)
 	c.logger.Info("whatsapp.connected")
-}
-
-// handleKeepAliveTimeout counts a single missed ping. When the
-// consecutive miss count crosses keepaliveMissThreshold and no
-// reconnect is already in flight, it kicks off a Disconnect+Connect
-// on a fresh goroutine so the whatsmeow event dispatcher is never
-// blocked by a network round-trip.
-func (c *Client) handleKeepAliveTimeout() {
-	c.mu.Lock()
-	c.keepaliveMisses++
-	misses := c.keepaliveMisses
-	wm := c.wm
-	shouldReconnect := misses >= keepaliveMissThreshold && !c.reconnecting && wm != nil
-	if shouldReconnect {
-		c.reconnecting = true
-	}
-	c.mu.Unlock()
-
-	c.logger.Warn("whatsapp.keepalive_timeout",
-		slog.Int("consecutive", misses),
-		slog.Int("threshold", keepaliveMissThreshold))
-
-	if shouldReconnect {
-		c.logger.Error("whatsapp.keepalive_reconnect",
-			slog.Int("consecutive", misses),
-			slog.String("action", "Disconnect + Connect"))
-		go c.forceReconnect(wm)
-	}
-}
-
-// handleKeepAliveRestored clears the miss counter and logs at INFO
-// only when we were actually degraded. Zero-to-zero transitions stay
-// silent so a healthy connection's occasional Restored events (which
-// whatsmeow does not currently emit but might in future versions)
-// never spam the log.
-func (c *Client) handleKeepAliveRestored() {
-	c.mu.Lock()
-	prev := c.keepaliveMisses
-	c.keepaliveMisses = 0
-	c.mu.Unlock()
-	if prev > 0 {
-		c.logger.Info("whatsapp.keepalive_restored",
-			slog.Int("recovered_after", prev))
-	}
-}
-
-// forceReconnect closes the current whatsmeow socket and dials a
-// fresh one. Called from its own goroutine so the onEvent dispatcher
-// stays unblocked. Always clears reconnecting + keepaliveMisses
-// on the way out so a subsequent burst of timeouts can trigger
-// another attempt rather than being wedged behind the guard.
-func (c *Client) forceReconnect(wm *whatsmeow.Client) {
-	err := wmForceReconnect(wm)
-	c.mu.Lock()
-	c.reconnecting = false
-	c.keepaliveMisses = 0
-	c.mu.Unlock()
-	if err != nil {
-		c.logger.Error("whatsapp.reconnect_failed",
-			slog.String("err", err.Error()))
-		return
-	}
-	c.logger.Info("whatsapp.reconnect_issued")
 }
 
 func (c *Client) handleMessage(evt *events.Message) {

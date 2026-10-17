@@ -124,6 +124,10 @@ sboms:
 #     checksums.txt
 signs:
   - cmd: cosign
+    # Without `certificate`, ${certificate} expands to nothing, no .pem
+    # is written or uploaded, and install.sh (which verifies .sig + .pem)
+    # refuses every release when cosign is installed.
+    certificate: "${artifact}.pem"
     args:
       - "sign-blob"
       - "--yes"

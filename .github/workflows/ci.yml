@@ -61,6 +61,17 @@ jobs:
       # `make complexity-baseline` after reducing an offender.
       - run: scripts/complexity-gate.sh check
 
+  filesize:
+    name: file-size ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Fails on any non-test Go file over 500 lines that is not already
+      # in .file-size-baseline.txt, and on any baselined file that grew.
+      # The baseline only shrinks: run `make filesize-baseline` after
+      # splitting an offender.
+      - run: scripts/file-size-gate.sh check
+
   # Split into per-OS jobs (was a single matrix) because GitHub
   # Actions `services:` only runs on Linux runners — macOS has no
   # docker daemon. The Linux job runs a Postgres service so the
@@ -159,7 +170,7 @@ jobs:
   build:
     name: build
     runs-on: ubuntu-latest
-    needs: [vet, lint, complexity, test-linux, test-macos]
+    needs: [vet, lint, complexity, filesize, test-linux, test-macos]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7

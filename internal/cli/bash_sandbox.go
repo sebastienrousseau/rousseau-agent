@@ -178,7 +178,8 @@ func requireSandboxPolicy(cfg config.BashConfig, transportName string) error {
 	}
 	return fmt.Errorf("%s: tools.bash.sandbox.kind is unset, so the bash tool would run commands "+
 		"directly on the host. Set tools.bash.sandbox.kind to \"nsjail\" or \"gvisor\", or set "+
-		"tools.bash.sandbox.allow_unsandboxed: true to accept host execution explicitly",
+		"tools.bash.sandbox.allow_unsandboxed: true (ROUSSEAU_TOOLS_BASH_SANDBOX_ALLOW_UNSANDBOXED=true) "+
+		"to accept host execution explicitly",
 		transportName)
 }
 

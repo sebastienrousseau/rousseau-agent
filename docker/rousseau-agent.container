@@ -99,6 +99,18 @@ SecurityLabelDisable=false
 # Kernel isolation for the daemon.
 SeccompProfile=/usr/share/containers/seccomp.json
 
+# The daemon runs as PID 1, which never reaps the git/timeout children
+# claude's tools leave behind; without an init they pile up as zombies.
+# podman's catatonit takes PID 1 and reaps them.
+RunInit=true
+
+# The journald log driver files everything on stderr at PRIORITY=3, and
+# slog writes to stderr, so every INFO line showed under
+# `journalctl -p err`. passthrough hands the container's stdio to this
+# unit's journal stream at default priority. Read logs with
+# `journalctl --user -u rousseau-agent`; `podman logs` no longer works.
+LogDriver=passthrough
+
 # CLI args: run the WhatsApp subcommand. Supply your JID via the
 # ROUSSEAU_WHATSAPP_ALLOW env var (Environment= below, or drop an
 # EnvironmentFile= directive pointing at a systemd secret). The daemon
@@ -113,12 +125,24 @@ Environment=ROUSSEAU_WHATSAPP_ALLOW=15551234567@s.whatsapp.net
 # ["--allowedTools", "..."].
 Environment=ROUSSEAU_CLAUDECLI_PERMISSION_MODE=bypassPermissions
 
+# Required: the daemon refuses to run bash without a sandbox choice.
+# This image ships neither nsjail nor gVisor, so the choice here is to
+# run bash directly inside this container and let the container be the
+# boundary: rootless with keep-id, every capability dropped,
+# no-new-privileges, seccomp, read-only rootfs, its own pasta network
+# namespace, and only the workspace and state directories mounted.
+Environment=ROUSSEAU_TOOLS_BASH_SANDBOX_ALLOW_UNSANDBOXED=true
+
 # Credentials the agent's tools need (e.g. a GitHub token for gh/git)
 # belong in podman secrets, not EnvironmentFile=: create with
 # `printf %s "$TOKEN" | podman secret create rousseau_gh_token -` and
 # use a fine-grained token scoped to the repos the agent works on,
-# contents read/write only, no workflow scope.
+# contents read/write only, no workflow scope (pushes that touch
+# .github/workflows/ are then refused, which is the point). claude
+# runs with a scrubbed environment, so also list GH_TOKEN, GITHUB_TOKEN
+# and GIT_CONFIG_* in claudecli.env_passthrough (see docker/README.md).
 #Secret=rousseau_gh_token,type=env,target=GH_TOKEN
+#Secret=rousseau_gh_token,type=env,target=GITHUB_TOKEN
 
 # Liveness, not just "process running": the daemon rewrites a
 # heartbeat every 15s with its WhatsApp link state, and this check
