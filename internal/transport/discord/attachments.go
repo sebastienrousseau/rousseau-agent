@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -103,9 +104,13 @@ func isImageContentType(ct string) bool {
 }
 
 // downloadAttachment GETs the attachment URL — Discord CDN URLs are
-// signed and don't need the bot token. Capped at Config.MaxAudioBytes
-// (or 32 MiB) via io.LimitReader.
+// signed and don't need the bot token. Only https Discord CDN hosts are
+// fetched. Capped at Config.MaxAudioBytes (or 32 MiB) via
+// io.LimitReader.
 func (c *Client) downloadAttachment(ctx context.Context, url string) ([]byte, error) {
+	if !c.cdn.pattern.MatchString(url) {
+		return nil, errors.New("discord attachment: refused, not a Discord CDN URL")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

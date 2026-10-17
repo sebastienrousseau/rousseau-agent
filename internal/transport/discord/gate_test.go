@@ -26,6 +26,7 @@ func TestHandleMessage_StrangerVoiceIsNotTranscribed(t *testing.T) {
 			c, err := New(Config{Token: "t", BaseURL: srv.URL, HTTPClient: srv.Client(),
 				Transcriber: ft, IsAllowed: tc.gate}, silentLogger())
 			require.NoError(t, err)
+			trustTestCDN(t, c, srv.URL)
 			_ = c.handleMessage(context.Background(), discordMessage{ //nolint:errcheck // only the transcriber matters
 				ChannelID: "C", Author: discordUser{ID: "U-stranger"},
 				Attachments: []discordAttachment{{URL: srv.URL + "/att.ogg", ContentType: "audio/ogg"}},

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+	"regexp"
+
+	"github.com/sebastienrousseau/rousseau-agent/internal/transport"
 )
 
 // slackFileHost is the only host the bot token is sent to for a file
@@ -20,12 +22,12 @@ const maxFileRedirects = 5
 // fileFetcher downloads url_private_download files with the bot token,
 // only from https://files.slack.com, refusing redirects off that host
 // and treating a body over limit as an error rather than truncating
-// it. scheme and host are fields so in-package tests can stand an
+// it. allow and origin are fields so in-package tests can stand an
 // httptest server in for Slack.
 type fileFetcher struct {
 	client *http.Client
-	scheme string
-	host   string
+	allow  *regexp.Regexp // https, exactly files.slack.com, no port or userinfo
+	origin string         // what allow accepts, for the refusal message
 	limit  int64
 }
 
@@ -34,18 +36,12 @@ type fileFetcher struct {
 func newFileFetcher(base *http.Client) fileFetcher {
 	fc := *base
 	fc.CheckRedirect = refuseCrossHostRedirect
-	return fileFetcher{client: &fc, scheme: "https", host: slackFileHost, limit: maxFileBody}
-}
-
-// allowed reports whether raw is a URL the bot token may be sent to:
-// the configured scheme and exactly the configured host (no port, no
-// userinfo, no look-alike suffix).
-func (f fileFetcher) allowed(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return false
+	return fileFetcher{
+		client: &fc,
+		allow:  transport.FetchPattern("https", slackFileHost),
+		origin: "https://" + slackFileHost,
+		limit:  maxFileBody,
 	}
-	return u.Scheme == f.scheme && u.Host == f.host && u.User == nil
 }
 
 // refuseCrossHostRedirect stops a redirect that leaves the original
@@ -67,8 +63,8 @@ func refuseCrossHostRedirect(req *http.Request, via []*http.Request) error {
 // bytes. Slack requires the Authorization header for
 // url_private_download; a bare GET returns HTML.
 func (c *Client) downloadFile(ctx context.Context, rawURL string) ([]byte, error) {
-	if !c.files.allowed(rawURL) {
-		return nil, fmt.Errorf("slack: file GET: refused, not a %s://%s URL", c.files.scheme, c.files.host)
+	if !c.files.allow.MatchString(rawURL) {
+		return nil, fmt.Errorf("slack: file GET: refused, not a %s URL", c.files.origin)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {

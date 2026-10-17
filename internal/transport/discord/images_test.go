@@ -71,6 +71,7 @@ func TestHandleFrame_ImageAttachmentBecomesTransportAttachment(t *testing.T) {
 	cdn := newCDNServer(t, pngHeader)
 	c, err := New(Config{Token: "bot"}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, cdn.srv.URL)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {
@@ -91,6 +92,7 @@ func TestHandleFrame_ImageOnlyStillRoutes(t *testing.T) {
 	cdn := newCDNServer(t, pngHeader)
 	c, err := New(Config{Token: "bot"}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, cdn.srv.URL)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {
@@ -107,6 +109,7 @@ func TestHandleFrame_NonImageAttachmentNotDownloaded(t *testing.T) {
 	cdn := newCDNServer(t, []byte("pdfbytes"))
 	c, err := New(Config{Token: "bot"}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, cdn.srv.URL)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {
@@ -125,6 +128,7 @@ func TestHandleFrame_ImageDownloadFailureDropsAttachmentKeepsText(t *testing.T) 
 	cdn.status = http.StatusInternalServerError
 	c, err := New(Config{Token: "bot"}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, cdn.srv.URL)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {
@@ -144,6 +148,7 @@ func TestHandleFrame_OversizeImageIsDropped(t *testing.T) {
 		MediaPolicy: media.Policy{MaxImageBytes: 3},
 	}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, cdn.srv.URL)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {
@@ -159,6 +164,7 @@ func TestHandleFrame_EnvelopeMIMELyingLogsAndDelivers(t *testing.T) {
 	cdn := newCDNServer(t, pngHeader)
 	c, err := New(Config{Token: "bot"}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, cdn.srv.URL)
 
 	var got transport.IncomingMessage
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {

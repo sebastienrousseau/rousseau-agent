@@ -72,6 +72,7 @@ func TestTranscribeAudio_HappyPath(t *testing.T) {
 	ft := &fakeTranscriber{reply: "hello world"}
 	c, err := New(Config{Token: "t", Transcriber: ft, HTTPClient: srv.Client()}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, srv.URL)
 	msg := &discordMessage{Attachments: []discordAttachment{
 		{URL: srv.URL + "/att.ogg", ContentType: "audio/ogg"},
 	}}
@@ -90,6 +91,7 @@ func TestTranscribeAudio_DownloadFailure_ReturnsEmpty(t *testing.T) {
 	ft := &fakeTranscriber{reply: "should-not-be-returned"}
 	c, err := New(Config{Token: "t", Transcriber: ft, HTTPClient: srv.Client()}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, srv.URL)
 	msg := &discordMessage{Attachments: []discordAttachment{
 		{URL: srv.URL + "/att.ogg", ContentType: "audio/mpeg"},
 	}}
@@ -106,6 +108,7 @@ func TestTranscribeAudio_TranscribeFailure_ReturnsEmpty(t *testing.T) {
 	ft := &fakeTranscriber{err: assertingError("transcription broke")}
 	c, err := New(Config{Token: "t", Transcriber: ft, HTTPClient: srv.Client()}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, srv.URL)
 	msg := &discordMessage{Attachments: []discordAttachment{
 		{URL: srv.URL + "/att.ogg", ContentType: "audio/ogg"},
 	}}
@@ -124,6 +127,7 @@ func TestTranscribeAudio_MaxBytesRespected(t *testing.T) {
 		Token: "t", Transcriber: ft, HTTPClient: srv.Client(), MaxAudioBytes: 10,
 	}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, srv.URL)
 	msg := &discordMessage{Attachments: []discordAttachment{
 		{URL: srv.URL + "/att.ogg", ContentType: "audio/ogg"},
 	}}
@@ -153,6 +157,7 @@ func TestDispatch_AudioReplacesEmptyContent(t *testing.T) {
 		Token: "t", BaseURL: srv.URL, HTTPClient: srv.Client(), Transcriber: ft,
 	}, silentLogger())
 	require.NoError(t, err)
+	trustTestCDN(t, c, srv.URL)
 
 	var got string
 	handler := transport.HandlerFunc(func(_ context.Context, m transport.IncomingMessage) (string, error) {

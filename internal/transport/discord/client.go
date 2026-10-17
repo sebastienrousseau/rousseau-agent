@@ -89,6 +89,7 @@ type Client struct {
 	cfg     Config
 	logger  *slog.Logger
 	http    *http.Client
+	cdn     cdnPolicy
 	stopped atomic.Bool
 
 	mu     sync.Mutex
@@ -121,7 +122,7 @@ func New(cfg Config, logger *slog.Logger) (*Client, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{cfg: cfg, logger: logger, http: cfg.HTTPClient}, nil
+	return &Client{cfg: cfg, logger: logger, http: cfg.HTTPClient, cdn: defaultCDNPolicy()}, nil
 }
 
 // Name returns the transport identifier.
