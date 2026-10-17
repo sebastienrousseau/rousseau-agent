@@ -149,6 +149,11 @@ func setDefaults(v *viper.Viper) {
 	// Bound explicitly (no default) so ROUSSEAU_CLAUDECLI_PERMISSION_MODE
 	// works; unattended transports refuse to start without a mode.
 	_ = v.BindEnv("claudecli.permission_mode") //nolint:errcheck // BindEnv only errors on zero args
+	// Same reason: the shipped container sets its sandbox choice with
+	// ROUSSEAU_TOOLS_BASH_SANDBOX_*, and without these keys viper never
+	// looks at those variables, so the daemon refused to start.
+	v.SetDefault("tools.bash.sandbox.kind", "")
+	v.SetDefault("tools.bash.sandbox.allow_unsandboxed", false)
 	v.SetDefault("openrouter.base_url", "https://openrouter.ai/api/v1")
 	v.SetDefault("ollama.base_url", "http://localhost:11434/v1")
 	v.SetDefault("ollama.api_key", "not-required")
