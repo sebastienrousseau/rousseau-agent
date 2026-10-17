@@ -1,7 +1,7 @@
 .PHONY: help setup build install test test-race lint vet vuln check clean tidy fmt bench fuzz \
         image image-base image-builder image-daemon image-distroless image-lite \
         images quadlet-install quadlet-status deploy container-check cover cover-html cover-gate \
-        complexity complexity-baseline install-test
+        complexity complexity-baseline filesize filesize-baseline install-test
 
 BIN         := bin/rousseau
 PKG         := ./...
@@ -68,13 +68,19 @@ complexity: ## Ratchet gate: no new or worse functions over cyclomatic 10 / cogn
 complexity-baseline: ## Regenerate .complexity-baseline.txt after shrinking an offender
 	@bash scripts/complexity-gate.sh baseline
 
+filesize: ## Ratchet gate: no new or longer non-test Go files over 500 lines
+	@bash scripts/file-size-gate.sh check
+
+filesize-baseline: ## Regenerate .file-size-baseline.txt after shrinking an offender
+	@bash scripts/file-size-gate.sh baseline
+
 depcheck: ## Providers and stores must not depend on internal/agent
 	@bash scripts/depcheck.sh
 
 install-test: ## Offline tests for scripts/install.sh (signature failure paths)
 	@bash scripts/install_test.sh
 
-check: vet depcheck install-test lint complexity test-race vuln ## Full quality gate
+check: vet depcheck install-test lint complexity filesize test-race vuln ## Full quality gate
 
 build: ## Build the binary
 	@mkdir -p bin
