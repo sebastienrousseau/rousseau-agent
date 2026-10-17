@@ -172,7 +172,7 @@ deploy: image ## Rebuild rousseau-agent image and restart the Quadlet service (p
 		fi; \
 		sleep 1; \
 	done; \
-	echo "deploy: $(QUADLET_SERVICE) did not become active — check 'podman logs rousseau-agent'"; exit 1
+	echo "deploy: $(QUADLET_SERVICE) did not become active — check 'journalctl --user -u $(QUADLET_SERVICE)'"; exit 1
 
 container-check: ## Verify the host can run the hardened containers rootlessly
 	@bash docker/preflight.sh
