@@ -15,6 +15,76 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
+### v0.0.16
+
+- **`install.sh` accepts signed releases again.** With cosign on
+  `PATH`, the installer verifies `checksums.txt.sig` against
+  `checksums.txt.pem` and refuses a release missing either. No release
+  has shipped the `.pem` (v0.0.11, v0.0.14 and v0.0.15 included): the GoReleaser
+  `signs:` entry never set `certificate`, so `${certificate}` expanded
+  to nothing and cosign wrote no certificate file. The entry now names
+  `${artifact}.pem`, which GoReleaser uploads with the signature.
+  To install v0.0.15 or earlier with cosign present, set
+  `ROUSSEAU_SKIP_COSIGN=1`.
+- **The container starts again.** v0.0.14 and v0.0.15 refuse to run bash until
+  `tools.bash.sandbox` is chosen, the image ships neither nsjail nor
+  gVisor, and `ROUSSEAU_TOOLS_BASH_SANDBOX_ALLOW_UNSANDBOXED` was
+  ignored: viper only reads environment variables for keys it has a
+  default for, and these had none. Both `tools.bash.sandbox.kind` and
+  `tools.bash.sandbox.allow_unsandboxed` now have defaults, so the
+  variables work, and the refusal names the variable. The shipped
+  `rousseau-agent.container` sets the opt-in: bash runs inside the
+  container, which is the boundary (rootless, no capabilities, seccomp,
+  read-only rootfs, its own network namespace). A v0.0.14 or v0.0.15 install can
+  set `tools.bash.sandbox.allow_unsandboxed: true` in a mounted
+  `config.yaml` instead.
+- **WhatsApp recovers from a failed reconnect.** After three missed
+  keepalives the bridge drops the socket and dials again; if that one
+  dial failed (a DNS timeout on 2026-10-13), nothing tried again, since
+  no socket means no keepalive loop, and the session still read as
+  connected, so `rousseau health whatsapp` stayed green and Quadlet's
+  `HealthOnFailure=kill` never fired. The daemon sat deaf for two days.
+  The reconnect now retries (5s, 15s, 30s, then every minute) until a
+  dial succeeds or the client stops, and the session reads as down
+  until WhatsApp confirms the new connection. The keepalive code moves
+  to `whatsapp/keepalive.go`, taking `client.go` under 500 lines.
+- The Discord transport now fetches attachments only from
+  `https://cdn.discordapp.com` and `https://media.discordapp.net`.
+  The URL comes from the gateway payload; before, the daemon fetched
+  whatever URL it held.
+- Discord and Slack check a download URL with one anchored pattern
+  (`transport.FetchPattern`: exact scheme, exact host, then a path)
+  right before the request. Slack already refused other hosts, but its
+  parse-and-compare helper is not a check CodeQL's request-forgery
+  query recognises, so the alert stayed open on safe code.
+- **Both Quadlet units run podman's init** (`RunInit=true`). The daemon
+  and `sleep infinity` were PID 1 and never reaped the git and timeout
+  processes claude's tools leave behind; a day of use left dozens of
+  zombies.
+- **Logs keep their level.** `rousseau-agent.container` uses
+  `LogDriver=passthrough`. The journald driver files all of stderr at
+  error priority, and slog writes to stderr, so every INFO line showed
+  under `journalctl -p err`. Read logs with
+  `journalctl --user -u rousseau-agent`; `podman logs` no longer shows
+  them.
+- `docker/README.md` covers giving the agent GitHub access: a
+  fine-grained token without Workflows permission stored as a podman
+  secret, and `claudecli.env_passthrough` for `GH_TOKEN`,
+  `GITHUB_TOKEN` and `GIT_CONFIG_*`, without which claude's scrubbed
+  environment hides both the token and the git identity. It also covers
+  mounting `config.yaml` read-only and raising `agent.turn_timeout` for
+  long coding turns.
+- The container release builds the multi-arch manifest's arguments as
+  bash arrays instead of unquoted `$(...)`, clearing the two shellcheck
+  warnings actionlint reported. The arguments are unchanged.
+- CI now fails on a non-test Go file over 500 lines unless it is in
+  `.file-size-baseline.txt`, and on a baselined file that grows
+  (`make filesize`). `internal/config/config.go` (1,360 lines) and
+  `internal/transport/discord/client.go` (567) are split by concern
+  into files of their own package; nothing else changed. 17 older
+  files are baselined.
+- Helm chart 0.0.4 tracks v0.0.16.
+
 ### v0.0.15
 
 - **Dependencies & Supply Chain**:

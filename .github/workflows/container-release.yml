@@ -307,10 +307,14 @@ jobs:
           # $DOCKER_METADATA_OUTPUT_JSON — turn that into `-t <tag>`
           # args, then append `<image>@sha256:<digest>` for each
           # per-arch digest we downloaded. `imagetools create`
-          # atomically publishes the manifest list.
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf "${REGISTRY}/${IMAGE_NAME}@sha256:%s " *)
+          # atomically publishes the manifest list. Arrays, not
+          # unquoted $(...), so a tag is never split or globbed.
+          mapfile -t tag_args < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          sources=()
+          for digest in *; do
+            sources+=("${REGISTRY}/${IMAGE_NAME}@sha256:${digest}")
+          done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
 
       - name: Inspect merged manifest for digest
         id: inspect

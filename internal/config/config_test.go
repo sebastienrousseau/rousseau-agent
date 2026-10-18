@@ -148,3 +148,20 @@ func TestLoad_TurnTimeout(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, cfg.Agent.TurnTimeout, "explicit opt-out")
 }
+
+// The container deployment has no nsjail/gVisor, so it opts in to
+// unsandboxed bash through the environment. viper only reads env for
+// keys it knows, so these need a default or binding to work at all.
+func TestLoad_EnvBashSandboxChoice(t *testing.T) {
+	t.Setenv("ROUSSEAU_TOOLS_BASH_SANDBOX_ALLOW_UNSANDBOXED", "true")
+	t.Setenv("ROUSSEAU_TOOLS_BASH_SANDBOX_KIND", "nsjail")
+	cfg := loadWithoutFile(t)
+	assert.True(t, cfg.Tools.Bash.Sandbox.AllowUnsandboxed)
+	assert.Equal(t, "nsjail", cfg.Tools.Bash.Sandbox.Kind)
+}
+
+func TestLoad_BashSandboxDefaultsUnset(t *testing.T) {
+	cfg := loadWithoutFile(t)
+	assert.False(t, cfg.Tools.Bash.Sandbox.AllowUnsandboxed)
+	assert.Empty(t, cfg.Tools.Bash.Sandbox.Kind)
+}

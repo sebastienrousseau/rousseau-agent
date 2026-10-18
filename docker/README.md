@@ -106,6 +106,15 @@ systemctl --user daemon-reload
 systemctl --user start rousseau-agent
 ```
 
+The unit sets two choices the daemon refuses to guess:
+`ROUSSEAU_CLAUDECLI_PERMISSION_MODE` and
+`ROUSSEAU_TOOLS_BASH_SANDBOX_ALLOW_UNSANDBOXED=true`. The image ships
+no nsjail or gVisor, so bash runs inside the container and the
+container is the sandbox (rootless, no capabilities, seccomp, read-only
+rootfs, its own network namespace). It also runs podman's init as PID 1
+(`RunInit=true`) so the git and timeout processes claude's tools leave
+behind are reaped.
+
 The Makefile shortcut installs both the Quadlet and the OAuth-refresh
 watcher described below in one shot:
 
@@ -172,6 +181,83 @@ that `allowed_signers` file under your email so the container verifies
 its own signatures (`merge.verifySignatures` is on), and add it to
 GitHub as a signing key for the "Verified" badge. Then
 `systemctl --user daemon-reload && systemctl --user restart rousseau-agent`.
+
+If the host also has `merge.verifySignatures` on, add the same key to
+the host's `allowed_signers` too, or the host refuses to merge what the
+agent committed in the shared workspace.
+
+### Config file
+
+Settings with no environment variable (lists such as
+`claudecli.env_passthrough`, durations such as `agent.turn_timeout`)
+go in a `config.yaml`. Keep it on the host and mount it read-only, so a
+tool call inside the container cannot rewrite its own policy:
+
+```ini
+# rousseau-agent.container.d/40-config.conf
+[Container]
+Volume=%h/.config/rousseau/config.yaml:/home/rousseau/.config/rousseau/config.yaml:ro,Z
+```
+
+`agent.turn_timeout` (default `30m`) bounds one chat turn end to end.
+A coding turn that runs tests, lint and commits can take longer; the
+cut-off loses no work (edits stay on disk and the session resumes), but
+the reply is a timeout notice. `90m` has held up for that kind of work.
+Keep a limit: a hung claude otherwise blocks every later message from
+that sender until `/cancel`.
+
+```yaml
+agent:
+  turn_timeout: 90m
+```
+
+### GitHub access for the agent
+
+Give the agent a fine-grained personal access token, not your `gh`
+login: resource owner you, repository access to the repositories it
+works on, and repository permissions Contents, Issues and Pull requests
+read/write, Actions and Commit statuses read. Leave Workflows off. A
+push that touches `.github/workflows/` is then refused, so a change to
+what CI runs with your secrets always goes through you.
+
+Store it as a podman secret and expose it under both names `gh` and git
+tools look for:
+
+```bash
+printf %s "$TOKEN" | podman secret create rousseau_gh_token -
+```
+
+```ini
+# rousseau-agent.container.d/60-gh-token.conf
+[Container]
+Secret=rousseau_gh_token,type=env,target=GH_TOKEN
+Secret=rousseau_gh_token,type=env,target=GITHUB_TOKEN
+```
+
+claude runs with a scrubbed environment (the envscrub baseline,
+`ANTHROPIC_*`, `CLAUDE_*`, proxy and CA settings), so the token and the
+`GIT_CONFIG_*` identity above never reach the tools it runs unless you
+pass them through in `config.yaml`:
+
+```yaml
+claudecli:
+  env_passthrough:
+    - GH_TOKEN
+    - GITHUB_TOKEN
+    - GIT_CONFIG_*
+```
+
+Without this, `gh auth status` inside an agent turn reports no login
+and HTTPS pushes fail, even though `podman exec rousseau-agent gh auth
+status` succeeds. To rotate, `podman secret rm rousseau_gh_token`,
+create it again, and restart the unit.
+
+### Logs
+
+The unit uses `LogDriver=passthrough`: the daemon logs with slog on
+stderr, and the journald driver would file every line at error
+priority. Read logs with `journalctl --user -u rousseau-agent`;
+`podman logs` shows nothing under this driver.
 
 ## Claude Code config (container-owned)
 
