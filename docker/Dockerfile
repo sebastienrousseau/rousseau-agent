@@ -22,7 +22,7 @@
 # platforms. The same digest is pinned in Dockerfile.distroless and
 # Dockerfile.lite; keep the three in step.
 # golang:1.26.9-alpine3.24 (index) as of 2026-10-09
-FROM golang:1.26.9-alpine3.24@sha256:cdfd4fe2da6b225d8b40c6b7a105736e548e83ff56d5d8f9394446eeb5eb84e0 AS builder
+FROM golang:1.26.9-alpine3.24@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS builder
 
 WORKDIR /src
 
