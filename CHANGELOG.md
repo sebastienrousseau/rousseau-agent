@@ -15,6 +15,27 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
+### v0.0.17
+
+- **Security:** the MCP Python SDK in the builder image moves to
+  `1.30.0`, fixing unbounded session accumulation in its StreamableHTTP
+  transport (GHSA-84m7-p3x7-pcfv, CVE-2026-59951, medium).
+- **Dependencies:**
+  - `github.com/anthropics/anthropic-sdk-go` updated to `1.81.0`.
+  - `github.com/aws/aws-sdk-go-v2/config` updated to `1.33.9` and
+    `service/bedrockruntime` to `1.63.4` (core `1.47.3`, `smithy-go`
+    `1.28.5`).
+  - `github.com/open-policy-agent/opa` updated to `1.21.2`.
+  - `golang.org/x/crypto` updated to `0.58.0` and `golang.org/x/text`
+    to `0.43.0`.
+  - `goreleaser/goreleaser-action` updated to `7.3.0`.
+  - `golang:1.26.9-alpine3.24` and `devcontainers/base` image digests
+    refreshed.
+- **Tests:** `TestKeyedMutex_SerializesSameKeyAndCleansUp` no longer
+  flakes. It checked that unused keys are dropped before the second
+  holder had unlocked.
+- Helm chart 0.0.5 tracks v0.0.17 (`appVersion: "v0.0.17"`).
+
 ### v0.0.16
 
 - **`install.sh` accepts signed releases again.** With cosign on
