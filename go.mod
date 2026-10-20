@@ -6,7 +6,7 @@ toolchain go1.26.9
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/anthropics/anthropic-sdk-go v1.81.0
+	github.com/anthropics/anthropic-sdk-go v1.82.0
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.4
