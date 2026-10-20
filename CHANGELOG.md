@@ -17,9 +17,13 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ### v0.0.17
 
-- **Security:** the MCP Python SDK in the builder image moves to
-  `1.30.0`, fixing unbounded session accumulation in its StreamableHTTP
-  transport (GHSA-84m7-p3x7-pcfv, CVE-2026-59951, medium).
+- **Not fixed yet:** the builder image keeps the MCP Python SDK at
+  `1.29.0`, which has unbounded session accumulation in its
+  StreamableHTTP transport (GHSA-84m7-p3x7-pcfv, CVE-2026-59951,
+  medium). It is only there as a dependency of semgrep, and every
+  semgrep release up to `1.181.0` pins `mcp==1.29.0` exactly. The
+  builder runs semgrep as a CLI scanner and never starts its MCP
+  server, the only code path the advisory affects.
 - **Dependencies:**
   - `github.com/anthropics/anthropic-sdk-go` updated to `1.81.0`.
   - `github.com/aws/aws-sdk-go-v2/config` updated to `1.33.9` and
