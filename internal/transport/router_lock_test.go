@@ -57,11 +57,12 @@ func TestRouter_SlowSenderDoesNotBlockOthers(t *testing.T) {
 func TestKeyedMutex_SerializesSameKeyAndCleansUp(t *testing.T) {
 	var k keyedMutex
 	unlockA := k.Lock("x")
-	got := make(chan struct{})
+	got, released := make(chan struct{}), make(chan struct{})
 	go func() {
 		unlock := k.Lock("x")
 		close(got)
 		unlock()
+		close(released)
 	}()
 	select {
 	case <-got:
@@ -70,6 +71,9 @@ func TestKeyedMutex_SerializesSameKeyAndCleansUp(t *testing.T) {
 	}
 	unlockA()
 	<-got
+	// Wait for the second holder to unlock too: got only says it took
+	// the lock, and checking the map before its unlock runs flakes.
+	<-released
 	k.Lock("y")()
 	k.mu.Lock()
 	defer k.mu.Unlock()
