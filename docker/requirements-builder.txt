@@ -4,12 +4,20 @@
 # transitive ones, must match a recorded SHA-256. To change a top-level
 # pin (pre-commit, semgrep), regenerate the whole file:
 #
-#   printf 'pre-commit==X\nsemgrep==Y\n' > /tmp/req.in
+#   printf 'pre-commit==X\nsemgrep==Y\nfilelock>=4.2.1\nvirtualenv>=21.14.13\ncertifi>=2026.10.19\n' > /tmp/req.in
 #   uv pip compile --generate-hashes --python-version 3.12 \
 #     --python-platform x86_64-manylinux_2_39 --no-header \
 #     --annotation-style line /tmp/req.in -o /tmp/req.txt
 #
 # then replace everything below this header with /tmp/req.txt.
+#
+# The three floors keep advised releases out of pre-commit's tree: filelock
+# GHSA-9vhv-jxww-xfm5, GHSA-567q-5qvw-pf92 and GHSA-v4x8-3wr5-3wq8 (fixed in
+# 4.2.1), virtualenv GHSA-cx6f-vjhg-g3cc (fixed in 21.14.13) and certifi
+# PYSEC-2026-4320 (fixed in 2026.10.19). semgrep pins mcp==1.29.0
+# (GHSA-84m7-p3x7-pcfv, fixed in 1.30.0) and opentelemetry-api~=1.37.0
+# (GHSA-xcq7-p3pf-p88h, fixed in 1.45.1) in every release, up to 1.182.1,
+# so those two stay until semgrep moves.
 annotated-types==0.8.0 \
     --hash=sha256:13b2beaad985e05e2d6407ee4c4f35590b11f8d693a258a561055cac8f64cab7 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
@@ -30,10 +38,10 @@ bracex==3.0.1 \
     --hash=sha256:4e38e32392e4a4780fe15d644bfc7c8514057cfc3861e060b11814ce829c25e4 \
     --hash=sha256:6523ad83aeb5098a4ee597cff0f964442ff74e460bd3fafaffab6a013ff2288c
     # via wcmatch
-certifi==2026.7.22 \
-    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
-    --hash=sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55
-    # via httpcore, httpx, requests
+certifi==2026.10.19 \
+    --hash=sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae \
+    --hash=sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b
+    # via httpcore, httpx, requests, -r /tmp/iso20022-suite/outside/fork-mcp-adj/ra/req.in
 cffi==2.1.1 \
     --hash=sha256:046bfc24911b37851ee1b51aab8bffe713d89c68c6a057b09484ce9fd5f69b4e \
     --hash=sha256:06c72bb76605a4b0cd0aad6930b69d4baf7dd5d806cfc409b824191099700e66 \
@@ -399,10 +407,10 @@ face==26.0.1 \
     --hash=sha256:8183d94bc248baaea855a9f8445f97a22a9988908e60abddccc6e251da77c4c6 \
     --hash=sha256:ab0a83c37c9789dce658a67a9a80eafaa113c9ec37c5a9d950ff5480542a062d
     # via glom
-filelock==4.0.12 \
-    --hash=sha256:5f17ee83ecee8a6f3e389c75822fb70a1c2f0506b99438a6dffa1d56793588c8 \
-    --hash=sha256:cf42711a7ac791818b299fab0332a088c65aeeefa36290de98db92c434303b0c
-    # via python-discovery, virtualenv
+filelock==4.2.4 \
+    --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e \
+    --hash=sha256:c6d8663535e1650ee430507b4ffbac7b464dd64b7647ea0112a9f406499d163d
+    # via python-discovery, virtualenv, -r /tmp/iso20022-suite/outside/fork-mcp-adj/ra/req.in
 glom==25.12.0 \
     --hash=sha256:1ae7da88be3693df40ad27bdf57a765a55c075c86c971bcddd67927403eb0069 \
     --hash=sha256:b9f21e77f71a6576a43864e85066b8cc3f0f778d0d50961563f8981377a6dcb1
@@ -518,7 +526,7 @@ platformdirs==4.12.4 \
 pre-commit==4.6.2 \
     --hash=sha256:8f5d7bfb021ecdbcd9d49d89847082dd24172ccde534390081a679ad046e2441 \
     --hash=sha256:e2dde9a75d3bce11bd3831c26d134df00a2803c1d818be6a0383c3dcda25dc4e
-    # via -r requirements-builder.in
+    # via -r /tmp/iso20022-suite/outside/fork-mcp-adj/ra/req.in
 protobuf==6.33.6 \
     --hash=sha256:0cd27b587afca21b7cfa59a74dcbd48a50f0a6400cfb59391340ad729d91d326 \
     --hash=sha256:77179e006c476e69bf8e8ce866640091ec42e1beb80b213c3900006ecfba6901 \
@@ -982,7 +990,7 @@ semgrep==1.180.0 \
     --hash=sha256:cba06f64b10e5ec86a0b3a9757cfdfdf3ce6c2bbdb5e98762aa2a4b0a296f8ca \
     --hash=sha256:d19b447b5d49c435dda099fd5f9d96ec7822e98a8ea6df16630f4f0596ed27ed \
     --hash=sha256:f074dcfd6a56095fde32c354af27ef0cce6d15607bef42fa50964dd7042b667d
-    # via -r requirements-builder.in
+    # via -r /tmp/iso20022-suite/outside/fork-mcp-adj/ra/req.in
 sse-starlette==3.5.0 \
     --hash=sha256:3e6e1070df3f0f5d9cea81496de92dbb72f6721871d99748ece67441dd8b7997 \
     --hash=sha256:75de713aa8a9441513cc283220826da079d982770965b951e9437720e8bafdb2
@@ -1056,10 +1064,10 @@ uvicorn==0.54.0 \
     --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf \
     --hash=sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620
     # via mcp
-virtualenv==21.14.5 \
-    --hash=sha256:b0651e0174982bba17cc6f0aaa2ef496730cb85a3f35eb5d1119d1c904f7d1da \
-    --hash=sha256:c4cb6c13e46b57225a999c7e22a09b163393878facc7ac4c059a57f46faa1647
-    # via pre-commit
+virtualenv==21.14.13 \
+    --hash=sha256:5fbb04138a4861580b78ba9110d529a26bc48fcc93c8ec36bc0202eeed96a788 \
+    --hash=sha256:de5307ba4b9a0001d9c8ea02832d38f63ca432880f416c1bface61c4323fd905
+    # via pre-commit, -r /tmp/iso20022-suite/outside/fork-mcp-adj/ra/req.in
 wcmatch==8.5.2 \
     --hash=sha256:17d3ad3758f9d0b5b4dedc770b65420d4dac62e680229c287bf24c9db856a478 \
     --hash=sha256:a70222b86dea82fb382dd87b73278c10756c138bd6f8f714e2183128887b9eb2

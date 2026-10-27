@@ -15,6 +15,14 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
 
 ## [Unreleased]
 
+- **Security:** the builder image's hashed Python tree
+  (`docker/requirements-builder.txt`) floors `filelock >= 4.2.1`
+  (GHSA-9vhv-jxww-xfm5, GHSA-567q-5qvw-pf92, GHSA-v4x8-3wr5-3wq8; it pinned
+  4.0.12), `virtualenv >= 21.14.13` (GHSA-cx6f-vjhg-g3cc; it pinned 21.14.5)
+  and `certifi >= 2026.10.19` (PYSEC-2026-4320; it pinned 2026.7.22), all
+  through pre-commit. `mcp` 1.29.0 and `opentelemetry-api` 1.37.0 stay:
+  every semgrep release up to 1.182.1 pins them exactly.
+
 ### v0.0.17
 
 - **Not fixed yet:** the builder image keeps the MCP Python SDK at
