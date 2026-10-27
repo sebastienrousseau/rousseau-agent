@@ -21,8 +21,8 @@
 # `podman manifest inspect <image>@<digest>` must list several
 # platforms. The same digest is pinned in Dockerfile.distroless and
 # Dockerfile.lite; keep the three in step.
-# golang:1.26.9-alpine3.24 (index) as of 2026-10-09
-FROM golang:1.26.9-alpine3.24@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS builder
+# golang:1.26.10-alpine3.24 (index) as of 2026-10-27
+FROM golang:1.26.10-alpine3.24@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
 
 WORKDIR /src
 
@@ -126,9 +126,9 @@ RUN echo "apk refresh: ${APK_REFRESH}" \
 # npm itself is upgraded first: the copy bundled with the node base
 # image carries vulnerable dependencies (brace-expansion, pacote,
 # sigstore, ip-address, picomatch) that fail the image's CVE gate.
-ARG NPM_VERSION=12.2.0
+ARG NPM_VERSION=12.2.1
 RUN npm install -g npm@${NPM_VERSION} && npm --version
-ARG PNPM_VERSION=12.10.1
+ARG PNPM_VERSION=12.15.0
 RUN npm install -g pnpm@${PNPM_VERSION} && pnpm --version
 
 # gh (GitHub CLI) is a pinned release archive checked against SHA-256
@@ -271,7 +271,7 @@ ENV PATH=/home/rousseau/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 # `rust@latest` changed under every rebuild. Only the /tmp cleanup
 # tolerates failure (an unmatched glob).
 ARG MISE_PYTHON=3.12.15
-ARG MISE_GO=1.26.9
+ARG MISE_GO=1.26.10
 ARG MISE_RUST=1.99.0
 RUN MISE_YES=1 mise use -g python@${MISE_PYTHON} go@${MISE_GO} rust@${MISE_RUST} \
  && mise ls \

@@ -115,38 +115,19 @@ ignore:
       name: "python"
       location: "/home/rousseau/.local/share/mise/installs/python/**"
 
-  # npm 12.2.0 (the latest release, pinned in docker/Dockerfile) bundles
-  # undici 6.28.0 and brace-expansion 5.0.9 inside its own
-  # node_modules; fixed versions exist upstream but no npm release
-  # carries them yet, and bundled dependencies cannot be updated in
-  # place. npm stays in the image because the agent uses it for
-  # JavaScript projects. Scoped to npm's bundled copies only.
+  # npm 12.2.1 (the latest release, pinned in docker/Dockerfile) bundles
+  # undici 6.29.0 inside its own node_modules: GHSA-xjj6-f33q-929c
+  # (denial of service on excessive content-encodings) is fixed in
+  # 6.29.1 (2026-10-15), which no npm release bundles yet, and bundled
+  # dependencies cannot be updated in place. npm stays in the image
+  # because the agent uses it for JavaScript projects. npm 12.2.1 already
+  # bundles the fixed brace-expansion, ip-address and http-cache-semantics
+  # that the 12.2.0 rules here covered. Scoped to npm's bundled copy only;
+  # pnpm 12.15.0 bundles the fixed undici 6.29.1.
   #
-  # REMOVE WHEN: an npm release bundles undici >= 6.28.1 and
-  # brace-expansion >= 5.0.11 (bump NPM_VERSION in docker/Dockerfile).
-  - vulnerability: "GHSA-rfgv-xxqx-mfg5"
+  # REMOVE WHEN: an npm release bundles undici >= 6.29.1 (bump
+  # NPM_VERSION in docker/Dockerfile).
+  - vulnerability: "GHSA-xjj6-f33q-929c"
     package:
       name: "undici"
       location: "/usr/local/lib/node_modules/npm/node_modules/undici/**"
-  - vulnerability: "GHSA-6j4f-fj2g-mc7p"
-    package:
-      name: "brace-expansion"
-      location: "/usr/local/lib/node_modules/npm/node_modules/brace-expansion/**"
-  - vulnerability: "GHSA-qhr7-859c-m2p7"
-    package:
-      name: "brace-expansion"
-      location: "/usr/local/lib/node_modules/npm/node_modules/brace-expansion/**"
-
-  # http-cache-semantics 4.2.0, bundled by npm 12.2.0 (the latest npm)
-  # in its own node_modules: GHSA-ch52-4w7c-c8xp (max-stale handling can
-  # serve one user's cached response to another) has NO patched version
-  # (the advisory lists none, and 4.2.0 is the latest release, checked
-  # 2026-10-03). npm uses it for its registry HTTP cache, a single-user
-  # cache in this container. Scoped to npm's bundled copy only.
-  #
-  # REMOVE WHEN: http-cache-semantics ships a fix and an npm release
-  # bundles it (bump NPM_VERSION in docker/Dockerfile).
-  - vulnerability: "GHSA-ch52-4w7c-c8xp"
-    package:
-      name: "http-cache-semantics"
-      location: "/usr/local/lib/node_modules/npm/node_modules/http-cache-semantics/**"

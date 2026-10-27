@@ -22,6 +22,17 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
   and `certifi >= 2026.10.19` (PYSEC-2026-4320; it pinned 2026.7.22), all
   through pre-commit. `mcp` 1.29.0 and `opentelemetry-api` 1.37.0 stay:
   every semgrep release up to 1.182.1 pins them exactly.
+- **Security:** Go 1.26.10 everywhere (go.mod toolchain, every
+  `setup-go`, the three images' `golang:1.26.10-alpine3.24` builder base
+  and `MISE_GO`): GO-2026-6809, the crypto/x509 intermediate-certificate
+  distrust, reached from `observability.StartMetricsServer`, is fixed in
+  1.26.10 (2026-10-20, the only fixed 1.26 release).
+- **Security:** the runtime image installs npm 12.2.1 and pnpm 12.15.0.
+  pnpm 12.15.0 bundles undici 6.29.1 (GHSA-xjj6-f33q-929c); npm 12.2.1
+  bundles the fixed brace-expansion, ip-address and http-cache-semantics,
+  so their `.grype.yaml` exceptions go. Its undici 6.29.0 is still
+  affected and no npm release bundles 6.29.1 yet: `.grype.yaml` scopes
+  that one advisory to npm's bundled copy until one does.
 
 ### v0.0.17
 
