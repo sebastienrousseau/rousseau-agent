@@ -17,8 +17,8 @@
 
 ########################  BUILDER  ########################
 # Digest-pinned (L-28): the same multi-arch index as docker/Dockerfile;
-# keep the three in step. golang:1.26.9-alpine3.24 as of 2026-10-09.
-FROM golang:1.26.9-alpine3.24@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS builder
+# keep the three in step. golang:1.26.10-alpine3.24 as of 2026-10-27.
+FROM golang:1.26.10-alpine3.24@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
 
 WORKDIR /src
 
