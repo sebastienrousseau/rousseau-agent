@@ -280,7 +280,7 @@ RUN set -eu \
 # then review the diff between the old and new commit before merging.
 # ---------------------------------------------------------------------
 ARG DOTFILES_REPO=https://github.com/sebastienrousseau/dotfiles
-ARG DOTFILES_REF=b2f15f93b636bb768ea9b39cee09199e50839ba2
+ARG DOTFILES_REF=c3e721ff58cbf3c477a996f21b46b34a2bd82adc
 RUN set -eu; \
     case "$DOTFILES_REF" in *[!0-9a-f]*|'') echo "DOTFILES_REF must be a commit id, got '$DOTFILES_REF'" >&2; exit 1 ;; esac; \
     [ "${#DOTFILES_REF}" -eq 40 ] || { echo "DOTFILES_REF must be 40 hex chars" >&2; exit 1; }; \
