@@ -270,7 +270,7 @@ ENV PATH=/home/rousseau/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 # toolchain install still produced a "successful" image, and
 # `rust@latest` changed under every rebuild. Only the /tmp cleanup
 # tolerates failure (an unmatched glob).
-ARG MISE_PYTHON=3.12.15
+ARG MISE_PYTHON=3.12.16
 ARG MISE_GO=1.26.10
 ARG MISE_RUST=1.99.0
 RUN MISE_YES=1 mise use -g python@${MISE_PYTHON} go@${MISE_GO} rust@${MISE_RUST} \
