@@ -128,6 +128,25 @@ RUN echo "apk refresh: ${APK_REFRESH}" \
 # sigstore, ip-address, picomatch) that fail the image's CVE gate.
 ARG NPM_VERSION=12.2.1
 RUN npm install -g npm@${NPM_VERSION} && npm --version
+# npm 12.2.1, the latest release, still bundles undici 6.29.0
+# (GHSA-qrxm-fqhp-jwvm, GHSA-2m5v-pch6-74hx). Its requirer asks for
+# ^6.25.0, so the 6.29.1 patch release replaces the bundled copy in place,
+# from the registry tarball checked against the SHA-256 recorded here.
+# Drop this step once an npm release bundles undici >= 6.29.1.
+ARG NPM_UNDICI_VERSION=6.29.1
+ARG NPM_UNDICI_SHA256=29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f
+RUN set -eu; \
+    dest="$(npm root -g)/npm/node_modules/undici"; \
+    test -f "$dest/package.json"; \
+    tmp=$(mktemp -d); \
+    curl -fsSL -o "$tmp/undici.tgz" \
+      "https://registry.npmjs.org/undici/-/undici-${NPM_UNDICI_VERSION}.tgz"; \
+    echo "${NPM_UNDICI_SHA256}  $tmp/undici.tgz" | sha256sum -c -; \
+    rm -rf "$dest"; mkdir -p "$dest"; \
+    tar -xzf "$tmp/undici.tgz" -C "$dest" --strip-components=1; \
+    rm -rf "$tmp"; \
+    grep -q "\"version\": \"${NPM_UNDICI_VERSION}\"" "$dest/package.json"; \
+    npm --version
 ARG PNPM_VERSION=12.15.0
 RUN npm install -g pnpm@${PNPM_VERSION} && pnpm --version
 
