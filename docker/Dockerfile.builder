@@ -193,7 +193,7 @@ USER rousseau
 # go and rust are exact versions, not `latest` (L-28): a rebuild must
 # not silently pick up a new toolchain. Bump deliberately.
 ARG MISE_NODE=24
-ARG MISE_PYTHON=3.12.15
+ARG MISE_PYTHON=3.12.16
 ARG MISE_GO=1.27.1
 ARG MISE_RUST=1.99.0
 ARG MISE_RUBY=3.3

@@ -52,7 +52,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 ########################  RUNTIME  ########################
 # node:22-alpine as of 2026-10-01
-FROM node:22-alpine@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402 AS runtime
+FROM node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS runtime
 
 # Runtime shell + tools that Claude Code's Bash tool commonly invokes.
 # bash is the shell contract the CLI expects; git + openssh-client
@@ -128,6 +128,25 @@ RUN echo "apk refresh: ${APK_REFRESH}" \
 # sigstore, ip-address, picomatch) that fail the image's CVE gate.
 ARG NPM_VERSION=12.2.1
 RUN npm install -g npm@${NPM_VERSION} && npm --version
+# npm 12.2.1, the latest release, still bundles undici 6.29.0
+# (GHSA-qrxm-fqhp-jwvm, GHSA-2m5v-pch6-74hx). Its requirer asks for
+# ^6.25.0, so the 6.29.1 patch release replaces the bundled copy in place,
+# from the registry tarball checked against the SHA-256 recorded here.
+# Drop this step once an npm release bundles undici >= 6.29.1.
+ARG NPM_UNDICI_VERSION=6.29.1
+ARG NPM_UNDICI_SHA256=29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f
+RUN set -eu; \
+    dest="$(npm root -g)/npm/node_modules/undici"; \
+    test -f "$dest/package.json"; \
+    tmp=$(mktemp -d); \
+    curl -fsSL -o "$tmp/undici.tgz" \
+      "https://registry.npmjs.org/undici/-/undici-${NPM_UNDICI_VERSION}.tgz"; \
+    echo "${NPM_UNDICI_SHA256}  $tmp/undici.tgz" | sha256sum -c -; \
+    rm -rf "$dest"; mkdir -p "$dest"; \
+    tar -xzf "$tmp/undici.tgz" -C "$dest" --strip-components=1; \
+    rm -rf "$tmp"; \
+    grep -q "\"version\": \"${NPM_UNDICI_VERSION}\"" "$dest/package.json"; \
+    npm --version
 ARG PNPM_VERSION=12.15.0
 RUN npm install -g pnpm@${PNPM_VERSION} && pnpm --version
 
@@ -270,7 +289,7 @@ ENV PATH=/home/rousseau/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
 # toolchain install still produced a "successful" image, and
 # `rust@latest` changed under every rebuild. Only the /tmp cleanup
 # tolerates failure (an unmatched glob).
-ARG MISE_PYTHON=3.12.15
+ARG MISE_PYTHON=3.12.16
 ARG MISE_GO=1.26.10
 ARG MISE_RUST=1.99.0
 RUN MISE_YES=1 mise use -g python@${MISE_PYTHON} go@${MISE_GO} rust@${MISE_RUST} \
