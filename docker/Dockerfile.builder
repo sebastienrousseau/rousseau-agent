@@ -254,10 +254,13 @@ RUN set -eu \
 # Python tooling that the fleet's 45 Python repos expect (pre-commit,
 # semgrep). Installed with --user into the (now writable) home rather
 # than system-wide, from a fully hashed lock (L-28): every package,
-# transitive ones included, must match a recorded SHA-256.
+# transitive ones included, must match a recorded SHA-256. --no-deps
+# because the lock overrides semgrep's exact pins on mcp and
+# opentelemetry (advised versions; see the file's header): the file is
+# the complete resolved tree, so pip has nothing left to resolve.
 COPY --chown=rousseau:rousseau docker/requirements-builder.txt /tmp/requirements-builder.txt
 RUN set -eu \
- && python3 -m pip install --no-cache-dir --user --require-hashes \
+ && python3 -m pip install --no-cache-dir --user --require-hashes --no-deps \
       -r /tmp/requirements-builder.txt \
  && rm -f /tmp/requirements-builder.txt \
  && echo "pip --user install OK"
