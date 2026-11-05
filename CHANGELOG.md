@@ -20,8 +20,14 @@ messages follow Conventional Commits (`feat:`, `fix:`, `refactor:`,
   (GHSA-9vhv-jxww-xfm5, GHSA-567q-5qvw-pf92, GHSA-v4x8-3wr5-3wq8; it pinned
   4.0.12), `virtualenv >= 21.14.13` (GHSA-cx6f-vjhg-g3cc; it pinned 21.14.5)
   and `certifi >= 2026.10.19` (PYSEC-2026-4320; it pinned 2026.7.22), all
-  through pre-commit. `mcp` 1.29.0 and `opentelemetry-api` 1.37.0 stay:
-  every semgrep release up to 1.182.1 pins them exactly.
+  through pre-commit.
+- **Security:** the builder image's Python tree moves `mcp` 1.29.0 to
+  1.30.0 (GHSA-84m7-p3x7-pcfv, GHSA-5h93-6whr-6q8j, GHSA-rwrf-2pqf-9j8j,
+  GHSA-w4fh-qvv9-3v23) and the `opentelemetry` 1.37.0 family to 1.45.2
+  (GHSA-xcq7-p3pf-p88h). Every semgrep release up to 1.183.0 pins the
+  affected versions exactly, so the lock overrides those pins and pip
+  installs it with `--no-deps`; semgrep 1.183.0 scans, traces and serves
+  MCP with them. `pre-commit` moves to 4.7.0 and `semgrep` to 1.183.0.
 - **Security:** Go 1.26.10 everywhere (go.mod toolchain, every
   `setup-go`, the three images' `golang:1.26.10-alpine3.24` builder base
   and `MISE_GO`): GO-2026-6809, the crypto/x509 intermediate-certificate
